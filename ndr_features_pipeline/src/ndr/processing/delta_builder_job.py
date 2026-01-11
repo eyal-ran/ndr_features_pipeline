@@ -1,0 +1,146 @@
+from typing import Dict, Any
+
+import boto3
+import json
+from pyspark.sql import SparkSession, DataFrame, functions as F
+
+from ndr.config.job_spec_models import JobSpec
+from ndr.processing.base_runner import BaseProcessingRunner, RuntimeParams
+from ndr.processing import delta_builder_operators as ops
+from ndr.logging.logger import get_logger
+
+
+class DeltaBuilderRunner(BaseProcessingRunner):
+    """Concrete runner that builds 15m delta tables from Palo Alto logs."""
+
+    def __init__(self, spark: SparkSession, job_spec: JobSpec, runtime: RuntimeParams):
+        super().__init__(spark, job_spec, runtime)
+        self._s3_client = boto3.client("s3")
+        self.logger = get_logger("DeltaBuilderRunner")  # override name
+
+    def _apply_data_quality(self, df: DataFrame) -> DataFrame:
+        """Apply Palo Alto specific DQ cleaning rules."""
+        dq_spec = self.job_spec.dq
+
+        if dq_spec.filter_null_bytes_ports:
+            df = df.filter(
+                ~(
+                    F.col("source_bytes").isNull()
+                    & F.col("destination_bytes").isNull()
+                    & F.col("source_port").isNull()
+                    & F.col("destination_port").isNull()
+                )
+            )
+
+        df = df.withColumn(
+            "duration_sec",
+            F.when(
+                F.col("event_end").isNotNull() & F.col("event_start").isNotNull(),
+                F.col("event_end") - F.col("event_start"),
+            ).otherwise(F.lit(0.0)),
+        )
+
+        if dq_spec.duration_non_negative:
+            df = df.withColumn(
+                "duration_sec",
+                F.when(F.col("duration_sec") < 0, F.lit(0.0)).otherwise(F.col("duration_sec")),
+            )
+
+        if dq_spec.bytes_non_negative:
+            df = df.withColumn(
+                "source_bytes",
+                F.when(F.col("source_bytes") < 0, None).otherwise(F.col("source_bytes")),
+            ).withColumn(
+                "destination_bytes",
+                F.when(F.col("destination_bytes") < 0, None).otherwise(F.col("destination_bytes")),
+            )
+
+        if self.runtime.slice_start_ts and self.runtime.slice_end_ts:
+            start_ts = self.runtime.slice_start_ts
+            end_ts = self.runtime.slice_end_ts
+            df = df.filter(
+                (F.col("event_start") >= F.to_timestamp(F.lit(start_ts)))
+                & (F.col("event_start") < F.to_timestamp(F.lit(end_ts)))
+            )
+
+        return df
+
+    def _load_port_sets(self) -> Dict[str, Any]:
+        """Load port sets from the enrichment spec, if configured."""
+        uri = self.job_spec.enrichment.port_sets_location
+        if not uri:
+            return {}
+        if not uri.startswith("s3://"):
+            self.logger.warning("Port sets location is not an s3:// URI: %s", uri)
+            return {}
+        bucket, key = uri[5:].split("/", 1)
+        obj = self._s3_client.get_object(Bucket=bucket, Key=key)
+        text = obj["Body"].read().decode("utf-8")
+        return json.loads(text)
+
+    def _build_dataframe(self, df: DataFrame) -> DataFrame:
+        """Build the final delta DataFrame from cleaned events."""
+        if self.runtime.slice_start_ts:
+            df = df.withColumn(
+                "slice_start_ts", F.to_timestamp(F.lit(self.runtime.slice_start_ts))
+            )
+        else:
+            df = df.withColumn("slice_start_ts", F.col("event_start"))
+
+        if self.runtime.slice_end_ts:
+            df = df.withColumn(
+                "slice_end_ts", F.to_timestamp(F.lit(self.runtime.slice_end_ts))
+            )
+        else:
+            max_end = df.agg(F.max("event_end").alias("max_end")).collect()[0]["max_end"]
+            df = df.withColumn("slice_end_ts", F.lit(max_end))
+
+        df = df.withColumn("dt", F.date_format(F.col("slice_start_ts"), "yyyy-MM-dd"))
+        df = df.withColumn("hh", F.date_format(F.col("slice_start_ts"), "HH"))
+        df = df.withColumn("mm", F.date_format(F.col("slice_start_ts"), "mm"))
+
+        port_sets = self._load_port_sets()
+
+        role_dfs = []
+        for role_spec in self.job_spec.roles:
+            role_name = role_spec.name
+            self.logger.info("Building role view for %s", role_name)
+
+            role_df = (
+                df.withColumn("host_ip", F.col(role_spec.host_ip))
+                .withColumn("peer_ip", F.col(role_spec.peer_ip))
+                .withColumn("peer_port", F.col(role_spec.peer_port).cast("int"))
+                .withColumn("bytes_sent", F.col(role_spec.bytes_sent).cast("double"))
+                .withColumn("bytes_recv", F.col(role_spec.bytes_recv).cast("double"))
+                .withColumn("role", F.lit(role_name))
+            )
+
+            base = ops.apply_base_counts_and_sums(role_df, params={})
+            quants = ops.apply_quantiles(role_df, params={})
+            port_counts = ops.apply_port_category_counters(
+                role_df,
+                params={"port_sets": port_sets},
+            )
+            burst = ops.apply_burst_metrics(role_df, params={})
+
+            join_keys = ["host_ip", "role", "slice_start_ts", "slice_end_ts", "dt", "hh", "mm"]
+            tmp = base.join(quants, on=join_keys, how="left")
+            tmp = tmp.join(port_counts, on=join_keys, how="left")
+            tmp = tmp.join(burst, on=join_keys, how="left")
+
+            role_dfs.append(tmp)
+
+        if not role_dfs:
+            return df.limit(0)
+
+        result = role_dfs[0]
+        for other in role_dfs[1:]:
+            result = result.unionByName(other, allowMissingColumns=True)
+
+        return result
+
+
+def run_delta_builder(spark: SparkSession, job_spec: JobSpec, runtime: RuntimeParams) -> None:
+    """Module-level entrypoint used by the CLI wrapper."""
+    runner = DeltaBuilderRunner(spark=spark, job_spec=job_spec, runtime=runtime)
+    runner.run()

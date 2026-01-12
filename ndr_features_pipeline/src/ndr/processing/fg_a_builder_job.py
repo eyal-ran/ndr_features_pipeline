@@ -1,1 +1,572 @@
-"""Placeholder for fg_a_builder_job.py implementation."""
+
+"""FG-A builder job.
+
+This module implements the FG-A (current-behaviour) feature builder on top
+of the 15-minute host-level delta tables produced by the delta builder.
+
+High-level responsibilities
+---------------------------
+1. Read the delta table Parquet dataset for the most recent mini-batch.
+2. Determine the anchor time (window_end_ts) as the maximum slice_end_ts
+   present in that mini-batch.
+3. For each configured window (15m, 30m, 1h, 8h, 24h) and for each role
+   (outbound, inbound):
+   - Aggregate composable metrics across the relevant deltas.
+   - Derive secondary metrics (ratios, means, asymmetry, risk flags).
+4. Assemble a wide FG-A row per (host_ip, window_label, window_end_ts)
+   containing:
+   - outbound_* features (unprefixed base metrics + derived metrics)
+   - inbound_* features (prefixed with 'in_')
+   - contextual time-of-day / weekday features.
+5. Write the FG-A dataset to S3 as partitioned Parquet.
+6. Optionally, ingest the rows into SageMaker Feature Store (offline and/or
+   online feature groups), if configured via parameters.
+
+This implementation only depends on the delta tables and does *not* compute
+baseline or correlation features. Those are handled by FG-B and FG-C builder
+jobs respectively. If baseline / correlation columns are required in FG-A for
+downstream compatibility, they can be added via a join from FG-A to FG-B/FG-C
+outputs in a later step.
+"""
+
+from __future__ import annotations
+
+import logging
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional
+
+import boto3
+from pyspark.sql import DataFrame, SparkSession, Window
+from pyspark.sql import functions as F
+from pyspark.sql.types import TimestampType
+
+from ndr.processing.base_runner import BaseProcessingJobRunner
+from ndr.model.fg_a_schema import (
+    FG_A_WINDOWS_MINUTES,
+    OUTBOUND_BASE_METRICS,
+    INBOUND_BASE_METRICS,
+    DERIVED_METRICS,
+    build_feature_name,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class FGABuilderConfig:
+    """Configuration for the FG-A builder job.
+
+    This is populated from Processing environment variables / arguments
+    (for example, via Step Functions -> Pipeline -> Processing Step).
+
+    Attributes
+    ----------
+    project_name:
+        Logical project identifier, used mainly for logging and tagging.
+    region_name:
+        AWS region for accessing S3 and SageMaker Feature Store.
+    delta_s3_prefix:
+        S3 prefix where the 15m host-level delta Parquet files are stored.
+        Example: s3://my-ndr-bucket/deltas/
+    output_s3_prefix:
+        S3 prefix where FG-A Parquet files will be written.
+        Example: s3://my-ndr-bucket/fg_a/
+    mini_batch_id:
+        Identifier of the ETL mini-batch that triggered this job.
+    feature_spec_version:
+        Version string of the FG-A spec (e.g. "fga_v1").
+    feature_group_name_offline:
+        Name of the SageMaker Feature Store offline feature group (optional).
+    feature_group_name_online:
+        Name of the online feature group (optional).
+    write_to_feature_store:
+        If True, FG-A rows will also be ingested into Feature Store.
+    """
+
+    project_name: str
+    region_name: str
+    delta_s3_prefix: str
+    output_s3_prefix: str
+    mini_batch_id: str
+    feature_spec_version: str
+    feature_group_name_offline: Optional[str] = None
+    feature_group_name_online: Optional[str] = None
+    write_to_feature_store: bool = False
+
+
+class FGABuilderJob(BaseProcessingJobRunner):
+    """FG-A feature builder job runner.
+
+    This class orchestrates reading the delta tables, aggregating features
+    over multiple windows, and writing the resulting FG-A dataset.
+    """
+
+    def __init__(self, spark: SparkSession, config: FGABuilderConfig) -> None:
+        super().__init__(spark)
+        self.config = config
+        self._sagemaker_runtime = None
+        self._sagemaker_featurestore_runtime = None
+
+    # ------------------------------------------------------------------
+    # BaseProcessingJobRunner API
+    # ------------------------------------------------------------------
+
+    def run(self) -> None:
+        """Entry point for the Processing job.
+
+        This wraps the internal implementation with high-level error
+        handling and logging so that the Processing container exits
+        with a clear status and CloudWatch has sufficient diagnostics.
+        """
+        logger.info("Starting FG-A builder job for project=%s, mini_batch_id=%s", self.config.project_name, self.config.mini_batch_id)
+
+        try:
+            self._run_impl()
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("FG-A builder job failed")
+            # In a production system you might emit a custom CloudWatch metric here.
+            raise
+
+        logger.info("FG-A builder job completed successfully")
+
+    # ------------------------------------------------------------------
+    # Internal implementation
+    # ------------------------------------------------------------------
+
+    def _run_impl(self) -> None:
+        # 1. Read delta tables for the relevant mini-batch.
+        delta_df = self._read_delta_table()
+
+        if delta_df.rdd.isEmpty():
+            logger.warning("Delta DataFrame for mini_batch_id=%s is empty; nothing to do", self.config.mini_batch_id)
+            return
+
+        # 2. Determine anchor time (window_end_ts) = max slice_end_ts in this batch.
+        anchor_ts = self._compute_anchor_ts(delta_df)
+
+        logger.info("Anchor (window_end_ts) for FG-A computation is %s", anchor_ts.isoformat())
+
+        # 3. Build outbound and inbound aggregates for each window.
+        outbound_df = self._build_direction_features(
+            df=delta_df,
+            role_value="outbound",
+            prefix="",
+            base_metrics=OUTBOUND_BASE_METRICS,
+            anchor_ts=anchor_ts,
+        )
+
+        inbound_df = self._build_direction_features(
+            df=delta_df,
+            role_value="inbound",
+            prefix="in_",
+            base_metrics=INBOUND_BASE_METRICS,
+            anchor_ts=anchor_ts,
+        )
+
+        # 4. Join outbound + inbound features on host_ip + window_label + window_start/end.
+        fga_df = self._join_directions(outbound_df, inbound_df)
+
+        # 5. Add metadata + time-of-day / weekday context features.
+        fga_df = self._add_metadata_and_time_context(fga_df, anchor_ts)
+
+        # 6. Write to S3 as Parquet.
+        self._write_to_s3(fga_df)
+
+        # 7. Optionally, ingest into Feature Store.
+        if self.config.write_to_feature_store and self.config.feature_group_name_offline:
+            self._write_to_feature_store(fga_df)
+
+    # ------------------------------------------------------------------
+    # Helpers: IO
+    # ------------------------------------------------------------------
+
+    def _read_delta_table(self) -> DataFrame:
+        """Read the delta Parquet dataset for the configured mini-batch.
+
+        This method assumes that the delta builder wrote partitions that
+        can be filtered by "mini_batch_id". If your delta schema uses a
+        different partitioning strategy, adjust the filter accordingly.
+        """
+        spark = self.spark
+
+        logger.info(
+            "Reading delta table from %s for mini_batch_id=%s",
+            self.config.delta_s3_prefix,
+            self.config.mini_batch_id,
+        )
+
+        df = (
+            spark.read
+            .option("mergeSchema", "true")
+            .parquet(self.config.delta_s3_prefix)
+        )
+
+        if "mini_batch_id" in df.columns:
+            df = df.filter(F.col("mini_batch_id") == self.config.mini_batch_id)
+        else:
+            logger.warning("Delta DataFrame has no mini_batch_id column; using all rows under prefix")
+
+        # Basic sanity check for required columns.
+        required_cols = {"host_ip", "role", "slice_start_ts", "slice_end_ts"}
+        missing = required_cols - set(df.columns)
+        if missing:
+            raise ValueError(f"Delta DataFrame is missing required columns: {sorted(missing)}")
+
+        # Ensure timestamps are proper TimestampType.
+        for col in ["slice_start_ts", "slice_end_ts"]:
+            if not isinstance(df.schema[col].dataType, TimestampType):
+                df = df.withColumn(col, F.to_timestamp(F.col(col)))
+
+        return df
+
+    def _write_to_s3(self, df: DataFrame) -> None:
+        """Write FG-A dataset to S3 in Parquet format.
+
+        The output is partitioned by feature_spec_version and dt (YYYY-MM-DD)
+        for efficient downstream reading.
+        """
+        if df.rdd.isEmpty():
+            logger.warning("FG-A DataFrame is empty; nothing to write to S3")
+            return
+
+        # Derive dt partition column from window_end_ts.
+        df = df.withColumn("dt", F.date_format(F.col("window_end_ts"), "yyyy-MM-dd"))
+
+        output_path = self.config.output_s3_prefix.rstrip("/")
+        logger.info("Writing FG-A Parquet to %s", output_path)
+
+        (
+            df.repartition("feature_spec_version", "dt")
+            .write.mode("overwrite")
+            .partitionBy("feature_spec_version", "dt")
+            .parquet(output_path)
+        )
+
+    # ------------------------------------------------------------------
+    # Helpers: core computation
+    # ------------------------------------------------------------------
+
+    def _compute_anchor_ts(self, delta_df: DataFrame) -> datetime:
+        """Compute the anchor timestamp for FG-A windows.
+
+        Anchor is defined as the maximum slice_end_ts within the mini-batch.
+        All windows are computed as lookbacks ending at this point.
+        """
+        max_row = delta_df.agg(F.max("slice_end_ts").alias("max_ts")).collect()[0]
+        max_ts = max_row["max_ts"]
+        if max_ts is None:
+            raise ValueError("slice_end_ts is null in the delta DataFrame")
+
+        # Assume timestamps are in UTC. Adjust here if that is not the case.
+        if max_ts.tzinfo is None:
+            max_ts = max_ts.replace(tzinfo=timezone.utc)
+        return max_ts
+
+    def _build_direction_features(
+        self,
+        df: DataFrame,
+        role_value: str,
+        prefix: str,
+        base_metrics: List[str],
+        anchor_ts: datetime,
+    ) -> DataFrame:
+        """Build FG-A features for a specific role (outbound or inbound).
+
+        Parameters
+        ----------
+        df:
+            Delta DataFrame filtered to the current mini-batch.
+        role_value:
+            Role value to filter on (e.g. "outbound" or "inbound").
+        prefix:
+            Prefix to apply to feature names ("" or "in_").
+        base_metrics:
+            List of base metric names expected to exist as columns in df.
+        anchor_ts:
+            Anchor (window_end_ts) used to define lookback windows.
+
+        Returns
+        -------
+        DataFrame
+            DataFrame with columns:
+                - host_ip
+                - window_label
+                - window_start_ts
+                - window_end_ts
+                - prefixed feature columns per window.
+        """
+        spark = self.spark
+
+        logger.info("Building %s features for role=%s", "outbound" if not prefix else "inbound", role_value)
+
+        role_df = df.filter(F.col("role") == role_value)
+
+        if role_df.rdd.isEmpty():
+            logger.warning("No rows for role=%s in delta DataFrame", role_value)
+            # Return empty DF with the expected schema.
+            schema = spark.createDataFrame([], schema="host_ip STRING, window_label STRING, window_start_ts TIMESTAMP, window_end_ts TIMESTAMP").schema
+            return spark.createDataFrame([], schema=schema)
+
+        # For each configured window, build an aggregate DataFrame and then union them.
+        window_frames: List[DataFrame] = []
+
+        for window_label, minutes in FG_A_WINDOWS_MINUTES.items():
+            window_frames.append(
+                self._aggregate_for_window(
+                    df=role_df,
+                    prefix=prefix,
+                    base_metrics=base_metrics,
+                    window_label=window_label,
+                    window_minutes=minutes,
+                    anchor_ts=anchor_ts,
+                )
+            )
+
+        # Union all window frames, allowing for missing columns in case
+        # some metrics are not available for a given role or schema version.
+        fga_role_df: Optional[DataFrame] = None
+        for frame in window_frames:
+            if fga_role_df is None:
+                fga_role_df = frame
+            else:
+                fga_role_df = fga_role_df.unionByName(frame, allowMissingColumns=True)
+
+        assert fga_role_df is not None
+        return fga_role_df
+
+    def _aggregate_for_window(
+        self,
+        df: DataFrame,
+        prefix: str,
+        base_metrics: List[str],
+        window_label: str,
+        window_minutes: int,
+        anchor_ts: datetime,
+    ) -> DataFrame:
+        """Aggregate deltas for a single window and direction.
+
+        This function sums composable metrics across all 15m slices whose
+        slice_end_ts lies in (anchor_ts - window_minutes, anchor_ts].
+        It then derives secondary metrics (ratios, means, etc.).
+        """
+        window_start = anchor_ts - timedelta(minutes=window_minutes)
+
+        # Restrict to slices inside the window.
+        filtered = df.filter(
+            (F.col("slice_end_ts") > F.lit(window_start)) & (F.col("slice_end_ts") <= F.lit(anchor_ts))
+        )
+
+        if filtered.rdd.isEmpty():
+            logger.info("No delta rows in window %s (%d minutes); returning empty frame", window_label, window_minutes)
+            spark = self.spark
+            schema = spark.createDataFrame(
+                [],
+                schema="host_ip STRING, window_label STRING, window_start_ts TIMESTAMP, window_end_ts TIMESTAMP",
+            ).schema
+            return spark.createDataFrame([], schema=schema)
+
+        agg_exprs = []
+
+        # Always carry host_ip as grouping key.
+        group_by_cols = ["host_ip"]
+
+        # Sum composable base metrics where available.
+        for metric in base_metrics:
+            if metric not in df.columns:
+                logger.warning("Metric %s not present in delta DataFrame; skipping for window %s", metric, window_label)
+                continue
+
+            col_name = build_feature_name(prefix, metric, window_label)
+            agg_exprs.append(F.sum(F.col(metric)).alias(col_name))
+
+        # Include sessions_cnt explicitly if available, for derived metrics.
+        sessions_col = build_feature_name(prefix, "sessions_cnt", window_label)
+
+        aggregated = filtered.groupBy(*group_by_cols).agg(*agg_exprs)
+
+        # Add window metadata columns.
+        aggregated = (
+            aggregated.withColumn("window_label", F.lit(window_label))
+            .withColumn("window_start_ts", F.lit(window_start))
+            .withColumn("window_end_ts", F.lit(anchor_ts))
+        )
+
+        # Derived metrics ------------------------------------------------
+        eps = F.lit(1e-9)
+
+        # duration_mean
+        if build_feature_name(prefix, "duration_sum", window_label) in aggregated.columns and sessions_col in aggregated.columns:
+            aggregated = aggregated.withColumn(
+                build_feature_name(prefix, "duration_mean", window_label),
+                F.col(build_feature_name(prefix, "duration_sum", window_label)) / (F.col(sessions_col) + eps),
+            )
+
+        # deny_ratio = deny_cnt / sessions_cnt
+        deny_col = build_feature_name(prefix, "deny_cnt", window_label)
+        if deny_col in aggregated.columns and sessions_col in aggregated.columns:
+            aggregated = aggregated.withColumn(
+                build_feature_name(prefix, "deny_ratio", window_label),
+                F.col(deny_col) / (F.col(sessions_col) + eps),
+            )
+
+        # bytes_asymmetry_ratio = bytes_src_sum / bytes_dst_sum
+        src_bytes_col = build_feature_name(prefix, "bytes_src_sum", window_label)
+        dst_bytes_col = build_feature_name(prefix, "bytes_dst_sum", window_label)
+        if src_bytes_col in aggregated.columns and dst_bytes_col in aggregated.columns:
+            aggregated = aggregated.withColumn(
+                build_feature_name(prefix, "bytes_asymmetry_ratio", window_label),
+                F.col(src_bytes_col) / (F.col(dst_bytes_col) + eps),
+            )
+
+        # transport ratios: tcp_cnt / sessions_cnt, etc.
+        for transport in ("tcp", "udp", "icmp"):
+            base_name = f"{transport}_cnt"
+            metric_col = build_feature_name(prefix, base_name, window_label)
+            if metric_col in aggregated.columns and sessions_col in aggregated.columns:
+                ratio_name = build_feature_name(prefix, f"transport_{transport}_ratio", window_label)
+                aggregated = aggregated.withColumn(
+                    ratio_name,
+                    F.col(metric_col) / (F.col(sessions_col) + eps),
+                )
+
+        # has_high_risk_port_activity flag
+        hr_col = build_feature_name(prefix, "high_risk_port_sessions_cnt", window_label)
+        if hr_col in aggregated.columns:
+            aggregated = aggregated.withColumn(
+                build_feature_name(prefix, "has_high_risk_port_activity", window_label),
+                (F.col(hr_col) > F.lit(0)).cast("int"),
+            )
+
+        return aggregated
+
+    def _join_directions(self, outbound_df: DataFrame, inbound_df: DataFrame) -> DataFrame:
+        """Join outbound + inbound per (host_ip, window_label, window_start/end)."""
+
+        # Use full outer join so that hosts that only appear in one role
+        # are still represented.
+        join_keys = ["host_ip", "window_label", "window_start_ts", "window_end_ts"]
+
+        joined = outbound_df.join(inbound_df, on=join_keys, how="outer")
+
+        return joined
+
+    def _add_metadata_and_time_context(self, df: DataFrame, anchor_ts: datetime) -> DataFrame:
+        """Add metadata and time-of-day/week context features.
+
+        Context features include:
+            - hour_of_day (0-23)
+            - is_working_hours (07:00-17:00)
+            - is_off_hours (17:00-22:00)
+            - is_night_hours (22:00-07:00)
+            - is_weekend (Friday/Saturday)
+        """
+        if df.rdd.isEmpty():
+            return df
+
+        # Add mini_batch_id and feature_spec_version.
+        df = (
+            df.withColumn("mini_batch_id", F.lit(self.config.mini_batch_id))
+            .withColumn("feature_spec_version", F.lit(self.config.feature_spec_version))
+        )
+
+        # Use window_end_ts as the reference time for context features.
+        # Assuming timestamps are in UTC; convert to local time zone as needed.
+        tz = "Asia/Jerusalem"
+        local_ts = F.from_utc_timestamp(F.col("window_end_ts"), tz)
+
+        df = df.withColumn("hour_of_day", F.hour(local_ts))
+        df = df.withColumn("day_of_week", F.date_format(local_ts, "E"))  # Mon, Tue, ...
+
+        # Working hours: 07:00 <= hour < 17:00
+        df = df.withColumn(
+            "is_working_hours",
+            ((F.col("hour_of_day") >= 7) & (F.col("hour_of_day") < 17)).cast("int"),
+        )
+
+        # Off hours: 17:00 <= hour < 22:00
+        df = df.withColumn(
+            "is_off_hours",
+            ((F.col("hour_of_day") >= 17) & (F.col("hour_of_day") < 22)).cast("int"),
+        )
+
+        # Night hours: 22:00 <= hour or hour < 7
+        df = df.withColumn(
+            "is_night_hours",
+            ((F.col("hour_of_day") >= 22) | (F.col("hour_of_day") < 7)).cast("int"),
+        )
+
+        # Weekend: Friday or Saturday in Israel
+        df = df.withColumn(
+            "is_weekend",
+            F.when(F.date_format(local_ts, "u").isin("5", "6"), F.lit(1)).otherwise(F.lit(0)),
+        )
+
+        # Build a stable record_id: host_ip|window_label|window_end_ts
+        df = df.withColumn(
+            "record_id",
+            F.concat_ws("|", F.col("host_ip"), F.col("window_label"), F.col("window_end_ts")),
+        )
+
+        return df
+
+    # ------------------------------------------------------------------
+    # Helpers: Feature Store (optional)
+    # ------------------------------------------------------------------
+
+    def _get_featurestore_client(self):
+        if self._sagemaker_featurestore_runtime is None:
+            self._sagemaker_featurestore_runtime = boto3.client(
+                "sagemaker-featurestore-runtime", region_name=self.config.region_name
+            )
+        return self._sagemaker_featurestore_runtime
+
+    def _write_to_feature_store(self, df: DataFrame) -> None:
+        """Write FG-A rows to SageMaker Feature Store.
+
+        For v1, we use a simple foreachPartition + PutRecord approach.
+        This is sufficient for low/medium volumes. For very high volumes,
+        consider using offline ingestion via S3 and Feature Group ingestion
+        jobs instead.
+        """
+        if df.rdd.isEmpty():
+            logger.warning("FG-A DataFrame is empty; nothing to ingest into Feature Store")
+            return
+
+        if not self.config.feature_group_name_offline:
+            logger.warning("No offline feature group configured; skipping Feature Store ingestion")
+            return
+
+        feature_group_name = self.config.feature_group_name_offline
+        client = self._get_featurestore_client()
+
+        # Collect schema to know which columns to send.
+        columns = df.columns
+
+        def _send_partition(iter_rows):
+            import json
+            import boto3
+
+            fs_client = boto3.client("sagemaker-featurestore-runtime", region_name="%s" % self.config.region_name)
+
+            for row in iter_rows:
+                record = []
+                for col in columns:
+                    val = row[col]
+                    if val is None:
+                        continue
+                    record.append({"FeatureName": col, "ValueAsString": str(val)})
+                try:
+                    fs_client.put_record(
+                        FeatureGroupName=feature_group_name,
+                        Record=record,
+                    )
+                except Exception as exc:  # pylint: disable=broad-except
+                    # We cannot propagate exceptions from executors easily;
+                    # log them so they appear in executor logs.
+                    print(f"Error putting record to feature group {feature_group_name}: {exc}", file=sys.stderr)
+
+        logger.info("Ingesting FG-A rows into Feature Store feature group %s", feature_group_name)
+        df.foreachPartition(_send_partition)

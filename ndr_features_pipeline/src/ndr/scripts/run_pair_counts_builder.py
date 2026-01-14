@@ -1,17 +1,13 @@
-"""Entry script for Delta Builder Processing job.
+"""Entry script for Pair-Counts builder.
 
-This script is intended to be used as the command for a SageMaker
-ProcessingStep container. It parses runtime parameters (for local CLI
-use as well) and delegates to the delta-builder job implementation.
-
-In production, the SageMaker Pipeline definition is expected to supply
-the same parameters via `processing_step.arguments`, so the CLI parsing
-here is mostly for local development and ad‑hoc debugging.
+Intended to be used as the command for a SageMaker ProcessingStep container.
+In production, the SageMaker Pipeline will pass the same parameters via
+`processing_step.arguments`. CLI parsing is mainly for local dev & debug.
 
 Expected arguments (all required):
 
 - --project-name          : Logical NDR project name (for JobSpec lookup).
-- --feature-spec-version  : Feature-spec version (schema id for delta/FGs).
+- --feature-spec-version  : Feature-spec version (FG schema id).
 - --mini-batch-id         : Identifier of the 15m ETL mini-batch.
 - --batch-start-ts-iso    : ISO8601 start timestamp of the batch window.
 - --batch-end-ts-iso      : ISO8601 end timestamp of the batch window.
@@ -20,9 +16,9 @@ Expected arguments (all required):
 import argparse
 import sys
 
-from ndr.processing.delta_builder_job import (
-    DeltaBuilderJobRuntimeConfig,
-    run_delta_builder_from_runtime_config,
+from ndr.processing.pair_counts_builder_job import (
+    PairCountsJobRuntimeConfig,
+    run_pair_counts_builder_from_runtime_config,
 )
 from ndr.logging.logger import get_logger
 
@@ -31,19 +27,8 @@ LOGGER = get_logger(__name__)
 
 
 def parse_args(argv=None):
-    """Parse CLI arguments for Delta Builder.
-
-    Parameters
-    ----------
-    argv : list[str] | None
-        Optional override for ``sys.argv``; mainly for unit tests.
-
-    Returns
-    -------
-    argparse.Namespace
-        Parsed arguments.
-    """
-    parser = argparse.ArgumentParser(description="Run Delta Builder job.")
+    """Parse CLI arguments for Pair-Counts builder."""
+    parser = argparse.ArgumentParser(description="Run Pair-Counts builder.")
 
     parser.add_argument(
         "--project-name",
@@ -53,11 +38,11 @@ def parse_args(argv=None):
     parser.add_argument(
         "--feature-spec-version",
         required=True,
-        help="Feature specification version (delta/FG schema id).",        )
+        help="Feature specification version (FG-A/B/C schema version).",        )
     parser.add_argument(
         "--mini-batch-id",
         required=True,
-        help="Identifier of the 15m ETL mini-batch (used to locate inputs).",        )
+        help="Identifier of the 15m ETL mini-batch (used to locate S3 input prefix).",        )
     parser.add_argument(
         "--batch-start-ts-iso",
         required=True,
@@ -71,15 +56,10 @@ def parse_args(argv=None):
 
 
 def main(argv=None) -> int:
-    """Main entrypoint for Delta Builder.
-
-    This function is executed when the module is run as a script inside the
-    SageMaker Processing container.
-    """
     args = parse_args(argv)
 
     LOGGER.info(
-        "Starting Delta Builder via CLI/runtime entrypoint.",
+        "Starting Pair-Counts builder via CLI/runtime entrypoint.",
         extra={
             "project_name": args.project_name,
             "feature_spec_version": args.feature_spec_version,
@@ -89,7 +69,7 @@ def main(argv=None) -> int:
         },
     )
 
-    runtime_config = DeltaBuilderJobRuntimeConfig(
+    runtime_config = PairCountsJobRuntimeConfig(
         project_name=args.project_name,
         feature_spec_version=args.feature_spec_version,
         mini_batch_id=args.mini_batch_id,
@@ -97,7 +77,7 @@ def main(argv=None) -> int:
         batch_end_ts_iso=args.batch_end_ts_iso,
     )
 
-    run_delta_builder_from_runtime_config(runtime_config)
+    run_pair_counts_builder_from_runtime_config(runtime_config)
     return 0
 
 

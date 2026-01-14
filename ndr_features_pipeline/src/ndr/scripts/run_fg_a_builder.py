@@ -1,126 +1,86 @@
+"""Entry script for FG-A (current behaviour) feature builder.
 
-"""Script entrypoint for FG-A builder Processing job.
+This script is intended to be used as the command for a SageMaker
+ProcessingStep container. It parses runtime parameters (also convenient
+for local CLI runs) and delegates to the FG-A builder implementation.
 
-This script is intended to be used as the `code` entry point for a
-SageMaker ProcessingStep. It parses CLI arguments (provided as
-`job_arguments` in the pipeline definition), constructs the FGABuilderConfig,
-and executes the FGABuilderJob.
+Expected arguments (all required):
 
-Expected usage (within a SageMaker Processing container):
-
-    python -m ndr.scripts.run_fg_a_builder \
-        --project-name my-ndr-project \
-        --region-name eu-west-1 \
-        --delta-s3-prefix s3://my-bucket/deltas/ \
-        --output-s3-prefix s3://my-bucket/fg_a/ \
-        --mini-batch-id mb_20250101T1200Z \
-        --feature-spec-version fga_v1 \
-        --feature-group-offline ndr-fga-offline \
-        --write-to-feature-store true
+- --project-name          : Logical NDR project name (for JobSpec lookup).
+- --feature-spec-version  : FG-A feature-spec version (schema id).
+- --mini-batch-id         : Identifier of the 15m ETL mini-batch.
+- --batch-start-ts-iso    : ISO8601 start timestamp of the batch window.
+- --batch-end-ts-iso      : ISO8601 end timestamp of the batch window.
 """
 
-from __future__ import annotations
-
 import argparse
-import logging
-import os
+import sys
 
-from pyspark.sql import SparkSession
+from ndr.processing.fg_a_builder_job import (
+    FGABuilderJobRuntimeConfig,
+    run_fg_a_builder_from_runtime_config,
+)
+from ndr.logging.logger import get_logger
 
-from ndr.processing.fg_a_builder_job import FGABuilderConfig, FGABuilderJob
-from ndr.logging.logger import configure_root_logger  # assuming existing helper
+
+LOGGER = get_logger(__name__)
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments provided by the ProcessingStep job_arguments."""
-    parser = argparse.ArgumentParser(description="Run FG-A builder job")
-
-    parser.add_argument("--project-name", required=True, help="Logical project name")
-    parser.add_argument("--region-name", required=True, help="AWS region name")
+def parse_args(argv=None):
+    """Parse CLI arguments for FG-A builder."""
+    parser = argparse.ArgumentParser(description="Run FG-A builder job.")
 
     parser.add_argument(
-        "--delta-s3-prefix",
+        "--project-name",
         required=True,
-        help="S3 prefix where delta Parquet files are stored",
-    )
-    parser.add_argument(
-        "--output-s3-prefix",
-        required=True,
-        help="S3 prefix where FG-A Parquet files will be written",
-    )
-    parser.add_argument(
-        "--mini-batch-id",
-        required=True,
-        help="Identifier of the triggering ETL mini-batch",
+        help="Logical NDR project name used for JobSpec lookup.",
     )
     parser.add_argument(
         "--feature-spec-version",
         required=True,
-        help="FG-A feature spec version (e.g., fga_v1)",
-    )
-
+        help="FG-A feature specification version (schema id).",        )
     parser.add_argument(
-        "--feature-group-offline",
-        required=False,
-        default=None,
-        help="Offline Feature Store feature group name (optional)",
-    )
+        "--mini-batch-id",
+        required=True,
+        help="Identifier of the 15m ETL mini-batch triggering FG-A.",        )
     parser.add_argument(
-        "--feature-group-online",
-        required=False,
-        default=None,
-        help="Online Feature Store feature group name (optional)",
-    )
+        "--batch-start-ts-iso",
+        required=True,
+        help="Batch start time (ISO8601, e.g. 2025-12-31T00:00:00Z).",        )
     parser.add_argument(
-        "--write-to-feature-store",
-        required=False,
-        default="false",
-        help="Whether to ingest FG-A rows into Feature Store (true/false)",
+        "--batch-end-ts-iso",
+        required=True,
+        help="Batch end time (ISO8601, e.g. 2025-12-31T00:15:00Z).",        )
+
+    return parser.parse_args(argv)
+
+
+def main(argv=None) -> int:
+    """Main entrypoint for FG-A builder."""
+    args = parse_args(argv)
+
+    LOGGER.info(
+        "Starting FG-A builder via CLI/runtime entrypoint.",
+        extra={
+            "project_name": args.project_name,
+            "feature_spec_version": args.feature_spec_version,
+            "mini_batch_id": args.mini_batch_id,
+            "batch_start_ts_iso": args.batch_start_ts_iso,
+            "batch_end_ts_iso": args.batch_end_ts_iso,
+        },
     )
 
-    return parser.parse_args()
-
-
-def create_spark_session(app_name: str = "fg_a_builder") -> SparkSession:
-    """Create a SparkSession suitable for a SageMaker Processing job."""
-    builder = (
-        SparkSession.builder.appName(app_name)
-        .config("spark.sql.shuffle.partitions", os.environ.get("SPARK_SHUFFLE_PARTITIONS", "200"))
-        .config("spark.sql.session.timeZone", "UTC")
-    )
-    return builder.getOrCreate()
-
-
-def main() -> None:
-    # Configure logging (integrated with CloudWatch via SageMaker).
-    configure_root_logger()
-    logger = logging.getLogger(__name__)
-
-    args = parse_args()
-
-    logger.info("Starting FG-A builder Processing job with args: %s", vars(args))
-
-    spark = create_spark_session()
-
-    write_to_fs = str(args.write_to_feature_store).lower() in {"1", "true", "yes"}
-
-    config = FGABuilderConfig(
+    runtime_config = FGABuilderJobRuntimeConfig(
         project_name=args.project_name,
-        region_name=args.region_name,
-        delta_s3_prefix=args.delta_s3_prefix,
-        output_s3_prefix=args.output_s3_prefix,
-        mini_batch_id=args.mini_batch_id,
         feature_spec_version=args.feature_spec_version,
-        feature_group_name_offline=args.feature_group_offline,
-        feature_group_name_online=args.feature_group_online,
-        write_to_feature_store=write_to_fs,
+        mini_batch_id=args.mini_batch_id,
+        batch_start_ts_iso=args.batch_start_ts_iso,
+        batch_end_ts_iso=args.batch_end_ts_iso,
     )
 
-    job = FGABuilderJob(spark=spark, config=config)
-    job.run()
-
-    logger.info("FG-A builder Processing job completed successfully")
+    run_fg_a_builder_from_runtime_config(runtime_config)
+    return 0
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__":  # pragma: no cover - CLI glue
+    sys.exit(main())

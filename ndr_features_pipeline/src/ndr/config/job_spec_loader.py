@@ -13,7 +13,9 @@ from .job_spec_models import (
     OutputSpec,
 )
 
-DDB_TABLE_ENV_VAR = "JOB_SPEC_DDB_TABLE_NAME"
+LEGACY_DDB_TABLE_ENV_VAR = "JOB_SPEC_DDB_TABLE_NAME"
+DDB_TABLE_ENV_VAR = "ML_PROJECTS_PARAMETERS_TABLE_NAME"
+JOB_SPEC_SORT_KEY_DELIMITER = "#"
 
 
 class JobSpecLoader:
@@ -26,22 +28,37 @@ class JobSpecLoader:
 
     def __init__(self, table_name: str | None = None):
         self._ddb = boto3.resource("dynamodb")
-        self._table_name = table_name or os.environ.get(DDB_TABLE_ENV_VAR)
+        self._table_name = (
+            table_name
+            or os.environ.get(DDB_TABLE_ENV_VAR)
+            or os.environ.get(LEGACY_DDB_TABLE_ENV_VAR)
+        )
         if not self._table_name:
             raise ValueError(
                 "DynamoDB table name for JobSpec must be provided or set in "
-                "JOB_SPEC_DDB_TABLE_NAME"
+                f"{DDB_TABLE_ENV_VAR} (or legacy {LEGACY_DDB_TABLE_ENV_VAR})"
             )
         self._table = self._ddb.Table(self._table_name)
 
-    def load(self, project_name: str, job_name: str) -> JobSpec:
+    def load(
+        self,
+        project_name: str,
+        job_name: str,
+        feature_spec_version: str | None = None,
+    ) -> JobSpec:
         """Load a JobSpec from DynamoDB."""
-        response = self._table.get_item(
-            Key={"project_name": project_name, "job_name": job_name}
-        )
+        key = {"project_name": project_name}
+        if feature_spec_version:
+            sort_key = f"{job_name}{JOB_SPEC_SORT_KEY_DELIMITER}{feature_spec_version}"
+            key["job_name"] = sort_key
+        else:
+            key["job_name"] = job_name
+        response = self._table.get_item(Key=key)
         if "Item" not in response:
             raise KeyError(
-                f"No JobSpec found for project={project_name}, job={job_name}"
+                "No JobSpec found for "
+                f"project={project_name}, job={job_name}, "
+                f"feature_spec_version={feature_spec_version}"
             )
         spec_payload: Dict[str, Any] = response["Item"]["spec"]
         return self._from_dict(spec_payload)
@@ -65,3 +82,26 @@ class JobSpecLoader:
             operators=operators,
             output=output_spec,
         )
+
+
+def load_job_spec(
+    project_name: str,
+    job_name: str,
+    feature_spec_version: str,
+    table_name: str | None = None,
+) -> Dict[str, Any]:
+    """Load a JobSpec payload as a plain dictionary."""
+    loader = JobSpecLoader(table_name=table_name)
+    response = loader._table.get_item(
+        Key={
+            "project_name": project_name,
+            "job_name": f"{job_name}{JOB_SPEC_SORT_KEY_DELIMITER}{feature_spec_version}",
+        }
+    )
+    if "Item" not in response:
+        raise KeyError(
+            "No JobSpec found for "
+            f"project={project_name}, job={job_name}, "
+            f"feature_spec_version={feature_spec_version}"
+        )
+    return response["Item"]["spec"]

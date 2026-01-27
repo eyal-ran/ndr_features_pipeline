@@ -305,6 +305,33 @@ def build_15m_streaming_pipeline(
     )
     pair_counts_step.add_depends_on([fg_a_step])
 
+    # ------------------------------------------------------------------ #
+    # Step 4: FG-C Correlation Builder                                  #
+    # ------------------------------------------------------------------ #
+    fg_c_step = ProcessingStep(
+        name="FGCCorrBuilderStep",
+        processor=processor,
+        code="src/ndr/scripts/run_fg_c_builder.py",
+        job_arguments=[
+            "python",
+            "-m",
+            "ndr.scripts.run_fg_c_builder",
+            "--project-name",
+            project_name,
+            "--feature-spec-version",
+            feature_spec_version,
+            "--mini-batch-id",
+            mini_batch_id,
+            "--batch-start-ts-iso",
+            batch_start_ts_iso,
+            "--batch-end-ts-iso",
+            batch_end_ts_iso,
+        ],
+        inputs=[],
+        outputs=[],
+    )
+    fg_c_step.add_depends_on([pair_counts_step])
+
     pipeline = Pipeline(
         name=pipeline_name,
         parameters=[
@@ -399,32 +426,6 @@ def build_fg_b_baseline_pipeline(
         inputs=[],
         outputs=[],
     )
-
-
-    fg_c_step = ProcessingStep(
-        name="FGCCorrBuilderStep",
-        processor=processor,
-        code="src/ndr/scripts/run_fg_c_builder.py",
-        job_arguments=[
-            "python",
-            "-m",
-            "ndr.scripts.run_fg_c_builder",
-            "--project-name",
-            project_name,
-            "--feature-spec-version",
-            feature_spec_version,
-            "--mini-batch-id",
-            mini_batch_id,
-            "--batch-start-ts-iso",
-            batch_start_ts_iso,
-            "--batch-end-ts-iso",
-            batch_end_ts_iso,
-        ],
-        inputs=[],
-        outputs=[],
-    )
-    fg_c_step.add_depends_on([pair_counts_step])
-
     pipeline = Pipeline(
         name=pipeline_name,
         parameters=[

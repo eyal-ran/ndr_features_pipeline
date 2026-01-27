@@ -4,6 +4,9 @@
 This directory contains the additional code needed to support pair-level counts
 as part of the 15m streaming pipeline.
 
+Pair-counts are written to S3 only; ingestion or downstream registration is
+handled outside the builder job.
+
 ## New modules
 
 - `src/ndr/processing/pair_counts_builder_job.py`
@@ -15,7 +18,8 @@ as part of the 15m streaming pipeline.
     - Aggregates to pair-counts:
         (src_ip, dst_ip, dst_port, event_ts, sessions_cnt)
     - Writes Parquet partitioned by `dt`, `hh`, `mm`, `feature_spec_version`
-      into the `pair_counts_output.s3_prefix` defined in JobSpec.
+      into a batch-scoped prefix under `pair_counts_output.s3_prefix`
+      (e.g., `.../pair_counts/ts=YYYY/MM/DD/HH/MM-batch_id=<mini_batch_id>/`).
 
 - `src/ndr/scripts/run_pair_counts_builder.py`
   - CLI / SageMaker ProcessingStep entrypoint. Accepts:

@@ -35,13 +35,14 @@ pipeline parameters, for example:
 - `FeatureSpecVersion`        → the FG-A spec version ("fga_v1", etc.)
 - `DeltaS3Prefix`             → S3 prefix where delta tables are written
 - `FgaOutputS3Prefix`         → S3 prefix where FG-A parquet should be written
-- `FgaFeatureGroupOffline`    → name of the offline Feature Store group
-- `FgaFeatureGroupOnline`     → name of the online Feature Store group (optional)
-- `WriteFgaToFeatureStore`    → "true" / "false"
+- `BatchStartTsIso`           → ISO8601 batch start timestamp (e.g., 2025-12-31T00:00:00Z)
 
 These parameter values are passed as `job_arguments` to the FG-A
 ProcessingStep, where `run_fg_a_builder.py` parses them and constructs
 `FGABuilderConfig` for `FGABuilderJob`.
+
+FG-A output is written to S3 only; any Feature Store ingestion should be
+performed in a separate pipeline step after processing completes.
 
 The delta builder step remains responsible for:
   - reading parsed Palo Alto logs from the integration bucket,
@@ -51,4 +52,5 @@ The delta builder step remains responsible for:
 The FG-A step then:
   - reads from the delta prefix (filtered by `mini_batch_id`),
   - computes FG-A windows (15m, 30m, 1h, 8h, 24h),
-  - writes FG-A parquet to S3 and optionally ingests into Feature Store.
+  - writes FG-A parquet to S3 using:
+    `.../fg_a/ts=YYYY/MM/DD/HH/MM-batch_id=<mini_batch_id>/`.

@@ -19,8 +19,6 @@ High-level responsibilities
    - inbound_* features (prefixed with 'in_')
    - contextual time-of-day / weekday features.
 5. Write the FG-A dataset to S3 as partitioned Parquet.
-6. Optionally, ingest the rows into SageMaker Feature Store (offline and/or
-   online feature groups), if configured via parameters.
 
 This implementation only depends on the delta tables and does *not* compute
 baseline or correlation features. Those are handled by FG-B and FG-C builder
@@ -35,14 +33,15 @@ import logging
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import List, Optional
 
-import boto3
 from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
 from pyspark.sql.types import TimestampType
 
 from ndr.processing.base_runner import BaseProcessingJobRunner
+from ndr.config.job_spec_loader import load_job_spec
+from ndr.processing.output_paths import build_batch_output_prefix
 from ndr.model.fg_a_schema import (
     FG_A_WINDOWS_MINUTES,
     OUTBOUND_BASE_METRICS,
@@ -66,8 +65,6 @@ class FGABuilderConfig:
     ----------
     project_name:
         Logical project identifier, used mainly for logging and tagging.
-    region_name:
-        AWS region for accessing S3 and SageMaker Feature Store.
     delta_s3_prefix:
         S3 prefix where the 15m host-level delta Parquet files are stored.
         Example: s3://my-ndr-bucket/deltas/
@@ -76,25 +73,29 @@ class FGABuilderConfig:
         Example: s3://my-ndr-bucket/fg_a/
     mini_batch_id:
         Identifier of the ETL mini-batch that triggered this job.
+    batch_start_ts_iso:
+        ISO8601 batch start timestamp used in output prefix construction.
     feature_spec_version:
         Version string of the FG-A spec (e.g. "fga_v1").
-    feature_group_name_offline:
-        Name of the SageMaker Feature Store offline feature group (optional).
-    feature_group_name_online:
-        Name of the online feature group (optional).
-    write_to_feature_store:
-        If True, FG-A rows will also be ingested into Feature Store.
     """
 
     project_name: str
-    region_name: str
     delta_s3_prefix: str
     output_s3_prefix: str
     mini_batch_id: str
+    batch_start_ts_iso: str
     feature_spec_version: str
-    feature_group_name_offline: Optional[str] = None
-    feature_group_name_online: Optional[str] = None
-    write_to_feature_store: bool = False
+
+
+@dataclass
+class FGABuilderJobRuntimeConfig:
+    """Runtime config passed from Step Functions / Pipeline to FG-A builder."""
+
+    project_name: str
+    feature_spec_version: str
+    mini_batch_id: str
+    batch_start_ts_iso: str
+    batch_end_ts_iso: str
 
 
 class FGABuilderJob(BaseProcessingJobRunner):
@@ -107,8 +108,6 @@ class FGABuilderJob(BaseProcessingJobRunner):
     def __init__(self, spark: SparkSession, config: FGABuilderConfig) -> None:
         super().__init__(spark)
         self.config = config
-        self._sagemaker_runtime = None
-        self._sagemaker_featurestore_runtime = None
 
     # ------------------------------------------------------------------
     # BaseProcessingJobRunner API
@@ -175,10 +174,6 @@ class FGABuilderJob(BaseProcessingJobRunner):
         # 6. Write to S3 as Parquet.
         self._write_to_s3(fga_df)
 
-        # 7. Optionally, ingest into Feature Store.
-        if self.config.write_to_feature_store and self.config.feature_group_name_offline:
-            self._write_to_feature_store(fga_df)
-
     # ------------------------------------------------------------------
     # Helpers: IO
     # ------------------------------------------------------------------
@@ -209,6 +204,16 @@ class FGABuilderJob(BaseProcessingJobRunner):
         else:
             logger.warning("Delta DataFrame has no mini_batch_id column; using all rows under prefix")
 
+        rename_map = {}
+        if "bytes_src_sum" not in df.columns and "bytes_sent_sum" in df.columns:
+            rename_map["bytes_sent_sum"] = "bytes_src_sum"
+        if "bytes_dst_sum" not in df.columns and "bytes_recv_sum" in df.columns:
+            rename_map["bytes_recv_sum"] = "bytes_dst_sum"
+        if "deny_cnt" not in df.columns and "drop_cnt" in df.columns:
+            rename_map["drop_cnt"] = "deny_cnt"
+        for src, dest in rename_map.items():
+            df = df.withColumnRenamed(src, dest)
+
         # Basic sanity check for required columns.
         required_cols = {"host_ip", "role", "slice_start_ts", "slice_end_ts"}
         missing = required_cols - set(df.columns)
@@ -221,6 +226,7 @@ class FGABuilderJob(BaseProcessingJobRunner):
                 df = df.withColumn(col, F.to_timestamp(F.col(col)))
 
         return df
+
 
     def _write_to_s3(self, df: DataFrame) -> None:
         """Write FG-A dataset to S3 in Parquet format.
@@ -235,7 +241,12 @@ class FGABuilderJob(BaseProcessingJobRunner):
         # Derive dt partition column from window_end_ts.
         df = df.withColumn("dt", F.date_format(F.col("window_end_ts"), "yyyy-MM-dd"))
 
-        output_path = self.config.output_s3_prefix.rstrip("/")
+        output_path = build_batch_output_prefix(
+            base_prefix=self.config.output_s3_prefix,
+            dataset="fg_a",
+            batch_start_ts_iso=self.config.batch_start_ts_iso,
+            batch_id=self.config.mini_batch_id,
+        )
         logger.info("Writing FG-A Parquet to %s", output_path)
 
         (
@@ -512,61 +523,41 @@ class FGABuilderJob(BaseProcessingJobRunner):
 
         return df
 
-    # ------------------------------------------------------------------
-    # Helpers: Feature Store (optional)
-    # ------------------------------------------------------------------
+def run_fg_a_builder_from_runtime_config(runtime_config: FGABuilderJobRuntimeConfig) -> None:
+    """Run FG-A builder from a typed runtime config."""
+    job_spec = load_job_spec(
+        project_name=runtime_config.project_name,
+        job_name="fg_a_builder",
+        feature_spec_version=runtime_config.feature_spec_version,
+    )
 
-    def _get_featurestore_client(self):
-        if self._sagemaker_featurestore_runtime is None:
-            self._sagemaker_featurestore_runtime = boto3.client(
-                "sagemaker-featurestore-runtime", region_name=self.config.region_name
-            )
-        return self._sagemaker_featurestore_runtime
+    delta_prefix = (
+        job_spec.get("delta_input", {}).get("s3_prefix")
+        or job_spec.get("delta_s3_prefix")
+    )
+    output_prefix = (
+        job_spec.get("fg_a_output", {}).get("s3_prefix")
+        or job_spec.get("output_s3_prefix")
+    )
+    if not delta_prefix or not output_prefix:
+        raise ValueError("fg_a_builder JobSpec must define delta and output prefixes.")
 
-    def _write_to_feature_store(self, df: DataFrame) -> None:
-        """Write FG-A rows to SageMaker Feature Store.
+    config = FGABuilderConfig(
+        project_name=runtime_config.project_name,
+        delta_s3_prefix=delta_prefix,
+        output_s3_prefix=output_prefix,
+        mini_batch_id=runtime_config.mini_batch_id,
+        batch_start_ts_iso=runtime_config.batch_start_ts_iso,
+        feature_spec_version=runtime_config.feature_spec_version,
+    )
 
-        For v1, we use a simple foreachPartition + PutRecord approach.
-        This is sufficient for low/medium volumes. For very high volumes,
-        consider using offline ingestion via S3 and Feature Group ingestion
-        jobs instead.
-        """
-        if df.rdd.isEmpty():
-            logger.warning("FG-A DataFrame is empty; nothing to ingest into Feature Store")
-            return
-
-        if not self.config.feature_group_name_offline:
-            logger.warning("No offline feature group configured; skipping Feature Store ingestion")
-            return
-
-        feature_group_name = self.config.feature_group_name_offline
-        client = self._get_featurestore_client()
-
-        # Collect schema to know which columns to send.
-        columns = df.columns
-
-        def _send_partition(iter_rows):
-            import json
-            import boto3
-
-            fs_client = boto3.client("sagemaker-featurestore-runtime", region_name="%s" % self.config.region_name)
-
-            for row in iter_rows:
-                record = []
-                for col in columns:
-                    val = row[col]
-                    if val is None:
-                        continue
-                    record.append({"FeatureName": col, "ValueAsString": str(val)})
-                try:
-                    fs_client.put_record(
-                        FeatureGroupName=feature_group_name,
-                        Record=record,
-                    )
-                except Exception as exc:  # pylint: disable=broad-except
-                    # We cannot propagate exceptions from executors easily;
-                    # log them so they appear in executor logs.
-                    print(f"Error putting record to feature group {feature_group_name}: {exc}", file=sys.stderr)
-
-        logger.info("Ingesting FG-A rows into Feature Store feature group %s", feature_group_name)
-        df.foreachPartition(_send_partition)
+    spark = (
+        SparkSession.builder.appName("fg_a_builder")
+        .config("spark.sql.session.timeZone", "UTC")
+        .getOrCreate()
+    )
+    try:
+        job = FGABuilderJob(spark=spark, config=config)
+        job.run()
+    finally:
+        spark.stop()

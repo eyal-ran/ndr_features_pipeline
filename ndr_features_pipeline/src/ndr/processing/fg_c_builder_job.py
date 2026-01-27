@@ -44,6 +44,7 @@ from pyspark.sql import types as T
 from ndr.logging.logger import get_logger
 from ndr.config.job_spec_loader import load_job_spec
 from ndr.processing.base_runner import BaseRunner
+from ndr.processing.output_paths import build_batch_output_prefix
 
 
 LOGGER = get_logger(__name__)
@@ -398,6 +399,7 @@ class FGCorrBuilderJob(BaseRunner):
             median = F.col(median_col)
             mad = F.when(F.col(mad_col).isNotNull() & (F.col(mad_col) > 0), F.col(mad_col)).otherwise(None)
             iqr = F.when(F.col(iqr_col).isNotNull() & (F.col(iqr_col) > 0), F.col(iqr_col)).otherwise(None)
+            scale = F.when(mad.isNotNull(), mad).otherwise(iqr)
 
             diff = cur - median
             ratio = cur / (median + F.lit(eps))
@@ -411,7 +413,10 @@ class FGCorrBuilderJob(BaseRunner):
             df = df.withColumn(f"{m}_diff", diff)
             df = df.withColumn(f"{m}_ratio", ratio)
             df = df.withColumn(f"{m}_z_mad", z_mad)
-            df = df.withColumn(f"{m}_abs_dev_over_mad", F.abs(diff) / (mad + F.lit(eps)))
+            df = df.withColumn(
+                f"{m}_abs_dev_over_mad",
+                F.when(scale.isNotNull(), F.abs(diff) / (scale + F.lit(eps))).otherwise(F.lit(0.0)),
+            )
 
             z_clipped = F.when(z_mad > F.lit(z_max), F.lit(z_max)).when(
                 z_mad < F.lit(-z_max), F.lit(-z_max)
@@ -448,6 +453,12 @@ class FGCorrBuilderJob(BaseRunner):
         base_path = fg_c_cfg.get("s3_prefix")
         if not base_path:
             raise ValueError("fg_c_output.s3_prefix must be configured in JobSpec for fg_c_builder.")
+        base_path = build_batch_output_prefix(
+            base_prefix=base_path,
+            dataset="fg_c",
+            batch_start_ts_iso=self.runtime_config.batch_start_ts_iso,
+            batch_id=self.runtime_config.mini_batch_id,
+        )
 
         if df.rdd.isEmpty():
             LOGGER.warning("FG-C DataFrame is empty for horizon '%s'; nothing to write.", horizon)

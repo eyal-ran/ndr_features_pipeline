@@ -14,6 +14,7 @@ import datetime as dt
 from pyspark.sql import SparkSession, functions as F
 
 from ndr.processing.fg_a_builder_job import FGABuilderConfig, FGABuilderJob
+from ndr.processing.output_paths import build_batch_output_prefix
 
 
 def _create_spark() -> SparkSession:
@@ -123,15 +124,12 @@ def test_fg_a_builder_basic_window_aggregation(tmp_path):
     # Configure FG-A builder to read from this path.
     config = FGABuilderConfig(
         project_name="ndr-unit-test",
-        region_name="eu-west-1",
         delta_s3_prefix=delta_path,
         output_s3_prefix=str(tmp_path / "fg_a"),
 
         mini_batch_id="batch-1",
+        batch_start_ts_iso=anchor.isoformat() + "Z",
         feature_spec_version="fga_v1_test",
-        feature_group_name_offline=None,
-        feature_group_name_online=None,
-        write_to_feature_store=False,
     )
 
     job = FGABuilderJob(spark=spark, config=config)
@@ -142,7 +140,13 @@ def test_fg_a_builder_basic_window_aggregation(tmp_path):
     job._run_impl()
 
     # Read back FG-A Parquet.
-    fg_a_df = spark.read.parquet(config.output_s3_prefix)
+    output_path = build_batch_output_prefix(
+        base_prefix=config.output_s3_prefix,
+        dataset="fg_a",
+        batch_start_ts_iso=config.batch_start_ts_iso,
+        batch_id=config.mini_batch_id,
+    )
+    fg_a_df = spark.read.parquet(output_path)
 
     rows = fg_a_df.collect()
     assert rows, "FG-A output is empty"

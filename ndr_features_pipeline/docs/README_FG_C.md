@@ -15,7 +15,11 @@ unsupervised models. It is a purely *derived* layer:
   `(host_ip, window_label, window_end_ts, baseline_horizon)`.
 
 The output is written as Parquet to S3 and is suitable for registration as an
-offline feature group in SageMaker Feature Store.
+offline feature group in SageMaker Feature Store. Output prefixes include the
+batch start timestamp and mini_batch_id (e.g., `.../fg_c/ts=YYYY/MM/DD/HH/MM-batch_id=<mini_batch_id>/`).
+
+FG-C does not ingest into Feature Store directly; ingestion is orchestrated
+outside the builder job.
 
 ## Code Locations
 

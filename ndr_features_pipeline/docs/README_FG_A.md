@@ -4,6 +4,9 @@
 This directory contains implementation artifacts for the FG-A (current
 behaviour) feature builder in the NDR pipeline.
 
+FG-A writes features to S3 only; Feature Store ingestion is handled by a
+separate pipeline step.
+
 It includes:
 
 - `fg_a_schema.py` – window configuration and naming utilities for FG-A
@@ -13,8 +16,8 @@ It includes:
   - aggregates them into FG-A features for multiple windows (15m, 30m,
     1h, 8h, 24h) for both outbound and inbound roles,
   - adds time-of-day and weekday/weekend context features,
-  - writes a partitioned Parquet dataset to S3,
-  - optionally ingests rows into SageMaker Feature Store.
+  - writes a partitioned Parquet dataset to S3 under a batch-scoped prefix
+    (e.g., `.../fg_a/ts=YYYY/MM/DD/HH/MM-batch_id=<mini_batch_id>/`).
 - `test_fg_a_builder_job.py` – unit tests that validate window
   aggregation logic and basic schema expectations.
 

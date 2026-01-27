@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Dict, Any
 
 import boto3
@@ -5,6 +6,7 @@ import json
 from pyspark.sql import SparkSession, DataFrame, functions as F
 
 from ndr.config.job_spec_models import JobSpec
+from ndr.config.job_spec_loader import JobSpecLoader
 from ndr.processing.base_runner import BaseProcessingRunner, RuntimeParams
 from ndr.processing import delta_builder_operators as ops
 from ndr.logging.logger import get_logger
@@ -144,3 +146,44 @@ def run_delta_builder(spark: SparkSession, job_spec: JobSpec, runtime: RuntimePa
     """Module-level entrypoint used by the CLI wrapper."""
     runner = DeltaBuilderRunner(spark=spark, job_spec=job_spec, runtime=runtime)
     runner.run()
+
+
+@dataclass
+class DeltaBuilderJobRuntimeConfig:
+    """Runtime config passed from Step Functions / Pipeline to Delta Builder."""
+
+    project_name: str
+    feature_spec_version: str
+    mini_batch_id: str
+    batch_start_ts_iso: str
+    batch_end_ts_iso: str
+
+
+def run_delta_builder_from_runtime_config(runtime_config: DeltaBuilderJobRuntimeConfig) -> None:
+    """Run Delta Builder from a typed runtime config."""
+    loader = JobSpecLoader()
+    job_spec = loader.load(
+        project_name=runtime_config.project_name,
+        job_name="delta_builder",
+        feature_spec_version=runtime_config.feature_spec_version,
+    )
+
+    runtime = RuntimeParams(
+        project_name=runtime_config.project_name,
+        job_name="delta_builder",
+        mini_batch_s3_prefix=job_spec.input.s3_prefix,
+        feature_spec_version=runtime_config.feature_spec_version,
+        run_id=runtime_config.mini_batch_id,
+        slice_start_ts=runtime_config.batch_start_ts_iso,
+        slice_end_ts=runtime_config.batch_end_ts_iso,
+    )
+
+    spark = (
+        SparkSession.builder.appName("delta_builder")
+        .config("spark.sql.session.timeZone", "UTC")
+        .getOrCreate()
+    )
+    try:
+        run_delta_builder(spark=spark, job_spec=job_spec, runtime=runtime)
+    finally:
+        spark.stop()

@@ -3,6 +3,9 @@
 
 This folder contains the implementation of the FG-B builder job for the NDR pipeline.
 
+FG-B writes baseline datasets to S3 only; ingestion into Feature Store is handled
+outside the builder job.
+
 ## New files
 
 - `src/ndr/processing/fg_b_builder_job.py`
@@ -14,7 +17,8 @@ This folder contains the implementation of the FG-B builder job for the NDR pipe
     - Applies segment-level anomaly capping using robust z-scores on key metrics.
     - Computes host-level and segment-level baselines (median, quantiles, MAD, IQR, support/counts, cold_start flags).
     - Optionally computes pair-level rarity baselines from pair-count datasets.
-    - Writes FG-B baselines to S3 as Parquet (host, segment, pair).
+    - Writes FG-B baselines to S3 as Parquet (host, segment, pair) under a batch-scoped
+      prefix derived from the reference time (e.g., `.../fg_b/ts=YYYY/MM/DD/HH/MM-batch_id=baseline/`).
 
 - `src/ndr/scripts/run_fg_b_builder.py`
   - CLI / runtime entrypoint for the SageMaker Processing container.

@@ -9,6 +9,21 @@ from ndr.io.s3_writer import S3Writer
 from ndr.logging.logger import get_logger
 
 
+class BaseRunner:
+    """Minimal base class for processing jobs that manage their own flow."""
+
+    def __init__(self) -> None:
+        self.logger = get_logger(self.__class__.__name__)
+
+
+class BaseProcessingJobRunner:
+    """Base class for Spark-based jobs that manage orchestration internally."""
+
+    def __init__(self, spark: SparkSession) -> None:
+        self.spark = spark
+        self.logger = get_logger(self.__class__.__name__)
+
+
 @dataclass
 class RuntimeParams:
     """Runtime parameters passed from Step Functions / Pipeline."""

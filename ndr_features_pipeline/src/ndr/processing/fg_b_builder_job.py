@@ -29,6 +29,7 @@ from ndr.config.job_spec_loader import load_job_spec
 from ndr.processing.base_runner import BaseRunner
 from ndr.io.s3_reader import S3Reader
 from ndr.io.s3_writer import S3Writer
+from ndr.processing.output_paths import build_batch_output_prefix
 
 
 LOGGER = get_logger(__name__)
@@ -49,12 +50,15 @@ class FGBaselineJobRuntimeConfig:
     mode : str
         Either "REGULAR" or "BACKFILL". In BACKFILL, explicit time windows may be
         provided in JobSpec for historical processing.
+    batch_id : str
+        Identifier for the baseline batch output prefix.
     """
 
     project_name: str
     feature_spec_version: str
     reference_time_iso: str
     mode: str = "REGULAR"
+    batch_id: str = "baseline"
 
 
 class FGBaselineBuilderJob(BaseRunner):
@@ -101,7 +105,7 @@ class FGBaselineBuilderJob(BaseRunner):
         super().__init__()
         self.runtime_config = runtime_config
         self.spark: Optional[SparkSession] = None
-        self.s3_reader = S3Reader()
+        self.s3_reader: Optional[S3Reader] = None
         self.s3_writer = S3Writer()
         self.job_spec: Optional[Dict[str, Any]] = None
 
@@ -136,6 +140,7 @@ class FGBaselineBuilderJob(BaseRunner):
             LOGGER.info("Loaded JobSpec for FG-B builder.", extra={"job_spec_keys": list(self.job_spec.keys())})
 
             self.spark = self._build_spark_session()
+            self.s3_reader = S3Reader(self.spark)
 
             horizons = self.job_spec.get("horizons", ["7d", "30d"])
             for horizon in horizons:
@@ -635,31 +640,37 @@ class FGBaselineBuilderJob(BaseRunner):
         s3_prefix = fg_b_cfg.get("s3_prefix")
         if not s3_prefix:
             raise ValueError("fg_b_output.s3_prefix must be configured in JobSpec for FG-B.")
+        base_prefix = build_batch_output_prefix(
+            base_prefix=s3_prefix,
+            dataset="fg_b",
+            batch_start_ts_iso=self.runtime_config.reference_time_iso,
+            batch_id=self.runtime_config.batch_id,
+        )
 
         feature_spec_version = self.runtime_config.feature_spec_version
 
         LOGGER.info(
             "Writing FG-B host-level baselines.",
-            extra={"prefix": s3_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
+            extra={"prefix": base_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
         )
 
         host_out = host_baselines.withColumn("feature_spec_version", F.lit(feature_spec_version))
         self.s3_writer.write_parquet(
             df=host_out,
-            base_path=f"{s3_prefix}/host/",
+            base_path=f"{base_prefix}/host/",
             partition_cols=["feature_spec_version", "baseline_horizon"],
             mode="overwrite",
         )
 
         LOGGER.info(
             "Writing FG-B segment-level baselines.",
-            extra={"prefix": s3_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
+            extra={"prefix": base_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
         )
 
         segment_out = segment_baselines.withColumn("feature_spec_version", F.lit(feature_spec_version))
         self.s3_writer.write_parquet(
             df=segment_out,
-            base_path=f"{s3_prefix}/segment/",
+            base_path=f"{base_prefix}/segment/",
             partition_cols=["feature_spec_version", "baseline_horizon"],
             mode="overwrite",
         )
@@ -667,12 +678,12 @@ class FGBaselineBuilderJob(BaseRunner):
         if pair_baselines is not None:
             LOGGER.info(
                 "Writing FG-B pair-level rarity baselines.",
-                extra={"prefix": s3_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
+                extra={"prefix": base_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
             )
             pair_out = pair_baselines.withColumn("feature_spec_version", F.lit(feature_spec_version))
             self.s3_writer.write_parquet(
                 df=pair_out,
-                base_path=f"{s3_prefix}/pair/",
+                base_path=f"{base_prefix}/pair/",
                 partition_cols=["feature_spec_version", "baseline_horizon"],
                 mode="overwrite",
             )

@@ -24,6 +24,7 @@ from ndr.logging.logger import get_logger
 from ndr.config.job_spec_loader import load_job_spec
 from ndr.processing.base_runner import BaseRunner
 from ndr.io.s3_writer import S3Writer
+from ndr.processing.output_paths import build_batch_output_prefix
 
 
 LOGGER = get_logger(__name__)
@@ -263,6 +264,12 @@ class PairCountsBuilderJob(BaseRunner):
             raise ValueError(
                 "pair_counts_output.s3_prefix must be configured for pair_counts_builder."
             )
+        base_prefix = build_batch_output_prefix(
+            base_prefix=base_prefix,
+            dataset="pair_counts",
+            batch_start_ts_iso=self.runtime_config.batch_start_ts_iso,
+            batch_id=self.runtime_config.mini_batch_id,
+        )
 
         LOGGER.info(
             "Writing pair-counts dataset.",

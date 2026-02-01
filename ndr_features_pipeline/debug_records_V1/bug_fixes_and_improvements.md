@@ -70,3 +70,50 @@
 **Issue:** FG-A Feature Store ingestion uses `foreachPartition` with per-row `put_record`, which may be slow at scale.
 - **File:** `src/ndr/processing/fg_a_builder_job.py`
 **Fix:** Consider S3-based offline ingestion or batch `put_record` with retries/backoff to improve throughput.
+
+## 11) Cold-start refactor (FG-B/FG-C split, segment fallback, and VDI handling)
+**Issue:** Cold-start handling is implicit and host-IP centric. FG-C always joins host baselines and ignores cold-start flags, while segment baselines lack parity with host metrics and pair-count rarity stats are host-IP only.
+
+**Refactoring plan:**
+1) **Split FG-B outputs into three explicit tables (all keyed to FG-C join keys):**
+   - **IP metadata + flags table** (new):
+     - Keys: same join keys used by FG-C today (default `host_ip`, `window_label`; extend if JobSpec uses additional keys like `role`, `segment_id`, `time_band`).
+     - Fields: existing metadata plus:
+       - `is_full_history` (1 if support counts meet `support_min` for required metrics; 0 otherwise).
+       - `is_non_persistent_machine` (1 if machine name has a known non-persistent VDI prefix).
+       - `is_cold_start` (1 if `is_full_history == 0` **or** `is_non_persistent_machine == 1`).
+   - **IP-based calculated features table** (host-level baselines; essentially current FG-B host output).
+   - **Segment-based calculated features table** (segment-level baselines; enriched to match host-level schema so FG-C can compute all metrics from either source).
+   - All three tables should be written under the FG-B output prefix with clear subpaths (e.g., `/fg_b/ip_metadata/`, `/fg_b/host/`, `/fg_b/segment/`) and partitioned consistently by `feature_spec_version` and `baseline_horizon`.
+
+2) **Monthly FG-B run computes/updates flags:**
+   - During the monthly FG-B pipeline run, compute:
+     - `is_full_history` from slice counts in the IP-based calculated features table (avoid re-aggregating FG-A on every FG-C run).
+     - `is_non_persistent_machine` by joining IP → machine name from the dimension table and matching against the known non-persistent prefixes list.
+     - `is_cold_start` from the two flags above.
+   - Store these flags in the IP metadata + flags table for use by FG-C.
+
+3) **Enrich segment baselines to match host baselines:**
+   - Extend segment-level FG-B computations to emit all fields that FG-C expects from host baselines (e.g., `*_median`, `*_p25`, `*_p75`, `*_p95`, `*_p99`, `*_mad`, `*_iqr`, `*_support_count`, and any other baseline-derived columns), using the same metric list as host baselines.
+   - This ensures FG-C can compute the full feature set using segment baselines when `is_cold_start = 1`.
+
+4) **Extend Pair-Counts pipeline for segment rarity:**
+   - Add segment-based rarity stats in addition to host-IP pair stats.
+   - Proposed approach: aggregate counts by `(segment_id, dst_ip, dst_port, horizon)` using the same horizon windows as host-IP rarity; store under a parallel output (e.g., `/pair/segment/`).
+
+5) **FG-C read path selection based on cold-start flags:**
+   - FG-C should first read the IP metadata + flags table for the batch and decide **per host**:
+     - If `is_cold_start == 0`: read IP-based FG-B baselines and IP-based pair rarity stats.
+     - If `is_cold_start == 1`: read segment-based FG-B baselines and segment-based pair rarity stats.
+   - Implement as a conditional join or union of two sub-frames (cold-start vs. non-cold-start) to avoid reprocessing all rows twice.
+
+6) **Clarify feature coverage for cold-start paths:**
+   - Maintain a single list of “baseline-required” metrics so both host and segment baselines emit the same schema.
+   - For any metric that cannot be safely computed at the segment level, explicitly define a fallback policy (e.g., nulls with downstream handling, or a safe default), and document it in FG-C.
+
+7) **Data contract and validation:**
+   - Add schema validation checks to ensure the segment-based table has parity with the host-based table before FG-C runs.
+   - Add a small set of unit tests to verify:
+     - `is_cold_start` derivation.
+     - Correct baseline table selection in FG-C.
+     - Pair rarity selection logic (IP vs. segment).

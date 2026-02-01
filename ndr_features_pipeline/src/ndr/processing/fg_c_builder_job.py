@@ -35,7 +35,7 @@ from __future__ import annotations
 import sys
 import traceback
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
@@ -45,6 +45,7 @@ from ndr.logging.logger import get_logger
 from ndr.config.job_spec_loader import load_job_spec
 from ndr.processing.base_runner import BaseRunner
 from ndr.processing.output_paths import build_batch_output_prefix
+from ndr.processing.segment_utils import add_segment_id
 
 
 LOGGER = get_logger(__name__)
@@ -287,24 +288,16 @@ class FGCorrBuilderJob(BaseRunner):
         join_keys = self._get_join_keys()
 
         # ------------------------------------------------------------------
-        # 2. Read FG-B baselines and filter by horizon
+        # 2. Read FG-B baselines + metadata for cold-start routing
         # ------------------------------------------------------------------
-        LOGGER.info(
-            "Reading FG-B baselines.",
-            extra={
-                "prefix": fg_b_prefix,
-                "feature_spec_version": feature_spec_version,
-                "horizon": horizon,
-            },
-        )
-        fg_b_df = (
-            self.spark.read.parquet(fg_b_prefix)
-            .filter(F.col("feature_spec_version") == F.lit(feature_spec_version))
-            .filter(F.col("baseline_horizon") == F.lit(horizon))
+        host_baselines, segment_baselines, metadata_df, pair_host_df, pair_segment_df = self._read_fg_b_tables(
+            fg_b_prefix=fg_b_prefix,
+            feature_spec_version=feature_spec_version,
+            horizon=horizon,
         )
 
-        if fg_b_df.rdd.isEmpty():
-            LOGGER.warning("No FG-B baselines found for horizon '%s'; FG-C will be empty.", horizon)
+        if host_baselines.rdd.isEmpty():
+            LOGGER.warning("No FG-B host baselines found for horizon '%s'; FG-C will be empty.", horizon)
             empty_schema = T.StructType(
                 [
                     T.StructField("host_ip", T.StringType(), True),
@@ -319,26 +312,38 @@ class FGCorrBuilderJob(BaseRunner):
             )
             return self.spark.createDataFrame([], schema=empty_schema)
 
+        metrics = self._get_metrics_to_compare(fg_a_df)
+        self._validate_baseline_schema(metrics, host_baselines, segment_baselines)
+
+        fg_a_with_segment = self._ensure_segment_id(fg_a_df)
+
         # ------------------------------------------------------------------
-        # 3. Join FG-A and FG-B
+        # 3. Join FG-A with cold-start flags and select baseline source
         # ------------------------------------------------------------------
-        LOGGER.info("Joining FG-A and FG-B on keys: %s", join_keys)
-        joined = fg_a_df.join(fg_b_df, on=join_keys, how="left")
+        LOGGER.info("Joining FG-A with FG-B baselines using cold-start routing.")
+        joined = self._apply_cold_start_baselines(
+            fg_a_df=fg_a_with_segment,
+            metadata_df=metadata_df,
+            host_baselines=host_baselines,
+            segment_baselines=segment_baselines,
+            pair_host_df=pair_host_df,
+            pair_segment_df=pair_segment_df,
+            horizon=horizon,
+        )
 
         # ------------------------------------------------------------------
         # 4. Build correlation features for configured metrics
         # ------------------------------------------------------------------
-        metrics = self._get_metrics_to_compare(fg_a_df)
         joined = self._compute_correlation_features(joined, metrics)
 
         # Add baseline meta columns (use FG-B values if present)
         joined = joined.withColumn("baseline_horizon", F.lit(horizon))
-        if "baseline_start_ts" in fg_b_df.columns:
+        if "baseline_start_ts" in joined.columns:
             joined = joined.withColumn("baseline_start_ts", F.col("baseline_start_ts"))
         else:
             joined = joined.withColumn("baseline_start_ts", F.lit(None).cast("timestamp"))
 
-        if "baseline_end_ts" in fg_b_df.columns:
+        if "baseline_end_ts" in joined.columns:
             joined = joined.withColumn("baseline_end_ts", F.col("baseline_end_ts"))
         else:
             joined = joined.withColumn("baseline_end_ts", F.lit(None).cast("timestamp"))
@@ -360,6 +365,165 @@ class FGCorrBuilderJob(BaseRunner):
         joined = joined.withColumn("feature_spec_version", F.lit(feature_spec_version))
 
         return joined
+
+    def _read_fg_b_tables(
+        self,
+        fg_b_prefix: str,
+        feature_spec_version: str,
+        horizon: str,
+    ) -> Tuple[DataFrame, DataFrame, DataFrame, Optional[DataFrame], Optional[DataFrame]]:
+        base_prefix = fg_b_prefix.rstrip("/")
+        host_prefix = f"{base_prefix}/host/"
+        segment_prefix = f"{base_prefix}/segment/"
+        metadata_prefix = f"{base_prefix}/ip_metadata/"
+        pair_host_prefix = f"{base_prefix}/pair/host/"
+        pair_segment_prefix = f"{base_prefix}/pair/segment/"
+
+        LOGGER.info(
+            "Reading FG-B baselines and metadata.",
+            extra={
+                "host_prefix": host_prefix,
+                "segment_prefix": segment_prefix,
+                "metadata_prefix": metadata_prefix,
+                "feature_spec_version": feature_spec_version,
+                "horizon": horizon,
+            },
+        )
+
+        host_baselines = (
+            self.spark.read.parquet(host_prefix)
+            .filter(F.col("feature_spec_version") == F.lit(feature_spec_version))
+            .filter(F.col("baseline_horizon") == F.lit(horizon))
+        )
+
+        segment_baselines = (
+            self.spark.read.parquet(segment_prefix)
+            .filter(F.col("feature_spec_version") == F.lit(feature_spec_version))
+            .filter(F.col("baseline_horizon") == F.lit(horizon))
+        )
+
+        metadata_df = (
+            self.spark.read.parquet(metadata_prefix)
+            .filter(F.col("feature_spec_version") == F.lit(feature_spec_version))
+            .filter(F.col("baseline_horizon") == F.lit(horizon))
+        )
+
+        pair_host_df = self._try_read_pair_baselines(pair_host_prefix, feature_spec_version, horizon)
+        pair_segment_df = self._try_read_pair_baselines(pair_segment_prefix, feature_spec_version, horizon)
+
+        return host_baselines, segment_baselines, metadata_df, pair_host_df, pair_segment_df
+
+    def _try_read_pair_baselines(
+        self,
+        prefix: str,
+        feature_spec_version: str,
+        horizon: str,
+    ) -> Optional[DataFrame]:
+        pair_cfg = self.job_spec.get("pair_counts", {})
+        if not pair_cfg.get("enabled", False):
+            return None
+        try:
+            return (
+                self.spark.read.parquet(prefix)
+                .filter(F.col("feature_spec_version") == F.lit(feature_spec_version))
+                .filter(F.col("baseline_horizon") == F.lit(horizon))
+            )
+        except Exception as exc:  # pragma: no cover - safety for missing data
+            LOGGER.warning("Pair baselines missing at %s: %s", prefix, exc)
+            return None
+
+    def _ensure_segment_id(self, fg_a_df: DataFrame) -> DataFrame:
+        if "segment_id" in fg_a_df.columns:
+            return fg_a_df
+        seg_cfg = self.job_spec.get("segment_mapping", {})
+        return add_segment_id(df=fg_a_df, ip_col="host_ip", segment_mapping=seg_cfg)
+
+    def _apply_cold_start_baselines(
+        self,
+        fg_a_df: DataFrame,
+        metadata_df: DataFrame,
+        host_baselines: DataFrame,
+        segment_baselines: DataFrame,
+        pair_host_df: Optional[DataFrame],
+        pair_segment_df: Optional[DataFrame],
+        horizon: str,
+    ) -> DataFrame:
+        join_keys = self._get_join_keys()
+        metadata_cols = join_keys + ["baseline_horizon", "is_cold_start"]
+        missing_cols = [c for c in metadata_cols if c not in metadata_df.columns]
+        if missing_cols:
+            raise ValueError(f"Missing metadata columns for cold-start routing: {missing_cols}")
+
+        fg_a_scoped = fg_a_df.withColumn("baseline_horizon", F.lit(horizon))
+        metadata_scoped = metadata_df.select(*metadata_cols)
+
+        joined_flags = fg_a_scoped.join(metadata_scoped, on=join_keys + ["baseline_horizon"], how="left")
+        joined_flags = joined_flags.withColumn(
+            "is_cold_start",
+            F.when(F.col("is_cold_start").isNull(), F.lit(1)).otherwise(F.col("is_cold_start")),
+        )
+
+        warm_df = joined_flags.filter(F.col("is_cold_start") == F.lit(0))
+        cold_df = joined_flags.filter(F.col("is_cold_start") == F.lit(1))
+
+        warm_join = warm_df.join(host_baselines, on=join_keys + ["baseline_horizon"], how="left")
+
+        segment_join_keys = self.job_spec.get(
+            "segment_join_keys", ["segment_id", "role", "time_band", "window_label"]
+        )
+        if "segment_id" not in segment_join_keys:
+            segment_join_keys = ["segment_id"] + segment_join_keys
+        segment_join_keys = [k for k in segment_join_keys if k in cold_df.columns]
+        cold_join = cold_df.join(segment_baselines, on=segment_join_keys + ["baseline_horizon"], how="left")
+
+        combined = warm_join.unionByName(cold_join, allowMissingColumns=True)
+
+        combined = self._attach_pair_rarity(combined, pair_host_df, pair_segment_df)
+        return combined
+
+    def _attach_pair_rarity(
+        self,
+        combined: DataFrame,
+        pair_host_df: Optional[DataFrame],
+        pair_segment_df: Optional[DataFrame],
+    ) -> DataFrame:
+        if pair_host_df is None or pair_segment_df is None:
+            return combined
+
+        required_cols = {"dst_ip", "dst_port"}
+        if not required_cols.issubset(set(combined.columns)):
+            LOGGER.warning("FG-A missing dst_ip/dst_port; skipping pair rarity join.")
+            return combined
+
+        warm_join_keys = ["host_ip", "dst_ip", "dst_port", "baseline_horizon"]
+        warm_rows = combined.filter(F.col("is_cold_start") == F.lit(0))
+        warm_pairs = warm_rows.join(pair_host_df, on=warm_join_keys, how="left")
+
+        cold_join_keys = ["segment_id", "dst_ip", "dst_port", "baseline_horizon"]
+        cold_rows = combined.filter(F.col("is_cold_start") == F.lit(1))
+        if not set(cold_join_keys).issubset(set(cold_rows.columns)):
+            LOGGER.warning("Cold-start rows missing segment_id; skipping segment pair rarity join.")
+            return combined
+
+        cold_pairs = cold_rows.join(pair_segment_df, on=cold_join_keys, how="left")
+        return warm_pairs.unionByName(cold_pairs, allowMissingColumns=True)
+
+    def _validate_baseline_schema(
+        self,
+        metrics: List[str],
+        host_baselines: DataFrame,
+        segment_baselines: DataFrame,
+    ) -> None:
+        required_suffixes = ["median", "p25", "p75", "p95", "p99", "mad", "iqr", "support_count"]
+        required_cols = {f"{m}_{suffix}" for m in metrics for suffix in required_suffixes}
+
+        missing_host = sorted(col for col in required_cols if col not in host_baselines.columns)
+        missing_segment = sorted(col for col in required_cols if col not in segment_baselines.columns)
+
+        if missing_host:
+            raise ValueError(f"Host baselines missing required columns: {missing_host}")
+        if missing_segment:
+            raise ValueError(f"Segment baselines missing required columns: {missing_segment}")
 
     def _compute_correlation_features(self, df: DataFrame, metrics: List[str]) -> DataFrame:
         """Compute FG-C correlation features for each metric.

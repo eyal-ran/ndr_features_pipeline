@@ -84,6 +84,135 @@ class TestFGCCorrelationBuilder(unittest.TestCase):
         # log_ratio ≈ log(2)
         self.assertAlmostEqual(result.m_log_ratio, 0.6931, places=3)
 
+    def test_cold_start_baseline_selection(self) -> None:
+        runtime_cfg = FGCorrJobRuntimeConfig(
+            project_name="test-project",
+            feature_spec_version="v1",
+            mini_batch_id="test-batch",
+            batch_start_ts_iso="2025-01-01T00:00:00Z",
+            batch_end_ts_iso="2025-01-01T00:15:00Z",
+        )
+        job = FGCorrBuilderJob(runtime_config=runtime_cfg)
+        job.job_spec = {
+            "join_keys": ["host_ip", "window_label"],
+            "segment_join_keys": ["segment_id", "window_label"],
+            "pair_counts": {"enabled": True},
+        }
+
+        fg_a_schema = T.StructType(
+            [
+                T.StructField("host_ip", T.StringType(), True),
+                T.StructField("window_label", T.StringType(), True),
+                T.StructField("segment_id", T.StringType(), True),
+                T.StructField("dst_ip", T.StringType(), True),
+                T.StructField("dst_port", T.IntegerType(), True),
+                T.StructField("m", T.DoubleType(), True),
+            ]
+        )
+        fg_a_rows = [
+            ("10.0.0.1", "w_15m", "seg-a", "8.8.8.8", 53, 5.0),
+            ("10.0.0.2", "w_15m", "seg-b", "1.1.1.1", 443, 5.0),
+        ]
+        fg_a_df = self.spark.createDataFrame(fg_a_rows, schema=fg_a_schema)
+
+        metadata_schema = T.StructType(
+            [
+                T.StructField("host_ip", T.StringType(), True),
+                T.StructField("window_label", T.StringType(), True),
+                T.StructField("baseline_horizon", T.StringType(), True),
+                T.StructField("is_cold_start", T.IntegerType(), True),
+            ]
+        )
+        metadata_rows = [
+            ("10.0.0.1", "w_15m", "7d", 0),
+            ("10.0.0.2", "w_15m", "7d", 1),
+        ]
+        metadata_df = self.spark.createDataFrame(metadata_rows, schema=metadata_schema)
+
+        baseline_schema = T.StructType(
+            [
+                T.StructField("host_ip", T.StringType(), True),
+                T.StructField("window_label", T.StringType(), True),
+                T.StructField("baseline_horizon", T.StringType(), True),
+                T.StructField("m_median", T.DoubleType(), True),
+                T.StructField("m_p25", T.DoubleType(), True),
+                T.StructField("m_p75", T.DoubleType(), True),
+                T.StructField("m_p95", T.DoubleType(), True),
+                T.StructField("m_p99", T.DoubleType(), True),
+                T.StructField("m_mad", T.DoubleType(), True),
+                T.StructField("m_iqr", T.DoubleType(), True),
+                T.StructField("m_support_count", T.IntegerType(), True),
+            ]
+        )
+        host_baselines = self.spark.createDataFrame(
+            [("10.0.0.1", "w_15m", "7d", 10.0, 1.0, 2.0, 3.0, 4.0, 1.0, 1.0, 100)],
+            schema=baseline_schema,
+        )
+
+        segment_schema = T.StructType(
+            [
+                T.StructField("segment_id", T.StringType(), True),
+                T.StructField("window_label", T.StringType(), True),
+                T.StructField("baseline_horizon", T.StringType(), True),
+                T.StructField("m_median", T.DoubleType(), True),
+                T.StructField("m_p25", T.DoubleType(), True),
+                T.StructField("m_p75", T.DoubleType(), True),
+                T.StructField("m_p95", T.DoubleType(), True),
+                T.StructField("m_p99", T.DoubleType(), True),
+                T.StructField("m_mad", T.DoubleType(), True),
+                T.StructField("m_iqr", T.DoubleType(), True),
+                T.StructField("m_support_count", T.IntegerType(), True),
+            ]
+        )
+        segment_baselines = self.spark.createDataFrame(
+            [("seg-b", "w_15m", "7d", 100.0, 10.0, 20.0, 30.0, 40.0, 5.0, 5.0, 50)],
+            schema=segment_schema,
+        )
+
+        pair_host_schema = T.StructType(
+            [
+                T.StructField("host_ip", T.StringType(), True),
+                T.StructField("dst_ip", T.StringType(), True),
+                T.StructField("dst_port", T.IntegerType(), True),
+                T.StructField("baseline_horizon", T.StringType(), True),
+                T.StructField("pair_seen_count", T.IntegerType(), True),
+            ]
+        )
+        pair_host_df = self.spark.createDataFrame(
+            [("10.0.0.1", "8.8.8.8", 53, "7d", 7)],
+            schema=pair_host_schema,
+        )
+
+        pair_segment_schema = T.StructType(
+            [
+                T.StructField("segment_id", T.StringType(), True),
+                T.StructField("dst_ip", T.StringType(), True),
+                T.StructField("dst_port", T.IntegerType(), True),
+                T.StructField("baseline_horizon", T.StringType(), True),
+                T.StructField("pair_seen_count", T.IntegerType(), True),
+            ]
+        )
+        pair_segment_df = self.spark.createDataFrame(
+            [("seg-b", "1.1.1.1", 443, "7d", 3)],
+            schema=pair_segment_schema,
+        )
+
+        joined = job._apply_cold_start_baselines(
+            fg_a_df=fg_a_df,
+            metadata_df=metadata_df,
+            host_baselines=host_baselines,
+            segment_baselines=segment_baselines,
+            pair_host_df=pair_host_df,
+            pair_segment_df=pair_segment_df,
+            horizon="7d",
+        )
+
+        results = {row.host_ip: row for row in joined.select("host_ip", "m_median", "pair_seen_count").collect()}
+        self.assertEqual(results["10.0.0.1"].m_median, 10.0)
+        self.assertEqual(results["10.0.0.1"].pair_seen_count, 7)
+        self.assertEqual(results["10.0.0.2"].m_median, 100.0)
+        self.assertEqual(results["10.0.0.2"].pair_seen_count, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,18 +18,19 @@ from __future__ import annotations
 import sys
 import traceback
 from dataclasses import dataclass
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
-from pyspark.sql import types as T
 
 from ndr.logging.logger import get_logger
 from ndr.config.job_spec_loader import load_job_spec
+from ndr.config.project_parameters_loader import load_project_parameters
 from ndr.processing.base_runner import BaseRunner
 from ndr.io.s3_reader import S3Reader
 from ndr.io.s3_writer import S3Writer
 from ndr.processing.output_paths import build_batch_output_prefix
+from ndr.processing.segment_utils import add_segment_id
 
 
 LOGGER = get_logger(__name__)
@@ -108,6 +109,7 @@ class FGBaselineBuilderJob(BaseRunner):
         self.s3_reader: Optional[S3Reader] = None
         self.s3_writer = S3Writer()
         self.job_spec: Optional[Dict[str, Any]] = None
+        self.project_parameters: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------------ #
     # Entry point                                                        #
@@ -138,6 +140,14 @@ class FGBaselineBuilderJob(BaseRunner):
                 feature_spec_version=self.runtime_config.feature_spec_version,
             )
             LOGGER.info("Loaded JobSpec for FG-B builder.", extra={"job_spec_keys": list(self.job_spec.keys())})
+            self.project_parameters = load_project_parameters(
+                project_name=self.runtime_config.project_name,
+                feature_spec_version=self.runtime_config.feature_spec_version,
+            )
+            LOGGER.info(
+                "Loaded project parameters for FG-B builder.",
+                extra={"parameter_keys": list(self.project_parameters.keys())},
+            )
 
             self.spark = self._build_spark_session()
             self.s3_reader = S3Reader(self.spark)
@@ -249,17 +259,23 @@ class FGBaselineBuilderJob(BaseRunner):
         # Build segment-level baselines
         segment_baselines = self._build_segment_baselines(fg_a_with_weights, horizon)
 
+        # Build IP metadata + flags table
+        ip_metadata = self._build_ip_metadata_flags(host_baselines, horizon)
+
         # Optionally build pair-level rarity baselines
-        pair_baselines: Optional[DataFrame] = None
+        pair_host_baselines: Optional[DataFrame] = None
+        pair_segment_baselines: Optional[DataFrame] = None
         pair_cfg = self.job_spec.get("pair_counts", {})
         if pair_cfg.get("enabled", False):
-            pair_baselines = self._build_pair_rarity_baselines(horizon, bounds, pair_cfg)
+            pair_host_baselines, pair_segment_baselines = self._build_pair_rarity_baselines(horizon, bounds, pair_cfg)
 
         # Write out FG-B baselines
         self._write_fg_b_outputs(
             host_baselines=host_baselines,
             segment_baselines=segment_baselines,
-            pair_baselines=pair_baselines,
+            ip_metadata=ip_metadata,
+            pair_host_baselines=pair_host_baselines,
+            pair_segment_baselines=pair_segment_baselines,
             horizon=horizon,
         )
 
@@ -293,34 +309,7 @@ class FGBaselineBuilderJob(BaseRunner):
         this function can be extended or replaced via JobSpec configuration.
         """
         seg_cfg = self.job_spec.get("segment_mapping", {})
-        strategy = seg_cfg.get("strategy", "ipv4_prefix")
-        prefix_len = int(seg_cfg.get("prefix_length", 24))
-
-        if strategy != "ipv4_prefix":
-            LOGGER.warning("Unsupported segment_mapping.strategy '%s', falling back to ipv4_prefix.", strategy)
-
-        def ipv4_prefix(ip: str) -> str:
-            if ip is None:
-                return "SEG_UNKNOWN"
-            parts = ip.split(".")
-            if len(parts) != 4:
-                return "SEG_UNKNOWN"
-            try:
-                octets = [int(p) for p in parts]
-            except ValueError:
-                return "SEG_UNKNOWN"
-            # Simple /24 prefix: first 3 octets, configurable if needed
-            if prefix_len == 24:
-                return f"{octets[0]}.{octets[1]}.{octets[2]}.0/24"
-            elif prefix_len == 16:
-                return f"{octets[0]}.{octets[1]}.0.0/16"
-            else:
-                # Fallback: keep first 3 octets
-                return f"{octets[0]}.{octets[1]}.{octets[2]}.0/24"
-
-        ipv4_prefix_udf = F.udf(ipv4_prefix, T.StringType())
-
-        return df.withColumn("segment_id", ipv4_prefix_udf(F.col("host_ip")))
+        return add_segment_id(df=df, ip_col="host_ip", segment_mapping=seg_cfg)
 
     # ------------------------------------------------------------------ #
     # Segment anomaly capping                                            #
@@ -424,82 +413,15 @@ class FGBaselineBuilderJob(BaseRunner):
             - *_median, *_p25, *_p75, *_p95, *_p99, *_mad, *_iqr
             - *_support_count, *_cold_start_flag
         """
-        support_cfg = self.job_spec.get("support_min", {})
         group_cols = ["host_ip", "role", "segment_id", "time_band", "window_label"]
-
-        metrics = self.job_spec.get("baseline_metrics", [])
-        if not metrics:
-            # Fallback: derive metrics from schema if not explicitly configured
-            # Example: all columns starting with known prefixes
-            candidate_cols = [c for c in df.columns if c not in group_cols + ["anomaly_weight", "max_abs_z_slice"]]
-            metrics = candidate_cols
-
-        # Filter good slices for quantiles
-        good_df = df.filter(F.col("anomaly_weight") >= 1.0)
-
-        agg_exprs_good = []
-        agg_exprs_support = []
-
-        for m in metrics:
-            # Distribution stats on good slices only
-            agg_exprs_good.extend([
-                F.expr(f"percentile_approx({m}, 0.5, 10000)").alias(f"{m}_median"),
-                F.expr(f"percentile_approx({m}, 0.25, 10000)").alias(f"{m}_p25"),
-                F.expr(f"percentile_approx({m}, 0.75, 10000)").alias(f"{m}_p75"),
-                F.expr(f"percentile_approx({m}, 0.95, 10000)").alias(f"{m}_p95"),
-                F.expr(f"percentile_approx({m}, 0.99, 10000)").alias(f"{m}_p99"),
-            ])
-            # Support count across all slices with non-null m
-            agg_exprs_support.append(
-                F.sum(F.when(F.col(m).isNotNull(), F.lit(1)).otherwise(F.lit(0))).alias(f"{m}_support_count")
-            )
-
-        good_aggs = good_df.groupBy(*group_cols).agg(*agg_exprs_good)
-        support_aggs = df.groupBy(*group_cols).agg(*agg_exprs_support)
-
-        # Join good stats and support counts
-        joined = good_aggs.join(support_aggs, on=group_cols, how="outer")
-
-        # Compute MAD and IQR
-        for m in metrics:
-            joined = joined.withColumn(
-                f"{m}_iqr", F.col(f"{m}_p75") - F.col(f"{m}_p25")
-            )
-            # Approx MAD: median(|x - median|) over good slices
-            # For simplicity, compute via second pass using window and join back if needed.
-            # Here we use IQR as a proxy if MAD isn't materialized.
-            mad_col = F.col(f"{m}_iqr") / F.lit(1.349)  # approximate MAD from IQR
-            joined = joined.withColumn(f"{m}_mad", mad_col)
-
-            support_min = int(support_cfg.get(m, 50))
-            joined = joined.withColumn(
-                f"{m}_cold_start_flag",
-                F.when(F.col(f"{m}_support_count") < F.lit(support_min), F.lit(1)).otherwise(F.lit(0)),
-            )
-
-        # Add horizon and metadata columns
-        bounds = self._compute_horizon_bounds(horizon)
-        joined = (
-            joined
-            .withColumn("baseline_horizon", F.lit(bounds["baseline_horizon"]))
-            .withColumn("baseline_start_ts", F.lit(bounds["baseline_start_ts"]))
-            .withColumn("baseline_end_ts", F.lit(bounds["baseline_end_ts"]))
+        metrics = self._get_baseline_metrics(df, group_cols)
+        joined = self._build_baseline_stats(
+            df=df,
+            group_cols=group_cols,
+            metrics=metrics,
+            horizon=horizon,
+            include_record_id=True,
         )
-
-        # record_id
-        joined = joined.withColumn(
-            "record_id",
-            F.concat_ws(
-                "|",
-                F.col("host_ip"),
-                F.col("role"),
-                F.col("segment_id"),
-                F.col("time_band"),
-                F.col("window_label"),
-                F.col("baseline_horizon"),
-            ),
-        )
-
         return joined
 
     # ------------------------------------------------------------------ #
@@ -515,43 +437,14 @@ class FGBaselineBuilderJob(BaseRunner):
             same as host-level baseline metrics, with prefix segment_*
         """
         group_cols = ["segment_id", "role", "time_band", "window_label"]
-        metrics = self.job_spec.get("baseline_metrics", [])
-
-        if not metrics:
-            candidate_cols = [c for c in df.columns if c not in group_cols + ["anomaly_weight", "max_abs_z_slice", "host_ip"]]
-            metrics = candidate_cols
-
-        good_df = df.filter(F.col("anomaly_weight") >= 1.0)
-
-        agg_exprs = []
-        for m in metrics:
-            agg_exprs.extend([
-                F.expr(f"percentile_approx({m}, 0.5, 10000)").alias(f"segment_{m}_median"),
-                F.expr(f"percentile_approx(ABS({m} - segment_{m}_median), 0.5, 10000)").alias(f"segment_{m}_mad_temp"),
-                F.sum(F.when(F.col(m).isNotNull(), F.lit(1)).otherwise(F.lit(0))).alias(f"segment_{m}_support_count"),
-            ])
-
-        # For simplicity, compute only medians + support_count for segment baselines; MAD derived approximately later if needed.
-        seg_aggs = good_df.groupBy(*group_cols).agg(*[
-            F.expr(f"percentile_approx({m}, 0.5, 10000)").alias(f"segment_{m}_median")
-            for m in metrics
-        ])
-
-        support_aggs = df.groupBy(*group_cols).agg(*[
-            F.sum(F.when(F.col(m).isNotNull(), F.lit(1))).alias(f"segment_{m}_support_count")
-            for m in metrics
-        ])
-
-        joined = seg_aggs.join(support_aggs, on=group_cols, how="outer")
-
-        bounds = self._compute_horizon_bounds(horizon)
-        joined = (
-            joined
-            .withColumn("baseline_horizon", F.lit(bounds["baseline_horizon"]))
-            .withColumn("baseline_start_ts", F.lit(bounds["baseline_start_ts"]))
-            .withColumn("baseline_end_ts", F.lit(bounds["baseline_end_ts"]))
+        metrics = self._get_baseline_metrics(df, group_cols + ["host_ip"])
+        joined = self._build_baseline_stats(
+            df=df,
+            group_cols=group_cols,
+            metrics=metrics,
+            horizon=horizon,
+            include_record_id=False,
         )
-
         return joined
 
     # ------------------------------------------------------------------ #
@@ -562,7 +455,7 @@ class FGBaselineBuilderJob(BaseRunner):
         horizon: str,
         bounds: Dict[str, Any],
         pair_cfg: Dict[str, Any],
-    ) -> DataFrame:
+    ) -> Tuple[DataFrame, DataFrame]:
         """Build pair-level rarity baselines from pair-counts dataset.
 
         Expects a pre-aggregated dataset with at least:
@@ -591,7 +484,34 @@ class FGBaselineBuilderJob(BaseRunner):
 
         df = df.filter((F.col("event_ts") >= F.lit(start_ts)) & (F.col("event_ts") < F.lit(end_ts)))
 
-        grouped = df.groupBy("src_ip", "dst_ip", "dst_port").agg(
+        if "segment_id" not in df.columns:
+            seg_cfg = self.job_spec.get("segment_mapping", {})
+            df = add_segment_id(df=df, ip_col="src_ip", segment_mapping=seg_cfg)
+
+        host_grouped = self._aggregate_pair_rarity(
+            df=df,
+            group_cols=["src_ip", "dst_ip", "dst_port"],
+            rarity_threshold=rarity_threshold,
+            horizon=horizon,
+        )
+
+        segment_grouped = self._aggregate_pair_rarity(
+            df=df,
+            group_cols=["segment_id", "dst_ip", "dst_port"],
+            rarity_threshold=rarity_threshold,
+            horizon=horizon,
+        )
+
+        return host_grouped, segment_grouped
+
+    def _aggregate_pair_rarity(
+        self,
+        df: DataFrame,
+        group_cols: List[str],
+        rarity_threshold: float,
+        horizon: str,
+    ) -> DataFrame:
+        grouped = df.groupBy(*group_cols).agg(
             F.sum("sessions_cnt").alias("pair_seen_count"),
             F.max("event_ts").alias("pair_last_seen_ts"),
             F.countDistinct(F.to_date("event_ts")).alias("active_days"),
@@ -620,10 +540,168 @@ class FGBaselineBuilderJob(BaseRunner):
 
         grouped = grouped.withColumn(
             "pair_key",
-            F.concat_ws("|", F.col("src_ip"), F.col("dst_ip"), F.col("dst_port"), F.col("baseline_horizon")),
+            F.concat_ws("|", *[F.col(c).cast("string") for c in group_cols], F.col("baseline_horizon")),
         )
 
         return grouped
+
+    def _get_baseline_metrics(self, df: DataFrame, excluded_cols: List[str]) -> List[str]:
+        metrics = self.job_spec.get("baseline_metrics", [])
+        if metrics:
+            return metrics
+        candidate_cols = [c for c in df.columns if c not in excluded_cols + ["anomaly_weight", "max_abs_z_slice"]]
+        return candidate_cols
+
+    def _build_baseline_stats(
+        self,
+        df: DataFrame,
+        group_cols: List[str],
+        metrics: List[str],
+        horizon: str,
+        include_record_id: bool,
+    ) -> DataFrame:
+        support_cfg = self.job_spec.get("support_min", {})
+
+        good_df = df.filter(F.col("anomaly_weight") >= 1.0)
+
+        agg_exprs_good = []
+        agg_exprs_support = []
+
+        for m in metrics:
+            agg_exprs_good.extend([
+                F.expr(f"percentile_approx({m}, 0.5, 10000)").alias(f"{m}_median"),
+                F.expr(f"percentile_approx({m}, 0.25, 10000)").alias(f"{m}_p25"),
+                F.expr(f"percentile_approx({m}, 0.75, 10000)").alias(f"{m}_p75"),
+                F.expr(f"percentile_approx({m}, 0.95, 10000)").alias(f"{m}_p95"),
+                F.expr(f"percentile_approx({m}, 0.99, 10000)").alias(f"{m}_p99"),
+            ])
+            agg_exprs_support.append(
+                F.sum(F.when(F.col(m).isNotNull(), F.lit(1)).otherwise(F.lit(0))).alias(f"{m}_support_count")
+            )
+
+        good_aggs = good_df.groupBy(*group_cols).agg(*agg_exprs_good)
+        support_aggs = df.groupBy(*group_cols).agg(*agg_exprs_support)
+
+        joined = good_aggs.join(support_aggs, on=group_cols, how="outer")
+
+        for m in metrics:
+            joined = joined.withColumn(
+                f"{m}_iqr", F.col(f"{m}_p75") - F.col(f"{m}_p25")
+            )
+            mad_col = F.col(f"{m}_iqr") / F.lit(1.349)
+            joined = joined.withColumn(f"{m}_mad", mad_col)
+
+            support_min = int(support_cfg.get(m, 50))
+            joined = joined.withColumn(
+                f"{m}_cold_start_flag",
+                F.when(F.col(f"{m}_support_count") < F.lit(support_min), F.lit(1)).otherwise(F.lit(0)),
+            )
+
+        bounds = self._compute_horizon_bounds(horizon)
+        joined = (
+            joined
+            .withColumn("baseline_horizon", F.lit(bounds["baseline_horizon"]))
+            .withColumn("baseline_start_ts", F.lit(bounds["baseline_start_ts"]))
+            .withColumn("baseline_end_ts", F.lit(bounds["baseline_end_ts"]))
+        )
+
+        if include_record_id:
+            joined = joined.withColumn(
+                "record_id",
+                F.concat_ws(
+                    "|",
+                    *[F.col(c) for c in group_cols],
+                    F.col("baseline_horizon"),
+                ),
+            )
+
+        return joined
+
+    def _build_ip_metadata_flags(self, host_baselines: DataFrame, horizon: str) -> DataFrame:
+        assert self.project_parameters is not None, "Project parameters must be loaded before computing metadata."
+        join_keys = self.job_spec.get("join_keys", ["host_ip", "window_label"])
+        if "host_ip" not in join_keys:
+            raise ValueError("join_keys must include 'host_ip' to build IP metadata flags.")
+        support_cfg = self.job_spec.get("support_min", {})
+
+        required_metrics = self.job_spec.get("baseline_required_metrics") or self.job_spec.get("baseline_metrics", [])
+        if not required_metrics:
+            required_metrics = [c[:-14] for c in host_baselines.columns if c.endswith("_support_count")]
+
+        support_cols = [f"{m}_support_count" for m in required_metrics if f"{m}_support_count" in host_baselines.columns]
+        missing_support = [m for m in required_metrics if f"{m}_support_count" not in host_baselines.columns]
+        if missing_support:
+            raise ValueError(
+                "Missing support count columns for required metrics in host baselines: "
+                f"{missing_support}"
+            )
+
+        flags_df = host_baselines.select(*join_keys, "baseline_horizon", *support_cols)
+
+        is_full_history_expr = None
+        for m in required_metrics:
+            support_min = int(support_cfg.get(m, 50))
+            metric_ok = F.col(f"{m}_support_count") >= F.lit(support_min)
+            is_full_history_expr = metric_ok if is_full_history_expr is None else (is_full_history_expr & metric_ok)
+
+        flags_df = flags_df.withColumn(
+            "is_full_history",
+            F.when(is_full_history_expr, F.lit(1)).otherwise(F.lit(0)),
+        )
+
+        ip_mapping_df, machine_col = self._load_ip_machine_mapping()
+        flags_df = flags_df.join(ip_mapping_df, on="host_ip", how="left")
+
+        prefixes = self._get_non_persistent_prefixes()
+        prefixes_lower = [p.lower() for p in prefixes if p]
+        if prefixes_lower:
+            starts_with_any = None
+            for prefix in prefixes_lower:
+                cond = F.lower(F.col(machine_col)).startswith(prefix)
+                starts_with_any = cond if starts_with_any is None else (starts_with_any | cond)
+            flags_df = flags_df.withColumn(
+                "is_non_persistent_machine",
+                F.when(starts_with_any, F.lit(1)).otherwise(F.lit(0)),
+            )
+        else:
+            flags_df = flags_df.withColumn("is_non_persistent_machine", F.lit(0))
+
+        flags_df = flags_df.withColumn(
+            "is_cold_start",
+            F.when(
+                (F.col("is_full_history") == F.lit(0)) | (F.col("is_non_persistent_machine") == F.lit(1)),
+                F.lit(1),
+            ).otherwise(F.lit(0)),
+        )
+
+        return flags_df.select(*join_keys, "baseline_horizon", "is_full_history", "is_non_persistent_machine", "is_cold_start")
+
+    def _get_non_persistent_prefixes(self) -> List[str]:
+        prefixes = self.job_spec.get("non_persistent_machine_prefixes")
+        if prefixes:
+            return prefixes
+        enrichment = self.job_spec.get("enrichment", {})
+        if enrichment.get("vdi_hostname_prefixes"):
+            return enrichment.get("vdi_hostname_prefixes")
+        return self.job_spec.get("vdi_hostname_prefixes", [])
+
+    def _load_ip_machine_mapping(self) -> Tuple[DataFrame, str]:
+        mapping_cfg = self.job_spec.get("ip_machine_mapping", {})
+        prefix_key = mapping_cfg.get("s3_prefix_key", "ip_machine_mapping_s3_prefix")
+        mapping_prefix = self.project_parameters.get(prefix_key)
+        if not mapping_prefix:
+            raise ValueError(
+                f"Missing IP-to-machine-name mapping prefix in project parameters under key '{prefix_key}'."
+            )
+        ip_column = mapping_cfg.get("ip_column", "ip_address")
+        machine_column = mapping_cfg.get("machine_name_column", "machine_name")
+        mapping_df = (
+            self.spark.read.parquet(mapping_prefix)
+            .select(F.col(ip_column).alias("host_ip"), F.col(machine_column).alias(machine_column))
+            .dropna(subset=["host_ip"])
+            .dropDuplicates(["host_ip"])
+        )
+        return mapping_df, machine_column
 
     # ------------------------------------------------------------------ #
     # Output writing                                                     #
@@ -632,7 +710,9 @@ class FGBaselineBuilderJob(BaseRunner):
         self,
         host_baselines: DataFrame,
         segment_baselines: DataFrame,
-        pair_baselines: Optional[DataFrame],
+        ip_metadata: DataFrame,
+        pair_host_baselines: Optional[DataFrame],
+        pair_segment_baselines: Optional[DataFrame],
         horizon: str,
     ) -> None:
         """Write FG-B outputs (host, segment, pair baselines) to S3."""
@@ -675,15 +755,41 @@ class FGBaselineBuilderJob(BaseRunner):
             mode="overwrite",
         )
 
-        if pair_baselines is not None:
+        LOGGER.info(
+            "Writing FG-B IP metadata flags.",
+            extra={"prefix": base_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
+        )
+
+        ip_metadata_out = ip_metadata.withColumn("feature_spec_version", F.lit(feature_spec_version))
+        self.s3_writer.write_parquet(
+            df=ip_metadata_out,
+            base_path=f"{base_prefix}/ip_metadata/",
+            partition_cols=["feature_spec_version", "baseline_horizon"],
+            mode="overwrite",
+        )
+
+        if pair_host_baselines is not None:
             LOGGER.info(
-                "Writing FG-B pair-level rarity baselines.",
+                "Writing FG-B pair-level rarity baselines (host).",
                 extra={"prefix": base_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
             )
-            pair_out = pair_baselines.withColumn("feature_spec_version", F.lit(feature_spec_version))
+            pair_out = pair_host_baselines.withColumn("feature_spec_version", F.lit(feature_spec_version))
             self.s3_writer.write_parquet(
                 df=pair_out,
-                base_path=f"{base_prefix}/pair/",
+                base_path=f"{base_prefix}/pair/host/",
+                partition_cols=["feature_spec_version", "baseline_horizon"],
+                mode="overwrite",
+            )
+
+        if pair_segment_baselines is not None:
+            LOGGER.info(
+                "Writing FG-B pair-level rarity baselines (segment).",
+                extra={"prefix": base_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
+            )
+            pair_out = pair_segment_baselines.withColumn("feature_spec_version", F.lit(feature_spec_version))
+            self.s3_writer.write_parquet(
+                df=pair_out,
+                base_path=f"{base_prefix}/pair/segment/",
                 partition_cols=["feature_spec_version", "baseline_horizon"],
                 mode="overwrite",
             )

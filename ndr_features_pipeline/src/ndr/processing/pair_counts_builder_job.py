@@ -25,6 +25,7 @@ from ndr.config.job_spec_loader import load_job_spec
 from ndr.processing.base_runner import BaseRunner
 from ndr.io.s3_writer import S3Writer
 from ndr.processing.output_paths import build_batch_output_prefix
+from ndr.processing.segment_utils import add_segment_id
 
 
 LOGGER = get_logger(__name__)
@@ -219,6 +220,7 @@ class PairCountsBuilderJob(BaseRunner):
             src_ip: string
             dst_ip: string
             dst_port: int
+            segment_id: string
             event_ts: timestamp  (slice end time per mini-batch)
             sessions_cnt: long
             mini_batch_id: string
@@ -231,8 +233,11 @@ class PairCountsBuilderJob(BaseRunner):
         # Use batch_end_ts as the representative timestamp for the 15m slice.
         event_ts_lit = F.to_timestamp(F.lit(batch_end_ts_iso))
 
+        seg_cfg = self.job_spec.get("segment_mapping", {})
+        df = add_segment_id(df=df, ip_col="source_ip", segment_mapping=seg_cfg)
+
         grouped = (
-            df.groupBy("source_ip", "destination_ip", "destination_port")
+            df.groupBy("source_ip", "destination_ip", "destination_port", "segment_id")
             .agg(F.count(F.lit(1)).alias("sessions_cnt"))
             .withColumn("src_ip", F.col("source_ip"))
             .withColumn("dst_ip", F.col("destination_ip"))

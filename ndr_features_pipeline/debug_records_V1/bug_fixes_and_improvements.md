@@ -170,4 +170,4 @@
    - Unit test for SQL templating / partition path computation.
    - Lightweight integration test stubs if test harness exists (otherwise, add logging/validation in runner and document expected outputs in `docs/test_run_log.md`).【F:docs/test_run_log.md†L1-L4】
 
-**Status:** ToDo.
+**Status:** Implemented. Machine inventory unload job, CLI entrypoint, and SageMaker pipeline are in place, with required JobSpec validation (including `iam_role` and `processing_image_uri`), temp-prefix UNLOAD with verified copy + `_SUCCESS` marker, documentation updates, and unit tests for helpers.

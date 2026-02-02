@@ -28,6 +28,7 @@ contracts:
      --batch-end-ts-iso
 
 3. build_fg_b_baseline_pipeline(...)
+4. build_machine_inventory_unload_pipeline(...)
    - Baseline pipeline for FG-B (7d / 30d horizons), using an abstracted
      contract pushed into JobSpec configuration rather than CLI flags.
 
@@ -44,11 +45,12 @@ The pipelines themselves only pass *runtime* parameters (batch times, modes).
 """
 
 import sagemaker
-from sagemaker.workflow.parameters import ParameterString
+from sagemaker.workflow.parameters import ParameterInteger, ParameterString
 from sagemaker.workflow.pipeline import Pipeline
 from sagemaker.workflow.steps import ProcessingStep
 from sagemaker.spark.processing import PySparkProcessor
 
+from ndr.config.job_spec_loader import load_job_spec
 
 # ---------------------------------------------------------------------------
 # 1. Backfill / simple Delta-only pipeline
@@ -435,6 +437,110 @@ def build_fg_b_baseline_pipeline(
             mode_param,
         ],
         steps=[fg_b_step],
+        sagemaker_session=session,
+    )
+
+    return pipeline
+
+
+# ---------------------------------------------------------------------------
+# 4. Machine inventory unload pipeline (monthly)
+# ---------------------------------------------------------------------------
+
+
+def build_machine_inventory_unload_pipeline(
+    pipeline_name: str,
+    role_arn: str,
+    default_bucket: str,
+    region_name: str,
+    project_name_value: str = "ndr-project",
+    feature_spec_version_value: str = "v1",
+) -> Pipeline:
+    """Create the monthly machine inventory unload pipeline.
+
+    CLI contract for run_machine_inventory_unload.py:
+
+    Required:
+    - --project-name          (str)
+    - --feature-spec-version  (str)
+    - --reference-month-iso   (str, ISO8601)
+    """
+
+    session = sagemaker.session.Session(default_bucket=default_bucket)
+
+    project_name = ParameterString(
+        name="ProjectName",
+        default_value=project_name_value,
+    )
+    feature_spec_version = ParameterString(
+        name="FeatureSpecVersion",
+        default_value=feature_spec_version_value,
+    )
+    reference_month_iso = ParameterString(
+        name="ReferenceMonthIso",
+        default_value="2025-12-01T00:00:00Z",
+    )
+
+    instance_type = ParameterString(
+        name="InstanceType",
+        default_value="ml.m5.4xlarge",
+    )
+    instance_count = ParameterInteger(
+        name="InstanceCount",
+        default_value=1,
+    )
+
+    job_spec = load_job_spec(
+        project_name=project_name_value,
+        job_name="machine_inventory_unload",
+        feature_spec_version=feature_spec_version_value,
+    )
+    image_uri = job_spec.get("processing_image_uri")
+    if not image_uri:
+        raise ValueError(
+            "JobSpec for machine_inventory_unload must provide processing_image_uri."
+        )
+
+    processor = PySparkProcessor(
+        base_job_name="ndr-machine-inventory-unload",
+        framework_version="3.5",
+        py_version="py312",
+        role=role_arn,
+        instance_count=instance_count,
+        instance_type=instance_type,
+        image_uri=image_uri,
+        sagemaker_session=session,
+    )
+
+    unload_step = ProcessingStep(
+        name="MachineInventoryUnloadStep",
+        processor=processor,
+        code="src/ndr/scripts/run_machine_inventory_unload.py",
+        job_arguments=[
+            "python",
+            "-m",
+            "ndr.scripts.run_machine_inventory_unload",
+            "--project-name",
+            project_name,
+            "--feature-spec-version",
+            feature_spec_version,
+            "--reference-month-iso",
+            reference_month_iso,
+        ],
+        inputs=[],
+        outputs=[],
+    )
+
+    pipeline = Pipeline(
+        name=pipeline_name,
+        parameters=[
+            project_name,
+            feature_spec_version,
+            reference_month_iso,
+            instance_type,
+            instance_count,
+        ],
+        steps=[unload_step],
         sagemaker_session=session,
     )
 

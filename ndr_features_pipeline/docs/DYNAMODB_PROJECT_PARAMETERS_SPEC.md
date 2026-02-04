@@ -10,27 +10,37 @@ This table provides a single source of truth for **project-specific configuratio
 Runtime code should read the table name from:
 
 - `ML_PROJECTS_PARAMETERS_TABLE_NAME`
+- (legacy fallback) `JOB_SPEC_DDB_TABLE_NAME`
 
 ## Primary Keys
 Use a composite key so multiple job specs and versions can exist per project.
 
 - **Partition key (PK):** `project_name` (string)
-- **Sort key (SK):** `job_name#feature_spec_version` (string)
+- **Sort key (SK):** `job_name` (string)
+  - The *value* of `job_name` is versioned as `job_name#feature_spec_version` using `#` as the delimiter.
   - Example: `delta_builder#v1`
+  - Legacy (unversioned) items may use just `job_name` without the delimiter.
 
-This structure allows multiple job specs per project and per feature spec version.
+This structure allows multiple job specs per project and per feature spec version while keeping the sort key name stable (`job_name`).
 
 ## Required Attributes
 Each item should include:
 
 - `project_name` (string) — partition key.
-- `job_name` (string) — logical job identifier (e.g., `delta_builder`, `fg_a_builder`, `pair_counts_builder`, `fg_b_builder`, `fg_c_builder`).
-- `feature_spec_version` (string) — feature schema/version identifier (e.g., `v1`).
-- `spec` (map) — job-specific configuration body.
-- `updated_at` (string, ISO8601) — last updated time.
-- `owner` (string) — owning team/role, for auditing.
+- `job_name` (string) — sort key value, typically `<job_name>#<feature_spec_version>`.
+- `spec` (map) — job-specific configuration body (see **Job-Specific Spec Payloads** below).
+
+For strongly-typed JobSpec entries (currently `delta_builder`), the `spec` payload must include:
+- `project_name` (string)
+- `job_name` (string)
+- `feature_spec_version` (string)
+
+These fields are read from the `spec` payload itself by the JobSpec loader.
 
 ## Optional Attributes
+- `feature_spec_version` (string) — if you want to store it redundantly at the item level (not required by loaders).
+- `updated_at` (string, ISO8601) — last updated time.
+- `owner` (string) — owning team/role, for auditing.
 - `pipeline_defaults` (map) — default processing instance type/count, image URIs, etc.
 - `feature_store` (map) — offline/online feature group names and flags.
 - `tags` (map or list) — metadata for governance.
@@ -39,8 +49,7 @@ Each item should include:
 ```json
 {
   "project_name": "ndr-prod",
-  "job_name": "fg_c_builder",
-  "feature_spec_version": "v1",
+  "job_name": "fg_c_builder#v1",
   "spec": {
     "fg_a_input": {
       "s3_prefix": "s3://<features-bucket>/fg_a/"
@@ -62,13 +71,71 @@ Each item should include:
 }
 ```
 
+## Job Names (Current Pipelines)
+- `delta_builder`
+- `fg_a_builder`
+- `pair_counts_builder`
+- `fg_b_builder`
+- `fg_c_builder`
+- `machine_inventory_unload`
+- `project_parameters` (project-level parameters consumed by FG-B)
+
+## Job-Specific Spec Payloads
+Below are the *minimum* payload expectations based on runtime usage. Additional keys are allowed.
+
+### `delta_builder` (strongly-typed JobSpec)
+The `spec` payload must match the JobSpec dataclasses (see `ndr.config.job_spec_models`):
+- `project_name`, `job_name`, `feature_spec_version`
+- `input`: `{ s3_prefix, format, compression?, schema_projection? }`
+- `dq`: `{ drop_malformed_ip?, duration_non_negative?, bytes_non_negative?, filter_null_bytes_ports?, emit_metrics? }`
+- `enrichment`: `{ vdi_hostname_prefixes?, port_sets_location? }`
+- `roles`: list of `{ name, host_ip, peer_ip, bytes_sent, bytes_recv, peer_port }`
+- `operators`: list of `{ type, params? }`
+- `output`: `{ s3_prefix, format, partition_keys, write_mode? }`
+
+### `fg_a_builder`
+- `delta_input.s3_prefix` **or** `delta_s3_prefix`
+- `fg_a_output.s3_prefix` **or** `output_s3_prefix`
+
+### `pair_counts_builder`
+- `traffic_input.s3_prefix`
+- `pair_counts_output.s3_prefix`
+- Optional: `traffic_input.layout` (defaults to `batch_folder`)
+- Optional: `filters` (`require_nonnull_ips`, `require_destination_port`)
+- Optional: `segment_mapping`
+
+### `fg_b_builder`
+- `horizons` (defaults to `["7d", "30d"]`)
+- `fg_a_input.s3_prefix`
+- `fg_b_output.s3_prefix`
+- Optional: `pair_counts`, `segment_mapping`, `anomaly_capping`, `baseline_metrics`,
+  `baseline_required_metrics`, `support_min`, `join_keys`, `safety_gaps`,
+  `ip_machine_mapping`, `non_persistent_machine_prefixes`, `enrichment`
+
+### `fg_c_builder`
+- `fg_a_input.s3_prefix`
+- `fg_b_input.s3_prefix`
+- `fg_c_output.s3_prefix`
+- Optional: `horizons`, `join_keys`, `metrics`, `pair_counts`, `segment_mapping`,
+  `eps`, `z_max`
+
+### `machine_inventory_unload`
+- `redshift`: `{ cluster_identifier, database, secret_arn, region, iam_role, db_user? }`
+- `query`: `{ sql? | (schema, table), ip_column?, name_column?, active_filter?, additional_filters? }`
+- `output`: `{ s3_prefix, output_format? (PARQUET), partitioning? (must include snapshot_month), ip_output_column?, name_output_column? }`
+
+### `project_parameters`
+Used by FG-B for shared project-level configuration. The item may store its payload under
+`spec` or `parameters`. The minimum required key is:
+- `ip_machine_mapping_s3_prefix` (unless `fg_b_builder.spec.ip_machine_mapping.s3_prefix_key` overrides it)
+
 ## Access Patterns
 - **Get job spec:**
-  - `GetItem` by `project_name` and `job_name#feature_spec_version`.
+  - `GetItem` by `project_name` and `job_name` (where `job_name` includes `#feature_spec_version`).
 - **List all job specs for a project:**
-  - `Query` by `project_name` and `begins_with(SK, "<job_name>#")`.
+  - `Query` by `project_name` and `begins_with(job_name, "<job_name>#")`.
 - **List all versions:**
-  - `Query` by `project_name` and `begins_with(SK, "<job_name>#")`.
+  - `Query` by `project_name` and `begins_with(job_name, "<job_name>#")`.
 
 ## Consistency Requirements
 - Updates must be **atomic per job spec** (single item update).

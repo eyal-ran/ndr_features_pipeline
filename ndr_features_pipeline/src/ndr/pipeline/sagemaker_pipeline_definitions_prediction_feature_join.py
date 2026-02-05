@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+"""SageMaker pipeline definition for prediction feature joins."""
+
+import sagemaker
+from sagemaker.spark.processing import PySparkProcessor
+from sagemaker.workflow.parameters import ParameterInteger, ParameterString
+from sagemaker.workflow.pipeline import Pipeline
+from sagemaker.workflow.steps import ProcessingStep
+
+
+def build_prediction_feature_join_pipeline(
+    pipeline_name: str,
+    role_arn: str,
+    default_bucket: str,
+    region_name: str,
+) -> Pipeline:
+    """Create the prediction feature join pipeline.
+
+    CLI contract for run_prediction_feature_join.py:
+      --project-name
+      --feature-spec-version
+      --mini-batch-id
+      --batch-start-ts-iso
+      --batch-end-ts-iso
+    """
+
+    session = sagemaker.session.Session(default_bucket=default_bucket)
+
+    project_name = ParameterString(
+        name="ProjectName",
+        default_value="ndr-project",
+    )
+    feature_spec_version = ParameterString(
+        name="FeatureSpecVersion",
+        default_value="v1",
+    )
+    mini_batch_id = ParameterString(
+        name="MiniBatchId",
+        default_value="dummy-mini-batch-id",
+    )
+    batch_start_ts_iso = ParameterString(
+        name="BatchStartTsIso",
+        default_value="2025-01-01T00:00:00Z",
+    )
+    batch_end_ts_iso = ParameterString(
+        name="BatchEndTsIso",
+        default_value="2025-01-01T00:15:00Z",
+    )
+
+    processing_image_uri = ParameterString(
+        name="ProcessingImageUri",
+        default_value="123456789012.dkr.ecr.us-east-1.amazonaws.com/ndr-pyspark:latest",
+    )
+    processing_instance_type = ParameterString(
+        name="ProcessingInstanceType",
+        default_value="ml.m5.4xlarge",
+    )
+    processing_instance_count = ParameterInteger(
+        name="ProcessingInstanceCount",
+        default_value=1,
+    )
+
+    processor = PySparkProcessor(
+        base_job_name="ndr-prediction-feature-join",
+        framework_version="3.5",
+        py_version="py312",
+        role=role_arn,
+        instance_count=processing_instance_count,
+        instance_type=processing_instance_type,
+        image_uri=processing_image_uri,
+        sagemaker_session=session,
+    )
+
+    join_step = ProcessingStep(
+        name="PredictionFeatureJoinStep",
+        processor=processor,
+        code="src/ndr/scripts/run_prediction_feature_join.py",
+        job_arguments=[
+            "python",
+            "-m",
+            "ndr.scripts.run_prediction_feature_join",
+            "--project-name",
+            project_name,
+            "--feature-spec-version",
+            feature_spec_version,
+            "--mini-batch-id",
+            mini_batch_id,
+            "--batch-start-ts-iso",
+            batch_start_ts_iso,
+            "--batch-end-ts-iso",
+            batch_end_ts_iso,
+        ],
+        inputs=[],
+        outputs=[],
+    )
+
+    pipeline = Pipeline(
+        name=pipeline_name,
+        parameters=[
+            project_name,
+            feature_spec_version,
+            mini_batch_id,
+            batch_start_ts_iso,
+            batch_end_ts_iso,
+            processing_image_uri,
+            processing_instance_type,
+            processing_instance_count,
+        ],
+        steps=[join_step],
+        sagemaker_session=session,
+    )
+
+    return pipeline

@@ -134,6 +134,8 @@ This directory includes additional pipeline definition modules:
    - `fg_a_builder`
    - `pair_counts_builder`
    - `fg_b_builder`
+   - `inference_predictions`
+   - `prediction_feature_join`
 
    all share the same `project_name` and `feature_spec_version`, and that
    their S3 prefixes (integration, deltas, FG-A, pair_counts, FG-B) are
@@ -293,4 +295,52 @@ This directory includes additional pipeline definition modules:
    If you want a joined dataset for Redshift/Iceberg ingestion, run the optional
    `run_prediction_feature_join.py` job with the same runtime parameters. It
    reads the predictions + feature outputs and writes a combined dataset to the
-   `join_output` prefix.
+   destination configured in the prediction feature join JobSpec.
+
+   ```json
+   {
+     "project_name": "ndr-prod",
+     "job_name": "prediction_feature_join",
+     "feature_spec_version": "v1",
+     "spec": {
+       "destination": {
+         "type": "s3",
+         "s3": {
+           "s3_prefix": "s3://ndr-data/predictions_joined",
+           "partition_keys": ["feature_spec_version", "dt", "model_version"],
+           "dataset": "prediction_feature_join"
+         }
+       }
+     }
+   }
+   ```
+
+   For Redshift destinations, specify a staging S3 prefix and the target table:
+
+   ```json
+   {
+     "project_name": "ndr-prod",
+     "job_name": "prediction_feature_join",
+     "feature_spec_version": "v1",
+     "spec": {
+       "destination": {
+         "type": "redshift",
+         "s3": {
+           "s3_prefix": "s3://ndr-data/predictions_joined",
+           "partition_keys": ["feature_spec_version", "dt", "model_version"],
+           "dataset": "prediction_feature_join"
+         },
+         "redshift": {
+           "cluster_identifier": "redshift-cluster-1",
+           "database": "ndr",
+           "secret_arn": "arn:aws:secretsmanager:...",
+           "region": "us-east-1",
+           "iam_role": "arn:aws:iam::123456789012:role/RedshiftCopyRole",
+           "schema": "analytics",
+           "table": "prediction_feature_join",
+           "pre_sql": ["truncate table analytics.prediction_feature_join;"]
+         }
+       }
+     }
+   }
+   ```

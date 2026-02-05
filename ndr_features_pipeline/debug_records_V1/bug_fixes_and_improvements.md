@@ -171,3 +171,45 @@
    - Lightweight integration test stubs if test harness exists (otherwise, add logging/validation in runner and document expected outputs in `docs/test_run_log.md`).【F:docs/test_run_log.md†L1-L4】
 
 **Status:** Implemented. Machine inventory unload job, CLI entrypoint, and SageMaker pipeline are in place, with required JobSpec validation (including `iam_role` and `processing_image_uri`), temp-prefix UNLOAD with verified copy + `_SUCCESS` marker, documentation updates, and unit tests for helpers.
+
+## 13) Decoupled inference pipeline (Option B) + prediction output integration plan
+**Issue:** Inference should be generic and decoupled from feature generation so multiple projects can reuse a common inference pipeline. The pipeline should read ready-made features from S3, call the deployed model endpoint, write predictions to S3, and enable easy joins with features for Redshift/Iceberg ingestion without duplicating features.
+
+**Plan (ToDo):**
+1) **Add a generic inference JobSpec** (DynamoDB):
+   - `job_name = "inference_predictions"` and `feature_spec_version`.
+   - Inputs: S3 prefixes for FG-A / FG-C (and any optional feature bundles), plus join keys (e.g., `host_ip`, `window_label`, `window_end_ts`) and batch window params.
+   - Output: predictions S3 prefix, output format = Parquet, partition columns `feature_spec_version`, `dt = date(window_end_ts)`, optional `model_version`.
+   - Model config: endpoint name, timeout, max payload size, and optional async/batch mode flag.
+   - Include minimal prediction schema metadata (prediction_score, model_version, inference_ts, mini_batch_id, record_id).
+
+2) **Create a decoupled inference SageMaker pipeline definition**:
+   - New module (e.g., `sagemaker_pipeline_definitions_inference.py`) with a single ProcessingStep.
+   - Runtime parameters: `ProjectName`, `FeatureSpecVersion`, `MiniBatchId`, `BatchStartTsIso`, `BatchEndTsIso`, `ProcessingImageUri`, `ProcessingInstanceType`, `ProcessingInstanceCount`.
+   - The pipeline only depends on feature outputs being present; it can be triggered by an S3 event or Step Functions after the feature pipeline completes.
+
+3) **Implement the inference processing job (OOP-based)**:
+   - `InferencePredictionsJob` class with clear, testable methods: `load_features()`, `prepare_payloads()`, `invoke_model()`, `write_predictions()`.
+   - Use efficient batching, retries, and concurrency controls to keep up with the 15-minute cadence.
+   - Keep code generic and styled (type hints, docstrings, explicit interfaces, cohesive class responsibilities).
+
+4) **Design output schema + join strategy (no feature duplication)**:
+   - Output only predictions + join keys + lineage metadata:
+     - `host_ip`, `window_label`, `window_end_ts`, `mini_batch_id`, `feature_spec_version`
+     - `prediction_score`, `prediction_label` (optional), `model_version`, `model_name`, `inference_ts`, `record_id`
+   - Partition by `feature_spec_version`, `dt = date(window_end_ts)`, optional `model_version`.
+   - Ensure join keys match FG-A/FG-C keys so downstream jobs can join without transformation.
+
+5) **Add a downstream join/aggregation step for Redshift/Iceberg ingestion**:
+   - Provide a Spark/Glue job (or optional pipeline step) that:
+     - Reads prediction outputs + feature tables from S3 by matching partitions.
+     - Performs inner join on `host_ip`, `window_label`, `window_end_ts`, `feature_spec_version`.
+     - Writes a unified table for COPY/Iceberg ingestion.
+   - Keep join job optional so storage-efficient output-only path remains primary.
+
+6) **Documentation + code quality guidance**:
+   - Update docs to describe the decoupled inference pipeline triggers and required JobSpec parameters.
+   - Add inline comments for non-obvious logic, and document failure handling, retries, and batch-size tuning.
+   - Enforce style consistency (formatting/linting, cohesive module structure, minimal side effects).
+
+**Status:** ToDo.

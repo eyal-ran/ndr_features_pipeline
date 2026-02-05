@@ -95,6 +95,8 @@ def parse_inference_spec(job_spec: Dict[str, Any]) -> InferenceSpec:
         )
 
     join_keys = job_spec.get("join_keys", ["host_ip", "window_label", "window_end_ts"])
+    if "window_end_ts" not in join_keys:
+        raise ValueError("Inference JobSpec join_keys must include window_end_ts")
 
     model_payload = job_spec.get("model", {})
     if "endpoint_name" not in model_payload:

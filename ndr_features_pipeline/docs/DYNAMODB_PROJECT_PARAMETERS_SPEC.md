@@ -78,6 +78,7 @@ These fields are read from the `spec` payload itself by the JobSpec loader.
 - `fg_b_builder`
 - `fg_c_builder`
 - `machine_inventory_unload`
+- `inference_predictions`
 - `project_parameters` (project-level parameters consumed by FG-B)
 
 ## Job-Specific Spec Payloads
@@ -123,6 +124,18 @@ The `spec` payload must match the JobSpec dataclasses (see `ndr.config.job_spec_
 - `redshift`: `{ cluster_identifier, database, secret_arn, region, iam_role, db_user? }`
 - `query`: `{ sql? | (schema, table), ip_column?, name_column?, active_filter?, additional_filters? }`
 - `output`: `{ s3_prefix, output_format? (PARQUET), partitioning? (must include snapshot_month), ip_output_column?, name_output_column? }`
+
+### `inference_predictions`
+- `feature_inputs`: map of feature bundles (typically `fg_a`, `fg_c`) with:
+  - `s3_prefix` (base prefix for the feature dataset)
+  - `dataset` (dataset name used for batch output prefix; defaults to the map key)
+  - `required` (optional, defaults to `true`)
+- `join_keys` (defaults to `["host_ip", "window_label", "window_end_ts"]`)
+- `model`: `{ endpoint_name, timeout_seconds?, max_payload_mb?, max_records_per_payload?, max_retries?, backoff_seconds?, content_type?, accept?, model_version?, model_name?, max_workers?, region? }`
+- `output`: `{ s3_prefix, format? (PARQUET), partition_keys? (defaults to feature_spec_version + dt), write_mode?, dataset? }`
+- Optional: `payload.feature_columns` (subset of feature columns to send to the model)
+- Optional: `prediction_schema` (`score_column`, `label_column`)
+- Optional: `join_output` (same shape as `output`) if you want to write prediction+feature joins.
 
 ### `project_parameters`
 Used by FG-B for shared project-level configuration. The item may store its payload under

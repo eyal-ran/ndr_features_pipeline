@@ -198,6 +198,33 @@
      - `host_ip`, `window_label`, `window_end_ts`, `mini_batch_id`, `feature_spec_version`
      - `prediction_score`, `prediction_label` (optional), `model_version`, `model_name`, `inference_ts`, `record_id`
    - Partition by `feature_spec_version`, `dt = date(window_end_ts)`, optional `model_version`.
+
+## 14) Always-on prediction feature join pipeline (separate from inference)
+**Issue:** The optional prediction+feature join step is not wired to a ProcessingStep, so joined outputs are not guaranteed after inference writes predictions to S3.
+
+**Plan (ToDo):**
+1) **Add a new DynamoDB JobSpec entry** for `job_name = "prediction_feature_join"` (feature spec versioned).
+   - Include destination routing: `destination.type` set to `"s3"` or `"redshift"`.
+   - For S3: `destination.s3` payload with `s3_prefix`, `format`, `partition_keys`, `dataset`.
+   - For Redshift: `destination.redshift` payload with `cluster_identifier`, `database`, `secret_arn`, `region`, `iam_role`, `schema`, `table`, optional `db_user`, `pre_sql`, `post_sql`.
+   - Reuse existing `join_output` schema where possible to keep compatibility with inference outputs.
+
+2) **Add a new SageMaker Pipeline definition** (e.g., `build_prediction_feature_join_pipeline`) with a single `ProcessingStep` that runs `ndr.scripts.run_prediction_feature_join`.
+   - Pipeline parameters: `ProjectName`, `FeatureSpecVersion`, `MiniBatchId`, `BatchStartTsIso`, `BatchEndTsIso`, plus processing instance/image parameters if needed.
+   - All structural configuration comes from JobSpec, not CLI flags, matching existing pipeline patterns.
+
+3) **Extend the join job implementation** to route output based on the JobSpec destination:
+   - If `destination.type == "s3"`: write the joined dataset to the provided S3 prefix/format/partitions.
+   - If `destination.type == "redshift"`: write to Redshift (e.g., via Redshift Data API or staged UNLOAD/COPY flow), using the configured schema/table.
+
+4) **Update orchestration** so the Step Function triggers this new join pipeline **after** the inference pipeline completes successfully.
+   - Pass the same runtime parameters (`project_name`, `feature_spec_version`, `mini_batch_id`, `batch_start_ts_iso`, `batch_end_ts_iso`) to the join pipeline.
+   - This keeps the join pipeline generic and reusable while guaranteeing joined outputs for every inference run.
+
+5) **Documentation updates**:
+   - Add `prediction_feature_join` to the JobSpec names list.
+   - Document the destination routing keys and the new pipeline’s execution order relative to inference.
+**Status:** Not implemented.
    - Ensure join keys match FG-A/FG-C keys so downstream jobs can join without transformation.
 
 5) **Add a downstream join/aggregation step for Redshift/Iceberg ingestion**:

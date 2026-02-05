@@ -212,4 +212,4 @@
    - Add inline comments for non-obvious logic, and document failure handling, retries, and batch-size tuning.
    - Enforce style consistency (formatting/linting, cohesive module structure, minimal side effects).
 
-**Status:** ToDo.
+**Status:** Implemented. Added a decoupled inference predictions job + pipeline definition, JobSpec parsing for feature inputs/model/output configs, optional prediction-feature join job, and documentation updates for the inference JobSpec and pipeline integration.

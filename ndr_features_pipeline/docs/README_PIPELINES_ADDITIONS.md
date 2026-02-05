@@ -1,7 +1,7 @@
 
 # NDR SageMaker Pipeline Additions
 
-This directory includes two additional pipeline definition modules:
+This directory includes additional pipeline definition modules:
 
 1. `sagemaker_pipeline_definitions_with_pairs.py`
    - Defines `build_ndr_15m_pipeline_with_pairs`, a 15m streaming pipeline
@@ -56,6 +56,22 @@ This directory includes two additional pipeline definition modules:
        - `InstanceType`
        - `InstanceCount`
        - `ImageUri`
+
+4. `sagemaker_pipeline_definitions_inference.py`
+   - Defines `build_inference_predictions_pipeline`, a decoupled inference pipeline
+     that reads features from S3, invokes the model endpoint, and writes prediction
+     outputs to S3.
+   - Single ProcessingStep:
+       - `InferencePredictionsStep` -> `run_inference_predictions.py`
+   - Parameters:
+       - `ProjectName`
+       - `FeatureSpecVersion`
+       - `MiniBatchId`
+       - `BatchStartTsIso`
+       - `BatchEndTsIso`
+       - `ProcessingImageUri`
+       - `ProcessingInstanceType`
+       - `ProcessingInstanceCount`
 
 ## Integration instructions
 
@@ -209,3 +225,72 @@ This directory includes two additional pipeline definition modules:
      "owner": "ndr-team"
    }
    ```
+
+5. **Decoupled inference pipeline**
+
+   Register and trigger the inference pipeline after the feature generation
+   pipeline completes (or via an S3 event):
+
+   ```python
+   from ndr.pipeline.sagemaker_pipeline_definitions_inference import (
+       build_inference_predictions_pipeline,
+   )
+
+   def build_and_register_inference_pipeline(role_arn: str, region: str, bucket: str):
+       pipeline = build_inference_predictions_pipeline(
+           pipeline_name="ndr-inference-predictions",
+           role_arn=role_arn,
+           region_name=region,
+           default_bucket=bucket,
+       )
+       pipeline.upsert(role_arn)
+       return pipeline
+   ```
+
+   The inference JobSpec must provide feature inputs, model endpoint details,
+   and output configuration. Example:
+
+   ```json
+   {
+     "project_name": "ndr-prod",
+     "job_name": "inference_predictions",
+     "feature_spec_version": "v1",
+     "spec": {
+       "feature_inputs": {
+         "fg_a": {
+           "s3_prefix": "s3://ndr-data/features",
+           "dataset": "fg_a"
+         },
+         "fg_c": {
+           "s3_prefix": "s3://ndr-data/features",
+           "dataset": "fg_c"
+         }
+       },
+       "join_keys": ["host_ip", "window_label", "window_end_ts"],
+       "model": {
+         "endpoint_name": "ndr-rt-endpoint",
+         "timeout_seconds": 60,
+         "max_payload_mb": 5,
+         "max_records_per_payload": 200,
+         "max_retries": 3,
+         "model_version": "2025-01-01",
+         "model_name": "ndr-model"
+       },
+       "output": {
+         "s3_prefix": "s3://ndr-data/predictions",
+         "partition_keys": ["feature_spec_version", "dt", "model_version"],
+         "dataset": "inference_predictions"
+       },
+       "join_output": {
+         "s3_prefix": "s3://ndr-data/predictions_joined",
+         "partition_keys": ["feature_spec_version", "dt", "model_version"],
+         "dataset": "prediction_feature_join"
+       }
+     }
+   }
+   ```
+
+   If you want a joined dataset for Redshift/Iceberg ingestion, run the optional
+   `run_prediction_feature_join.py` job with the same runtime parameters. It
+   reads the predictions + feature outputs and writes a combined dataset to the
+   `join_output` prefix.

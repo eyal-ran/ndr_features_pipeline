@@ -285,3 +285,67 @@
    - Emit audit logs/metrics for any fallback/imputation event.
 
 **Status:** ToDo.
+
+## 16) Expand anomaly-focused FG-A/FG-C features + reduce FG-C dimensionality
+**Issue:** The current FG-A/FG-C builders omit legacy anomaly-focused features (novelty, high-risk segment interactions, suspicion scores) and generate a wide FG-C feature set (2,660+) that may be redundant. We need to reintroduce high-signal features while constraining FG-C to a curated subset that maximizes detection quality.
+
+**Plan (ToDo):**
+1) **Add legacy anomaly features to FG-A (and required dependencies):**
+   - **Novelty/rarity lookback30d features (per window + inbound variants):**
+     - `new_peer_cnt_lookback30d_*`, `rare_peer_cnt_lookback30d_*`, `new_peer_ratio_lookback30d_*`.
+     - `new_dst_port_cnt_lookback30d_*`, `rare_dst_port_cnt_lookback30d_*`.
+     - `new_pair_cnt_lookback30d_*`, `new_src_dst_port_cnt_lookback30d_*`.
+   - **High-risk segment interaction features:**
+     - `high_risk_segment_sessions_cnt_*`, `high_risk_segment_unique_dsts_*`, `has_high_risk_segment_interaction_*`
+     - inbound equivalents (prefixed with `in_`).
+   - **Dependencies to add:**
+     - **Delta tables:** add or extend per-slice fields needed to compute peer/port uniqueness and entropy, per-host peer lists, and segment assignment if missing.
+     - **Reference tables:** add S3 reference for 30d lookback (per host) for peer/port/pair history; include rollup tables to avoid re-scanning raw logs per run.
+     - **Segment/risk configuration:** ensure segment mapping + high-risk segment allowlist/denylist is accessible to FG-A (JobSpec + project parameters).
+   - **Implementation steps:**
+     - Extend `fg_a_schema.py` metric lists to include new novelty/high-risk segment metrics.
+     - Extend `fg_a_builder_job.py` to:
+       - Load lookback30d tables (or rolling reference table) and compute novelty deltas per window.
+       - Join segment/risk metadata and compute high-risk segment interactions.
+     - Add schema enforcement for new columns prior to S3 write (use item #15 tooling).
+
+2) **Enable pair-rarity signals for FG-C (requires base-table changes):**
+   - **Add dst_ip/dst_port to FG-A outputs** if required for downstream joins, or
+   - **Alternative:** emit a lightweight “FG-A pair context” table keyed by host_ip + window_label + window_end_ts + dst_ip + dst_port for FG-C to join.
+   - **Ensure FG-B pair rarity baselines** include host + segment baselines and are consistently partitioned for FG-C joins.
+   - Update `fg_c_builder_job.py` to assert required join keys and fail fast if pair features are requested but missing.
+
+3) **Add legacy FG-C suspicion/anomaly features (curated set):**
+   - Reintroduce top legacy FG-C features with highest anomaly relevance:
+     - `excess_over_p95_*`, `excess_ratio_p95_*`, `iqr_dev_*`
+     - `time_band_violation_flag`
+     - `anomaly_strength_core`, `beacon_suspicion_score`, `exfiltration_suspicion_score`
+     - `rare_pair_flag`, `rare_pair_weighted_z_*`
+   - Define formulas based on FG-B baselines + FG-A metrics; document in feature catalog.
+   - Add explicit unit tests for at least one metric per new feature family.
+
+4) **Reduce FG-C dimensionality via a curated metric list + transform subset:**
+   - **Default curated metric list:** establish a vetted anomaly-focused subset as the **default behavior** (e.g., sessions/bytes totals, entropy, high-risk port activity, novelty metrics, burstiness, deny ratio).
+   - **JobSpec override/augment:** if `JobSpec.metrics` is provided, **merge/augment** the default subset with those metrics (do not replace the default subset), so reduction remains the baseline unless explicitly expanded.
+   - **Transform subset:** limit to 2–3 transforms per metric (e.g., `z_mad`, `ratio`, `log_ratio`) and drop redundant magnifiers unless proven useful.
+   - **Config-driven:** make both lists JobSpec-configurable; emit a catalog manifest per `feature_spec_version`.
+   - **Expected outcome:** reduce FG-C feature count from ~2,660 to a smaller, high-signal set (target 300–800 depending on curated metrics).
+
+5) **Add production-grade NDR anomaly features beyond legacy (optional extensions):**
+   - **Beaconing cadence:** periodicity scores over destination IP/port (e.g., burstiness + low variance inter-arrival time).
+   - **Exfil indicators:** outbound bytes spikes vs baseline, high bytes asymmetry, unusual destination port risk.
+   - **Lateral movement indicators:** spikes in unique internal destinations, new internal segments, admin/fileshare port usage anomalies.
+   - Ensure these are only added if they can be computed from available deltas / baselines; otherwise add minimal new delta fields or rollups.
+
+6) **Coordination & forward-compatibility safeguards:**
+   - Ensure all feature-building steps (delta → FG-A → pair-counts → FG-B → FG-C) remain coordinated and pass end-to-end integration without errors after these changes.
+   - Implement changes in a way that preserves compatibility with the upcoming schema enforcement and cataloging work in item #15 (no blocking schema enforcement, no breaking contracts assumed by item #15).
+
+7) **Testing & validation:**
+   - Add unit tests for:
+     - Lookback30d novelty computation and missing-history handling.
+     - High-risk segment feature derivation.
+     - FG-C suspicion feature correctness (excess-over-p95, beacon score, etc.).
+   - Add a small integration test (local Spark) to ensure FG-A → FG-B → FG-C pipeline can build with the curated metric list and new features.
+
+**Status:** ToDo.

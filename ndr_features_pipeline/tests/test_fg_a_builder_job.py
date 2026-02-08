@@ -163,3 +163,142 @@ def test_fg_a_builder_basic_window_aggregation(tmp_path):
     assert hasattr(row_15m, "hour_of_day")
     assert hasattr(row_15m, "is_working_hours")
     assert hasattr(row_15m, "is_weekend")
+
+
+def test_fg_a_builder_novelty_and_high_risk_segments(tmp_path):
+    spark = _create_spark()
+
+    anchor = dt.datetime(2025, 1, 1, 12, 0, 0)
+    slice_end = anchor
+
+    delta_df = spark.createDataFrame(
+        [
+            {
+                "mini_batch_id": "batch-1",
+                "host_ip": "10.0.0.1",
+                "role": "outbound",
+                "slice_start_ts": slice_end - dt.timedelta(minutes=15),
+                "slice_end_ts": slice_end,
+                "sessions_cnt": 10,
+                "allow_cnt": 10,
+                "deny_cnt": 0,
+                "alert_cnt": 0,
+                "rst_cnt": 0,
+                "aged_out_cnt": 0,
+                "zero_reply_cnt": 0,
+                "short_session_cnt": 0,
+                "bytes_src_sum": 100.0,
+                "bytes_dst_sum": 50.0,
+                "duration_sum": 5.0,
+                "tcp_cnt": 10,
+                "udp_cnt": 0,
+                "icmp_cnt": 0,
+                "threat_cnt": 0,
+                "traffic_cnt": 10,
+                "peer_ip_nunique": 2,
+                "peer_port_nunique": 2,
+                "peer_segment_nunique": 1,
+                "peer_ip_entropy": 1.0,
+                "peer_port_entropy": 0.7,
+                "peer_ip_top1_sessions_share": 0.5,
+                "peer_port_top1_sessions_share": 0.5,
+                "peer_ip_top1_bytes_share": 0.5,
+                "peer_port_top1_bytes_share": 0.5,
+                "max_sessions_per_minute": 5,
+                "high_risk_port_sessions_cnt": 0,
+                "admin_port_sessions_cnt": 0,
+                "fileshare_port_sessions_cnt": 0,
+                "directory_port_sessions_cnt": 0,
+                "db_port_sessions_cnt": 0,
+            }
+        ]
+    )
+
+    pair_context_df = spark.createDataFrame(
+        [
+            {
+                "host_ip": "10.0.0.1",
+                "role": "outbound",
+                "peer_ip": "1.1.1.1",
+                "peer_port": 80,
+                "slice_start_ts": slice_end - dt.timedelta(minutes=15),
+                "slice_end_ts": slice_end,
+                "sessions_cnt": 5,
+                "event_ts": slice_end,
+            },
+            {
+                "host_ip": "10.0.0.1",
+                "role": "outbound",
+                "peer_ip": "2.2.2.2",
+                "peer_port": 443,
+                "slice_start_ts": slice_end - dt.timedelta(minutes=15),
+                "slice_end_ts": slice_end,
+                "sessions_cnt": 5,
+                "event_ts": slice_end,
+            },
+            {
+                "host_ip": "10.0.0.1",
+                "role": "outbound",
+                "peer_ip": "192.168.1.10",
+                "peer_port": 22,
+                "slice_start_ts": slice_end - dt.timedelta(minutes=15),
+                "slice_end_ts": slice_end,
+                "sessions_cnt": 3,
+                "event_ts": slice_end,
+            },
+        ]
+    ).withColumn("pair_key", F.concat_ws("|", F.col("peer_ip"), F.col("peer_port")))
+
+    lookback_df = spark.createDataFrame(
+        [
+            {
+                "host_ip": "10.0.0.1",
+                "peer_ip": "1.1.1.1",
+                "peer_port": 80,
+                "pair_key": "1.1.1.1|80",
+                "peer_seen_count": 1,
+                "port_seen_count": 1,
+                "pair_seen_count": 1,
+            }
+        ]
+    )
+
+    delta_path = str(tmp_path / "delta")
+    pair_context_path = str(tmp_path / "pair_context")
+    lookback_path = str(tmp_path / "lookback")
+    delta_df.write.mode("overwrite").parquet(delta_path)
+    pair_context_df.write.mode("overwrite").parquet(pair_context_path)
+    lookback_df.write.mode("overwrite").parquet(lookback_path)
+
+    config = FGABuilderConfig(
+        project_name="ndr-unit-test",
+        delta_s3_prefix=delta_path,
+        output_s3_prefix=str(tmp_path / "fg_a"),
+        mini_batch_id="batch-1",
+        batch_start_ts_iso=anchor.isoformat() + "Z",
+        feature_spec_version="fga_v1_test",
+        pair_context_s3_prefix=pair_context_path,
+        lookback30d_s3_prefix=lookback_path,
+        lookback30d_thresholds={"peer": 1, "port": 1, "pair": 1},
+        high_risk_segments=["192.168.1.0/24"],
+    )
+
+    job = FGABuilderJob(spark=spark, config=config)
+    job._compute_anchor_ts = lambda df: anchor  # type: ignore
+    job._run_impl()
+
+    output_path = build_batch_output_prefix(
+        base_prefix=config.output_s3_prefix,
+        dataset="fg_a",
+        batch_start_ts_iso=config.batch_start_ts_iso,
+        batch_id=config.mini_batch_id,
+    )
+    fg_a_df = spark.read.parquet(output_path)
+    row_15m = [r for r in fg_a_df.collect() if r.window_label == "w_15m"][0]
+
+    assert row_15m.new_peer_cnt_lookback30d_w_15m == 2
+    assert row_15m.rare_peer_cnt_lookback30d_w_15m == 1
+    assert row_15m.new_dst_port_cnt_lookback30d_w_15m == 2
+    assert row_15m.new_pair_cnt_lookback30d_w_15m == 2
+    assert row_15m.high_risk_segment_sessions_cnt_w_15m == 3
+    assert row_15m.has_high_risk_segment_interaction_w_15m == 1

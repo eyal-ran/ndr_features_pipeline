@@ -71,6 +71,8 @@ class JobSpecLoader:
         roles = [RoleMappingSpec(**r) for r in payload["roles"]]
         operators = [OperatorSpec(**op) for op in payload["operators"]]
         output_spec = OutputSpec(**payload["output"])
+        pair_context_payload = payload.get("pair_context_output")
+        pair_context_output = OutputSpec(**pair_context_payload) if pair_context_payload else None
         return JobSpec(
             project_name=payload["project_name"],
             job_name=payload["job_name"],
@@ -81,6 +83,7 @@ class JobSpecLoader:
             roles=roles,
             operators=operators,
             output=output_spec,
+            pair_context_output=pair_context_output,
         )
 
 

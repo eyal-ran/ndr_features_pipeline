@@ -46,6 +46,7 @@ from ndr.config.job_spec_loader import load_job_spec
 from ndr.processing.base_runner import BaseRunner
 from ndr.processing.output_paths import build_batch_output_prefix
 from ndr.processing.segment_utils import add_segment_id
+from ndr.model.fg_a_schema import WINDOW_LABELS
 
 
 LOGGER = get_logger(__name__)
@@ -176,35 +177,112 @@ class FGCorrBuilderJob(BaseRunner):
         join_keys = self.job_spec.get("join_keys", default_keys)
         return join_keys
 
+    def _load_pair_context(self, feature_spec_version: str) -> Optional[DataFrame]:
+        pair_cfg = self.job_spec.get("pair_context_input", {})
+        prefix = pair_cfg.get("s3_prefix")
+        if not prefix:
+            return None
+        df = self.spark.read.parquet(prefix).filter(F.col("feature_spec_version") == F.lit(feature_spec_version))
+        required_cols = {"host_ip", "window_label", "window_end_ts", "dst_ip", "dst_port"}
+        missing_cols = required_cols - set(df.columns)
+        if missing_cols:
+            raise ValueError(f"Pair context input missing required columns: {sorted(missing_cols)}")
+        return df
+
     def _get_metrics_to_compare(self, fg_a_df: DataFrame) -> List[str]:
         """Return the list of FG-A metrics that should be compared to baselines.
 
         The JobSpec may explicitly define metrics under "metrics". If not,
-        a heuristic fallback is used: all non-key numeric columns that have
-        a corresponding *_median baseline in FG-B.
+        a curated default subset is used. If a JobSpec list is provided,
+        it is merged with the curated default to keep the reduced baseline
+        unless explicitly expanded.
         """
-        metrics = self.job_spec.get("metrics", [])
-        if metrics:
-            return metrics
+        default_metrics = self._build_default_metric_list()
+        job_metrics = self.job_spec.get("metrics", [])
+        if job_metrics:
+            merged = sorted(set(default_metrics).union(job_metrics))
+        else:
+            merged = default_metrics
 
-        # Fallback: pick numeric FG-A columns that look like metrics
-        key_cols = {"host_ip", "window_label", "window_start_ts", "window_end_ts", "record_id"}
-        candidates: List[str] = []
-        for name, dtype in fg_a_df.dtypes:
-            if name in key_cols:
-                continue
-            if dtype not in ("double", "bigint", "long", "int", "float"):
-                continue
-            # Heuristic: ignore obvious flags, they can still be added explicitly via JobSpec
-            if name.endswith("_flag"):
-                continue
-            candidates.append(name)
+        available = set(fg_a_df.columns)
+        filtered = [metric for metric in merged if metric in available]
 
-        LOGGER.info(
-            "Inferred FG-C metrics from FG-A schema (can be overridden via JobSpec.metrics).",
-            extra={"metric_count": len(candidates)},
-        )
-        return candidates
+        missing_count = len(merged) - len(filtered)
+        if missing_count:
+            LOGGER.info(
+                "Filtered %s metrics missing from FG-A schema.",
+                missing_count,
+                extra={"metric_count": len(filtered)},
+            )
+        return filtered
+
+    def _build_default_metric_list(self) -> List[str]:
+        """Return curated default FG-A metric list for FG-C correlation."""
+        curated_base_metrics = [
+            "sessions_cnt",
+            "allow_cnt",
+            "deny_cnt",
+            "alert_cnt",
+            "rst_cnt",
+            "zero_reply_cnt",
+            "short_session_cnt",
+            "bytes_src_sum",
+            "bytes_dst_sum",
+            "duration_sum",
+            "peer_ip_nunique",
+            "peer_port_nunique",
+            "peer_segment_nunique",
+            "peer_ip_entropy",
+            "peer_port_entropy",
+            "peer_ip_top1_sessions_share",
+            "peer_port_top1_sessions_share",
+            "peer_ip_top1_bytes_share",
+            "peer_port_top1_bytes_share",
+            "max_sessions_per_minute",
+            "high_risk_port_sessions_cnt",
+            "admin_port_sessions_cnt",
+            "fileshare_port_sessions_cnt",
+            "directory_port_sessions_cnt",
+            "db_port_sessions_cnt",
+            "traffic_cnt",
+            "threat_cnt",
+        ]
+
+        curated_derived_metrics = [
+            "duration_mean",
+            "deny_ratio",
+            "bytes_asymmetry_ratio",
+            "transport_tcp_ratio",
+            "transport_udp_ratio",
+            "transport_icmp_ratio",
+            "has_high_risk_port_activity",
+            "new_peer_cnt_lookback30d",
+            "rare_peer_cnt_lookback30d",
+            "new_peer_ratio_lookback30d",
+            "new_dst_port_cnt_lookback30d",
+            "rare_dst_port_cnt_lookback30d",
+            "new_pair_cnt_lookback30d",
+            "new_src_dst_port_cnt_lookback30d",
+            "high_risk_segment_sessions_cnt",
+            "high_risk_segment_unique_dsts",
+            "has_high_risk_segment_interaction",
+        ]
+
+        prefixes = ["", "in_"]
+        metrics: List[str] = []
+        for prefix in prefixes:
+            for base_metric in curated_base_metrics + curated_derived_metrics:
+                for window_label in WINDOW_LABELS:
+                    metrics.append(f"{prefix}{base_metric}_{window_label}")
+
+        return metrics
+
+    def _get_transform_list(self) -> List[str]:
+        """Return the list of FG-C transforms to compute."""
+        transforms = self.job_spec.get("transforms")
+        if transforms:
+            return transforms
+        return ["z_mad", "ratio", "log_ratio"]
 
     # ------------------------------------------------------------------ #
     # Core horizon processing                                            #
@@ -285,6 +363,14 @@ class FGCorrBuilderJob(BaseRunner):
             )
             return self.spark.createDataFrame([], schema=empty_schema)
 
+        pair_context_df = self._load_pair_context(feature_spec_version)
+        if pair_context_df is not None:
+            fg_a_df = fg_a_df.join(
+                pair_context_df,
+                on=["host_ip", "window_label", "window_end_ts"],
+                how="left",
+            )
+
         join_keys = self._get_join_keys()
 
         # ------------------------------------------------------------------
@@ -335,6 +421,7 @@ class FGCorrBuilderJob(BaseRunner):
         # 4. Build correlation features for configured metrics
         # ------------------------------------------------------------------
         joined = self._compute_correlation_features(joined, metrics)
+        joined = self._compute_suspicion_features(joined)
 
         # Add baseline meta columns (use FG-B values if present)
         joined = joined.withColumn("baseline_horizon", F.lit(horizon))
@@ -546,6 +633,7 @@ class FGCorrBuilderJob(BaseRunner):
         """
         eps = float(self.job_spec.get("eps", 1e-6))
         z_max = float(self.job_spec.get("z_max", 6.0))
+        transforms = set(self._get_transform_list())
 
         for m in metrics:
             median_col = f"{m}_median"
@@ -573,24 +661,148 @@ class FGCorrBuilderJob(BaseRunner):
                 F.when(iqr.isNotNull(), diff / (iqr + F.lit(eps))).otherwise(F.lit(0.0))
             )
 
-            # Derived correlation & magnifier features
-            df = df.withColumn(f"{m}_diff", diff)
-            df = df.withColumn(f"{m}_ratio", ratio)
-            df = df.withColumn(f"{m}_z_mad", z_mad)
+            if "diff" in transforms:
+                df = df.withColumn(f"{m}_diff", diff)
+            if "ratio" in transforms:
+                df = df.withColumn(f"{m}_ratio", ratio)
+            if "z_mad" in transforms or "z_mad_clipped" in transforms or "z_mad_signed_pow3" in transforms:
+                df = df.withColumn(f"{m}_z_mad", z_mad)
+            if "abs_dev_over_mad" in transforms:
+                df = df.withColumn(
+                    f"{m}_abs_dev_over_mad",
+                    F.when(scale.isNotNull(), F.abs(diff) / (scale + F.lit(eps))).otherwise(F.lit(0.0)),
+                )
+
+            if "z_mad_clipped" in transforms or "z_mad_signed_pow3" in transforms:
+                z_clipped = F.when(z_mad > F.lit(z_max), F.lit(z_max)).when(
+                    z_mad < F.lit(-z_max), F.lit(-z_max)
+                ).otherwise(z_mad)
+                if "z_mad_clipped" in transforms:
+                    df = df.withColumn(f"{m}_z_mad_clipped", z_clipped)
+                if "z_mad_signed_pow3" in transforms:
+                    signed_pow3 = F.signum(z_clipped) * F.pow(F.abs(z_clipped), F.lit(3.0))
+                    df = df.withColumn(f"{m}_z_mad_signed_pow3", signed_pow3)
+
+            if "log_ratio" in transforms:
+                df = df.withColumn(f"{m}_log_ratio", F.log(ratio + F.lit(eps)))
+
+        return df
+
+    def _compute_suspicion_features(self, df: DataFrame) -> DataFrame:
+        """Compute curated FG-C suspicion/anomaly features."""
+        eps = float(self.job_spec.get("eps", 1e-6))
+
+        default_suspicion_metrics = [
+            "sessions_cnt_w_15m",
+            "bytes_src_sum_w_15m",
+            "bytes_dst_sum_w_15m",
+            "deny_ratio_w_15m",
+            "peer_ip_nunique_w_15m",
+            "in_sessions_cnt_w_15m",
+            "in_bytes_src_sum_w_15m",
+            "in_bytes_dst_sum_w_15m",
+        ]
+        suspicion_metrics = self.job_spec.get("suspicion_metrics", default_suspicion_metrics)
+
+        for metric in suspicion_metrics:
+            p95_col = f"{metric}_p95"
+            iqr_col = f"{metric}_iqr"
+            median_col = f"{metric}_median"
+            if metric not in df.columns or p95_col not in df.columns or iqr_col not in df.columns:
+                continue
+
+            cur = F.col(metric)
+            p95 = F.col(p95_col)
+            iqr = F.col(iqr_col)
+            median = F.col(median_col) if median_col in df.columns else F.lit(0.0)
+
             df = df.withColumn(
-                f"{m}_abs_dev_over_mad",
-                F.when(scale.isNotNull(), F.abs(diff) / (scale + F.lit(eps))).otherwise(F.lit(0.0)),
+                f"{metric}_excess_over_p95",
+                F.when(cur > p95, cur - p95).otherwise(F.lit(0.0)),
+            ).withColumn(
+                f"{metric}_excess_ratio_p95",
+                cur / (p95 + F.lit(eps)),
+            ).withColumn(
+                f"{metric}_iqr_dev",
+                (cur - median) / (iqr + F.lit(eps)),
             )
 
-            z_clipped = F.when(z_mad > F.lit(z_max), F.lit(z_max)).when(
-                z_mad < F.lit(-z_max), F.lit(-z_max)
-            ).otherwise(z_mad)
-            df = df.withColumn(f"{m}_z_mad_clipped", z_clipped)
+        if "time_band" in df.columns and "is_working_hours" in df.columns:
+            df = df.withColumn(
+                "time_band_violation_flag",
+                F.when(
+                    (F.col("time_band") == F.lit("working_hours")) & (F.col("is_working_hours") == F.lit(0)),
+                    F.lit(1),
+                )
+                .when(
+                    (F.col("time_band") == F.lit("off_hours")) & (F.col("is_working_hours") == F.lit(1)),
+                    F.lit(1),
+                )
+                .otherwise(F.lit(0)),
+            )
 
-            signed_pow3 = F.signum(z_clipped) * F.pow(F.abs(z_clipped), F.lit(3.0))
-            df = df.withColumn(f"{m}_z_mad_signed_pow3", signed_pow3)
+        def max_abs_z(metrics: List[str]) -> F.Column:
+            z_cols = [F.abs(F.col(f"{m}_z_mad")) for m in metrics if f"{m}_z_mad" in df.columns]
+            if not z_cols:
+                return F.lit(0.0)
+            return F.greatest(*z_cols)
 
-            df = df.withColumn(f"{m}_log_ratio", F.log(ratio + F.lit(eps)))
+        anomaly_metrics = self.job_spec.get(
+            "anomaly_strength_metrics",
+            [
+                "sessions_cnt_w_15m",
+                "bytes_src_sum_w_15m",
+                "bytes_dst_sum_w_15m",
+                "deny_ratio_w_15m",
+                "peer_ip_nunique_w_15m",
+            ],
+        )
+        df = df.withColumn("anomaly_strength_core", max_abs_z(anomaly_metrics))
+
+        beacon_metrics = self.job_spec.get(
+            "beacon_metrics",
+            ["max_sessions_per_minute_w_15m", "sessions_cnt_w_15m"],
+        )
+        df = df.withColumn("beacon_suspicion_score", max_abs_z(beacon_metrics))
+
+        exfil_metrics = self.job_spec.get(
+            "exfiltration_metrics",
+            ["bytes_src_sum_w_15m", "bytes_asymmetry_ratio_w_15m"],
+        )
+        df = df.withColumn("exfiltration_suspicion_score", max_abs_z(exfil_metrics))
+
+        lateral_metrics = self.job_spec.get(
+            "lateral_movement_metrics",
+            ["peer_ip_nunique_w_15m", "peer_segment_nunique_w_15m"],
+        )
+        df = df.withColumn("lateral_movement_score", max_abs_z(lateral_metrics))
+
+        if "is_rare_pair_flag" in df.columns:
+            df = df.withColumn("rare_pair_flag", F.col("is_rare_pair_flag").cast("int"))
+        else:
+            df = df.withColumn("rare_pair_flag", F.lit(0))
+
+        if "pair_rarity_score" in df.columns:
+            rarity_weight = F.when(F.col("pair_rarity_score").isNull(), F.lit(0.0)).otherwise(
+                F.col("pair_rarity_score")
+            )
+        else:
+            rarity_weight = F.lit(0.0)
+        rare_pair_metrics = self.job_spec.get(
+            "rare_pair_metrics",
+            ["sessions_cnt_w_15m", "bytes_src_sum_w_15m"],
+        )
+        for metric in rare_pair_metrics:
+            z_col = f"{metric}_z_mad"
+            if z_col not in df.columns:
+                continue
+            df = df.withColumn(f"rare_pair_weighted_z_{metric}", rarity_weight * F.col(z_col))
+
+        df = df.withColumn("beaconing_cadence_score", max_abs_z(["max_sessions_per_minute_w_15m"]))
+        df = df.withColumn("exfiltration_indicator", max_abs_z(["bytes_src_sum_w_15m", "bytes_asymmetry_ratio_w_15m"]))
+        df = df.withColumn(
+            "lateral_movement_indicator", max_abs_z(["peer_ip_nunique_w_15m", "peer_segment_nunique_w_15m"])
+        )
 
         return df
 

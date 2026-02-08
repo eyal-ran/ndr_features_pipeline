@@ -67,3 +67,4 @@ class JobSpec:
     roles: List[RoleMappingSpec]
     operators: List[OperatorSpec]
     output: OutputSpec
+    pair_context_output: Optional[OutputSpec] = None

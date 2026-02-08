@@ -33,7 +33,7 @@ import logging
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
@@ -49,6 +49,7 @@ from ndr.model.fg_a_schema import (
     DERIVED_METRICS,
     build_feature_name,
 )
+from ndr.processing.segment_utils import add_segment_id
 
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,12 @@ class FGABuilderConfig:
     mini_batch_id: str
     batch_start_ts_iso: str
     feature_spec_version: str
+    pair_context_s3_prefix: Optional[str] = None
+    pair_context_output_prefix: Optional[str] = None
+    lookback30d_s3_prefix: Optional[str] = None
+    lookback30d_thresholds: Optional[Dict[str, int]] = None
+    high_risk_segments: Optional[List[str]] = None
+    segment_mapping: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -143,6 +150,9 @@ class FGABuilderJob(BaseProcessingJobRunner):
             logger.warning("Delta DataFrame for mini_batch_id=%s is empty; nothing to do", self.config.mini_batch_id)
             return
 
+        pair_context_df = self._load_pair_context()
+        lookback_df = self._load_lookback_table()
+
         # 2. Determine anchor time (window_end_ts) = max slice_end_ts in this batch.
         anchor_ts = self._compute_anchor_ts(delta_df)
 
@@ -155,6 +165,8 @@ class FGABuilderJob(BaseProcessingJobRunner):
             prefix="",
             base_metrics=OUTBOUND_BASE_METRICS,
             anchor_ts=anchor_ts,
+            pair_context_df=pair_context_df,
+            lookback_df=lookback_df,
         )
 
         inbound_df = self._build_direction_features(
@@ -163,6 +175,8 @@ class FGABuilderJob(BaseProcessingJobRunner):
             prefix="in_",
             base_metrics=INBOUND_BASE_METRICS,
             anchor_ts=anchor_ts,
+            pair_context_df=pair_context_df,
+            lookback_df=lookback_df,
         )
 
         # 4. Join outbound + inbound features on host_ip + window_label + window_start/end.
@@ -173,6 +187,9 @@ class FGABuilderJob(BaseProcessingJobRunner):
 
         # 6. Write to S3 as Parquet.
         self._write_to_s3(fga_df)
+
+        if pair_context_df is not None:
+            self._write_pair_context(pair_context_df, anchor_ts)
 
     # ------------------------------------------------------------------
     # Helpers: IO
@@ -227,6 +244,26 @@ class FGABuilderJob(BaseProcessingJobRunner):
 
         return df
 
+    def _load_pair_context(self) -> Optional[DataFrame]:
+        if not self.config.pair_context_s3_prefix:
+            return None
+        logger.info("Reading pair context from %s", self.config.pair_context_s3_prefix)
+        df = self.spark.read.parquet(self.config.pair_context_s3_prefix)
+        if "feature_spec_version" in df.columns:
+            df = df.filter(F.col("feature_spec_version") == self.config.feature_spec_version)
+        if "mini_batch_id" in df.columns:
+            df = df.filter(F.col("mini_batch_id") == self.config.mini_batch_id)
+        return df
+
+    def _load_lookback_table(self) -> Optional[DataFrame]:
+        if not self.config.lookback30d_s3_prefix:
+            return None
+        logger.info("Reading lookback30d table from %s", self.config.lookback30d_s3_prefix)
+        df = self.spark.read.parquet(self.config.lookback30d_s3_prefix)
+        if "feature_spec_version" in df.columns:
+            df = df.filter(F.col("feature_spec_version") == self.config.feature_spec_version)
+        return df
+
 
     def _write_to_s3(self, df: DataFrame) -> None:
         """Write FG-A dataset to S3 in Parquet format.
@@ -251,6 +288,63 @@ class FGABuilderJob(BaseProcessingJobRunner):
 
         (
             df.repartition("feature_spec_version", "dt")
+            .write.mode("overwrite")
+            .partitionBy("feature_spec_version", "dt")
+            .parquet(output_path)
+        )
+
+    def _write_pair_context(self, df: DataFrame, anchor_ts: datetime) -> None:
+        if not self.config.pair_context_output_prefix:
+            return
+        if df.rdd.isEmpty():
+            logger.warning("Pair context DataFrame is empty; skipping write.")
+            return
+
+        output_path = build_batch_output_prefix(
+            base_prefix=self.config.pair_context_output_prefix,
+            dataset="fg_a_pair_context",
+            batch_start_ts_iso=self.config.batch_start_ts_iso,
+            batch_id=self.config.mini_batch_id,
+        )
+
+        window_frames: List[DataFrame] = []
+        for window_label, minutes in FG_A_WINDOWS_MINUTES.items():
+            window_start = anchor_ts - timedelta(minutes=minutes)
+            filtered = df.filter(
+                (F.col("slice_end_ts") > F.lit(window_start)) & (F.col("slice_end_ts") <= F.lit(anchor_ts))
+            )
+            if filtered.rdd.isEmpty():
+                continue
+            grouped = (
+                filtered.groupBy("host_ip", "role", "peer_ip", "peer_port")
+                .agg(
+                    F.sum("sessions_cnt").alias("sessions_cnt"),
+                    F.max("event_ts").alias("event_ts"),
+                )
+                .withColumn("window_label", F.lit(window_label))
+                .withColumn("window_end_ts", F.lit(anchor_ts))
+                .withColumn("window_start_ts", F.lit(window_start))
+                .withColumnRenamed("peer_ip", "dst_ip")
+                .withColumnRenamed("peer_port", "dst_port")
+            )
+            window_frames.append(grouped)
+
+        if not window_frames:
+            logger.warning("No pair context rows found for configured windows.")
+            return
+
+        pair_context = window_frames[0]
+        for frame in window_frames[1:]:
+            pair_context = pair_context.unionByName(frame, allowMissingColumns=True)
+
+        pair_context = (
+            pair_context.withColumn("mini_batch_id", F.lit(self.config.mini_batch_id))
+            .withColumn("feature_spec_version", F.lit(self.config.feature_spec_version))
+            .withColumn("dt", F.date_format(F.col("window_end_ts"), "yyyy-MM-dd"))
+        )
+
+        (
+            pair_context.repartition("feature_spec_version", "dt")
             .write.mode("overwrite")
             .partitionBy("feature_spec_version", "dt")
             .parquet(output_path)
@@ -283,6 +377,8 @@ class FGABuilderJob(BaseProcessingJobRunner):
         prefix: str,
         base_metrics: List[str],
         anchor_ts: datetime,
+        pair_context_df: Optional[DataFrame],
+        lookback_df: Optional[DataFrame],
     ) -> DataFrame:
         """Build FG-A features for a specific role (outbound or inbound).
 
@@ -333,6 +429,9 @@ class FGABuilderJob(BaseProcessingJobRunner):
                     window_label=window_label,
                     window_minutes=minutes,
                     anchor_ts=anchor_ts,
+                    role_value=role_value,
+                    pair_context_df=pair_context_df,
+                    lookback_df=lookback_df,
                 )
             )
 
@@ -356,6 +455,9 @@ class FGABuilderJob(BaseProcessingJobRunner):
         window_label: str,
         window_minutes: int,
         anchor_ts: datetime,
+        role_value: str,
+        pair_context_df: Optional[DataFrame],
+        lookback_df: Optional[DataFrame],
     ) -> DataFrame:
         """Aggregate deltas for a single window and direction.
 
@@ -451,7 +553,213 @@ class FGABuilderJob(BaseProcessingJobRunner):
                 (F.col(hr_col) > F.lit(0)).cast("int"),
             )
 
+        aggregated = self._attach_novelty_features(
+            aggregated=aggregated,
+            pair_context_df=pair_context_df,
+            lookback_df=lookback_df,
+            role_value=role_value,
+            window_label=window_label,
+            window_start=window_start,
+            anchor_ts=anchor_ts,
+            prefix=prefix,
+        )
+
+        aggregated = self._attach_high_risk_segment_features(
+            aggregated=aggregated,
+            pair_context_df=pair_context_df,
+            role_value=role_value,
+            window_label=window_label,
+            window_start=window_start,
+            anchor_ts=anchor_ts,
+            prefix=prefix,
+        )
+
         return aggregated
+
+    def _attach_novelty_features(
+        self,
+        aggregated: DataFrame,
+        pair_context_df: Optional[DataFrame],
+        lookback_df: Optional[DataFrame],
+        role_value: str,
+        window_label: str,
+        window_start: datetime,
+        anchor_ts: datetime,
+        prefix: str,
+    ) -> DataFrame:
+        if pair_context_df is None or lookback_df is None:
+            return aggregated
+
+        role_pairs = pair_context_df.filter(F.col("role") == F.lit(role_value))
+        required_pair_cols = {"host_ip", "peer_ip", "peer_port", "slice_end_ts"}
+        missing_pair_cols = required_pair_cols - set(pair_context_df.columns)
+        if missing_pair_cols:
+            raise ValueError(f"Pair context missing required columns: {sorted(missing_pair_cols)}")
+        role_pairs = role_pairs.filter(
+            (F.col("slice_end_ts") > F.lit(window_start)) & (F.col("slice_end_ts") <= F.lit(anchor_ts))
+        )
+        if role_pairs.rdd.isEmpty():
+            return aggregated
+
+        role_pairs = role_pairs.withColumn(
+            "pair_key", F.concat_ws("|", F.col("peer_ip"), F.col("peer_port").cast("string"))
+        )
+
+        current_sets = role_pairs.groupBy("host_ip").agg(
+            F.collect_set("peer_ip").alias("current_peer_set"),
+            F.collect_set("peer_port").alias("current_port_set"),
+            F.collect_set("pair_key").alias("current_pair_set"),
+        )
+
+        thresholds = self.config.lookback30d_thresholds or {}
+        peer_threshold = int(thresholds.get("peer", 1))
+        port_threshold = int(thresholds.get("port", 1))
+        pair_threshold = int(thresholds.get("pair", 1))
+
+        required_lookback_cols = {
+            "host_ip",
+            "peer_ip",
+            "peer_port",
+            "pair_key",
+            "peer_seen_count",
+            "port_seen_count",
+            "pair_seen_count",
+        }
+        missing_lookback = required_lookback_cols - set(lookback_df.columns)
+        if missing_lookback:
+            raise ValueError(f"Lookback table missing required columns: {sorted(missing_lookback)}")
+
+        lookback_peers = lookback_df.groupBy("host_ip").agg(
+            F.collect_set("peer_ip").alias("known_peer_set"),
+            F.collect_set(F.when(F.col("peer_seen_count") <= F.lit(peer_threshold), F.col("peer_ip"))).alias(
+                "rare_peer_set"
+            ),
+            F.collect_set("peer_port").alias("known_port_set"),
+            F.collect_set(F.when(F.col("port_seen_count") <= F.lit(port_threshold), F.col("peer_port"))).alias(
+                "rare_port_set"
+            ),
+            F.collect_set("pair_key").alias("known_pair_set"),
+            F.collect_set(F.when(F.col("pair_seen_count") <= F.lit(pair_threshold), F.col("pair_key"))).alias(
+                "rare_pair_set"
+            ),
+        )
+
+        joined = aggregated.join(current_sets, on="host_ip", how="left").join(
+            lookback_peers, on="host_ip", how="left"
+        )
+
+        def safe_size(col_name: str) -> F.Column:
+            return F.when(F.col(col_name).isNull(), F.lit(0)).otherwise(F.size(F.col(col_name)))
+
+        def array_except_size(left: str, right: str) -> F.Column:
+            return F.when(
+                F.col(left).isNull(),
+                F.lit(0),
+            ).otherwise(
+                F.size(F.array_except(F.col(left), F.coalesce(F.col(right), F.expr("array()"))))
+            )
+
+        def array_intersect_size(left: str, right: str) -> F.Column:
+            return F.when(
+                F.col(left).isNull(),
+                F.lit(0),
+            ).otherwise(
+                F.size(F.array_intersect(F.col(left), F.coalesce(F.col(right), F.expr("array()"))))
+            )
+
+        new_peer_cnt = array_except_size("current_peer_set", "known_peer_set")
+        peer_total = safe_size("current_peer_set")
+        new_peer_ratio = F.when(peer_total > F.lit(0), new_peer_cnt / peer_total).otherwise(F.lit(0.0))
+        rare_peer_cnt = array_intersect_size("current_peer_set", "rare_peer_set")
+
+        new_port_cnt = array_except_size("current_port_set", "known_port_set")
+        rare_port_cnt = array_intersect_size("current_port_set", "rare_port_set")
+
+        new_pair_cnt = array_except_size("current_pair_set", "known_pair_set")
+        rare_pair_cnt = array_intersect_size("current_pair_set", "rare_pair_set")
+
+        joined = joined.withColumn(
+            build_feature_name(prefix, "new_peer_cnt_lookback30d", window_label), new_peer_cnt
+        ).withColumn(
+            build_feature_name(prefix, "rare_peer_cnt_lookback30d", window_label), rare_peer_cnt
+        ).withColumn(
+            build_feature_name(prefix, "new_peer_ratio_lookback30d", window_label), new_peer_ratio
+        ).withColumn(
+            build_feature_name(prefix, "new_dst_port_cnt_lookback30d", window_label), new_port_cnt
+        ).withColumn(
+            build_feature_name(prefix, "rare_dst_port_cnt_lookback30d", window_label), rare_port_cnt
+        ).withColumn(
+            build_feature_name(prefix, "new_pair_cnt_lookback30d", window_label), new_pair_cnt
+        ).withColumn(
+            build_feature_name(prefix, "new_src_dst_port_cnt_lookback30d", window_label), new_pair_cnt
+        )
+
+        return joined.drop(
+            "current_peer_set",
+            "current_port_set",
+            "current_pair_set",
+            "known_peer_set",
+            "rare_peer_set",
+            "known_port_set",
+            "rare_port_set",
+            "known_pair_set",
+            "rare_pair_set",
+        )
+
+    def _attach_high_risk_segment_features(
+        self,
+        aggregated: DataFrame,
+        pair_context_df: Optional[DataFrame],
+        role_value: str,
+        window_label: str,
+        window_start: datetime,
+        anchor_ts: datetime,
+        prefix: str,
+    ) -> DataFrame:
+        if pair_context_df is None:
+            return aggregated
+        high_risk_segments = self.config.high_risk_segments or []
+        if not high_risk_segments:
+            return aggregated
+
+        role_pairs = pair_context_df.filter(F.col("role") == F.lit(role_value))
+        required_pair_cols = {"host_ip", "peer_ip", "slice_end_ts", "sessions_cnt"}
+        missing_pair_cols = required_pair_cols - set(pair_context_df.columns)
+        if missing_pair_cols:
+            raise ValueError(f"Pair context missing required columns: {sorted(missing_pair_cols)}")
+        role_pairs = role_pairs.filter(
+            (F.col("slice_end_ts") > F.lit(window_start)) & (F.col("slice_end_ts") <= F.lit(anchor_ts))
+        )
+        if role_pairs.rdd.isEmpty():
+            return aggregated
+
+        role_pairs = add_segment_id(
+            df=role_pairs,
+            ip_col="peer_ip",
+            segment_mapping=self.config.segment_mapping,
+        )
+        high_risk_rows = role_pairs.filter(F.col("segment_id").isin(high_risk_segments))
+        if high_risk_rows.rdd.isEmpty():
+            return aggregated
+
+        high_risk = high_risk_rows.groupBy("host_ip").agg(
+            F.sum("sessions_cnt").alias("high_risk_segment_sessions_cnt"),
+            F.countDistinct("peer_ip").alias("high_risk_segment_unique_dsts"),
+        )
+
+        joined = aggregated.join(high_risk, on="host_ip", how="left")
+        joined = joined.withColumn(
+            build_feature_name(prefix, "high_risk_segment_sessions_cnt", window_label),
+            F.coalesce(F.col("high_risk_segment_sessions_cnt"), F.lit(0)),
+        ).withColumn(
+            build_feature_name(prefix, "high_risk_segment_unique_dsts", window_label),
+            F.coalesce(F.col("high_risk_segment_unique_dsts"), F.lit(0)),
+        ).withColumn(
+            build_feature_name(prefix, "has_high_risk_segment_interaction", window_label),
+            (F.coalesce(F.col("high_risk_segment_sessions_cnt"), F.lit(0)) > F.lit(0)).cast("int"),
+        )
+
+        return joined.drop("high_risk_segment_sessions_cnt", "high_risk_segment_unique_dsts")
 
     def _join_directions(self, outbound_df: DataFrame, inbound_df: DataFrame) -> DataFrame:
         """Join outbound + inbound per (host_ip, window_label, window_start/end)."""
@@ -542,6 +850,12 @@ def run_fg_a_builder_from_runtime_config(runtime_config: FGABuilderJobRuntimeCon
     if not delta_prefix or not output_prefix:
         raise ValueError("fg_a_builder JobSpec must define delta and output prefixes.")
 
+    pair_context_prefix = job_spec.get("pair_context_input", {}).get("s3_prefix")
+    pair_context_output = job_spec.get("pair_context_output", {}).get("s3_prefix")
+    lookback_cfg = job_spec.get("lookback30d", {})
+    lookback_prefix = lookback_cfg.get("s3_prefix")
+    lookback_thresholds = lookback_cfg.get("rare_thresholds", {})
+
     config = FGABuilderConfig(
         project_name=runtime_config.project_name,
         delta_s3_prefix=delta_prefix,
@@ -549,6 +863,12 @@ def run_fg_a_builder_from_runtime_config(runtime_config: FGABuilderJobRuntimeCon
         mini_batch_id=runtime_config.mini_batch_id,
         batch_start_ts_iso=runtime_config.batch_start_ts_iso,
         feature_spec_version=runtime_config.feature_spec_version,
+        pair_context_s3_prefix=pair_context_prefix,
+        pair_context_output_prefix=pair_context_output,
+        lookback30d_s3_prefix=lookback_prefix,
+        lookback30d_thresholds=lookback_thresholds,
+        high_risk_segments=job_spec.get("high_risk_segments", []),
+        segment_mapping=job_spec.get("segment_mapping"),
     )
 
     spark = (

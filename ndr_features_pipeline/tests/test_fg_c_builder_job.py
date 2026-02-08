@@ -64,7 +64,19 @@ class TestFGCCorrelationBuilder(unittest.TestCase):
         )
         job = FGCorrBuilderJob(runtime_config=runtime_cfg)
         # Provide minimal job_spec so eps/z_max are available
-        job.job_spec = {"eps": 1e-6, "z_max": 6.0}
+        job.job_spec = {
+            "eps": 1e-6,
+            "z_max": 6.0,
+            "transforms": [
+                "diff",
+                "ratio",
+                "z_mad",
+                "abs_dev_over_mad",
+                "z_mad_clipped",
+                "z_mad_signed_pow3",
+                "log_ratio",
+            ],
+        }
 
         out = job._compute_correlation_features(df, metrics=["m"])
         result = out.collect()[0]
@@ -83,6 +95,93 @@ class TestFGCCorrelationBuilder(unittest.TestCase):
 
         # log_ratio ≈ log(2)
         self.assertAlmostEqual(result.m_log_ratio, 0.6931, places=3)
+
+    def test_transform_subset_limits_outputs(self) -> None:
+        schema = T.StructType(
+            [
+                T.StructField("m", T.DoubleType(), True),
+                T.StructField("m_median", T.DoubleType(), True),
+                T.StructField("m_mad", T.DoubleType(), True),
+                T.StructField("m_iqr", T.DoubleType(), True),
+            ]
+        )
+        df = self.spark.createDataFrame([(5.0, 10.0, 2.0, 4.0)], schema=schema)
+
+        runtime_cfg = FGCorrJobRuntimeConfig(
+            project_name="test-project",
+            feature_spec_version="v1",
+            mini_batch_id="test-batch",
+            batch_start_ts_iso="2025-01-01T00:00:00Z",
+            batch_end_ts_iso="2025-01-01T00:15:00Z",
+        )
+        job = FGCorrBuilderJob(runtime_config=runtime_cfg)
+        job.job_spec = {"transforms": ["z_mad"]}
+
+        out = job._compute_correlation_features(df, metrics=["m"])
+        self.assertIn("m_z_mad", out.columns)
+        self.assertNotIn("m_ratio", out.columns)
+        self.assertNotIn("m_log_ratio", out.columns)
+
+    def test_metrics_default_merge_with_job_spec(self) -> None:
+        schema = T.StructType(
+            [
+                T.StructField("host_ip", T.StringType(), True),
+                T.StructField("window_label", T.StringType(), True),
+                T.StructField("sessions_cnt_w_15m", T.DoubleType(), True),
+                T.StructField("custom_metric", T.DoubleType(), True),
+            ]
+        )
+        df = self.spark.createDataFrame(
+            [("10.0.0.1", "w_15m", 10.0, 2.0)],
+            schema=schema,
+        )
+
+        runtime_cfg = FGCorrJobRuntimeConfig(
+            project_name="test-project",
+            feature_spec_version="v1",
+            mini_batch_id="test-batch",
+            batch_start_ts_iso="2025-01-01T00:00:00Z",
+            batch_end_ts_iso="2025-01-01T00:15:00Z",
+        )
+        job = FGCorrBuilderJob(runtime_config=runtime_cfg)
+        job.job_spec = {"metrics": ["custom_metric"]}
+
+        metrics = job._get_metrics_to_compare(df)
+        self.assertIn("sessions_cnt_w_15m", metrics)
+        self.assertIn("custom_metric", metrics)
+
+    def test_suspicion_features_compute(self) -> None:
+        schema = T.StructType(
+            [
+                T.StructField("metric", T.DoubleType(), True),
+                T.StructField("metric_median", T.DoubleType(), True),
+                T.StructField("metric_p95", T.DoubleType(), True),
+                T.StructField("metric_iqr", T.DoubleType(), True),
+                T.StructField("metric_z_mad", T.DoubleType(), True),
+            ]
+        )
+        df = self.spark.createDataFrame([(10.0, 5.0, 8.0, 2.0, 2.5)], schema=schema)
+
+        runtime_cfg = FGCorrJobRuntimeConfig(
+            project_name="test-project",
+            feature_spec_version="v1",
+            mini_batch_id="test-batch",
+            batch_start_ts_iso="2025-01-01T00:00:00Z",
+            batch_end_ts_iso="2025-01-01T00:15:00Z",
+        )
+        job = FGCorrBuilderJob(runtime_config=runtime_cfg)
+        job.job_spec = {
+            "eps": 1e-6,
+            "suspicion_metrics": ["metric"],
+            "anomaly_strength_metrics": ["metric"],
+        }
+
+        out = job._compute_suspicion_features(df)
+        row = out.collect()[0]
+        self.assertAlmostEqual(row.metric_excess_over_p95, 2.0, places=6)
+        self.assertAlmostEqual(row.metric_excess_ratio_p95, 1.25, places=2)
+        self.assertAlmostEqual(row.metric_iqr_dev, 2.5, places=6)
+        self.assertAlmostEqual(row.anomaly_strength_core, 2.5, places=6)
 
     def test_cold_start_baseline_selection(self) -> None:
         runtime_cfg = FGCorrJobRuntimeConfig(

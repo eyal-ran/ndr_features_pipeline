@@ -97,6 +97,24 @@ DERIVED_METRICS: List[str] = [
 ]
 
 
+NOVELTY_METRICS: List[str] = [
+    "new_peer_cnt_lookback30d",
+    "rare_peer_cnt_lookback30d",
+    "new_peer_ratio_lookback30d",
+    "new_dst_port_cnt_lookback30d",
+    "rare_dst_port_cnt_lookback30d",
+    "new_pair_cnt_lookback30d",
+    "new_src_dst_port_cnt_lookback30d",
+]
+
+
+HIGH_RISK_SEGMENT_METRICS: List[str] = [
+    "high_risk_segment_sessions_cnt",
+    "high_risk_segment_unique_dsts",
+    "has_high_risk_segment_interaction",
+]
+
+
 @dataclass(frozen=True)
 class FGAMeta:
     """Metadata needed by fg_a_builder_job.

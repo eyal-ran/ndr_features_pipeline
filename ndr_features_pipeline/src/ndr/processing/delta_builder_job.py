@@ -19,6 +19,7 @@ class DeltaBuilderRunner(BaseProcessingRunner):
         super().__init__(spark, job_spec, runtime)
         self._s3_client = boto3.client("s3")
         self.logger = get_logger("DeltaBuilderRunner")  # override name
+        self._pair_context_df: DataFrame | None = None
 
     def _apply_data_quality(self, df: DataFrame) -> DataFrame:
         """Apply Palo Alto specific DQ cleaning rules."""
@@ -117,6 +118,25 @@ class DeltaBuilderRunner(BaseProcessingRunner):
                 .withColumn("role", F.lit(role_name))
             )
 
+            pair_context = (
+                role_df.groupBy(
+                    "host_ip",
+                    "role",
+                    "peer_ip",
+                    "peer_port",
+                    "slice_start_ts",
+                    "slice_end_ts",
+                    "dt",
+                    "hh",
+                    "mm",
+                )
+                .agg(
+                    F.count(F.lit(1)).alias("sessions_cnt"),
+                    F.max("event_end").alias("event_ts"),
+                )
+                .withColumn("pair_key", F.concat_ws("|", F.col("peer_ip"), F.col("peer_port").cast("string")))
+            )
+
             base = ops.apply_base_counts_and_sums(role_df, params={})
             quants = ops.apply_quantiles(role_df, params={})
             port_counts = ops.apply_port_category_counters(
@@ -130,6 +150,11 @@ class DeltaBuilderRunner(BaseProcessingRunner):
             tmp = tmp.join(port_counts, on=join_keys, how="left")
             tmp = tmp.join(burst, on=join_keys, how="left")
 
+            if self._pair_context_df is None:
+                self._pair_context_df = pair_context
+            else:
+                self._pair_context_df = self._pair_context_df.unionByName(pair_context, allowMissingColumns=True)
+
             role_dfs.append(tmp)
 
         if not role_dfs:
@@ -140,6 +165,23 @@ class DeltaBuilderRunner(BaseProcessingRunner):
             result = result.unionByName(other, allowMissingColumns=True)
 
         return result
+
+    def _write_output(self, df: DataFrame) -> None:
+        super()._write_output(df)
+        pair_context_output = self.job_spec.pair_context_output
+        if not pair_context_output or self._pair_context_df is None:
+            return
+
+        pair_context = (
+            self._pair_context_df.withColumn("mini_batch_id", F.lit(self.runtime.run_id))
+            .withColumn("feature_spec_version", F.lit(self.runtime.feature_spec_version))
+        )
+        self.writer.write_parquet_partitioned(
+            df=pair_context,
+            base_prefix=pair_context_output.s3_prefix,
+            partition_cols=pair_context_output.partition_keys,
+            mode=pair_context_output.write_mode,
+        )
 
 
 def run_delta_builder(spark: SparkSession, job_spec: JobSpec, runtime: RuntimeParams) -> None:

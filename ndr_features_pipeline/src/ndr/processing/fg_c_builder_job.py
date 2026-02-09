@@ -46,7 +46,12 @@ from ndr.config.job_spec_loader import load_job_spec
 from ndr.processing.base_runner import BaseRunner
 from ndr.processing.output_paths import build_batch_output_prefix
 from ndr.processing.segment_utils import add_segment_id
-from ndr.model.fg_a_schema import WINDOW_LABELS
+from ndr.model.fg_c_schema import DEFAULT_TRANSFORMS, build_default_metric_list
+from ndr.catalog.schema_manifest import (
+    PAIR_RARITY_FIELDS,
+    build_fg_c_manifest,
+)
+from ndr.processing.schema_enforcement import enforce_schema
 
 
 LOGGER = get_logger(__name__)
@@ -218,71 +223,14 @@ class FGCorrBuilderJob(BaseRunner):
 
     def _build_default_metric_list(self) -> List[str]:
         """Return curated default FG-A metric list for FG-C correlation."""
-        curated_base_metrics = [
-            "sessions_cnt",
-            "allow_cnt",
-            "deny_cnt",
-            "alert_cnt",
-            "rst_cnt",
-            "zero_reply_cnt",
-            "short_session_cnt",
-            "bytes_src_sum",
-            "bytes_dst_sum",
-            "duration_sum",
-            "peer_ip_nunique",
-            "peer_port_nunique",
-            "peer_segment_nunique",
-            "peer_ip_entropy",
-            "peer_port_entropy",
-            "peer_ip_top1_sessions_share",
-            "peer_port_top1_sessions_share",
-            "peer_ip_top1_bytes_share",
-            "peer_port_top1_bytes_share",
-            "max_sessions_per_minute",
-            "high_risk_port_sessions_cnt",
-            "admin_port_sessions_cnt",
-            "fileshare_port_sessions_cnt",
-            "directory_port_sessions_cnt",
-            "db_port_sessions_cnt",
-            "traffic_cnt",
-            "threat_cnt",
-        ]
-
-        curated_derived_metrics = [
-            "duration_mean",
-            "deny_ratio",
-            "bytes_asymmetry_ratio",
-            "transport_tcp_ratio",
-            "transport_udp_ratio",
-            "transport_icmp_ratio",
-            "has_high_risk_port_activity",
-            "new_peer_cnt_lookback30d",
-            "rare_peer_cnt_lookback30d",
-            "new_peer_ratio_lookback30d",
-            "new_dst_port_cnt_lookback30d",
-            "rare_dst_port_cnt_lookback30d",
-            "new_pair_cnt_lookback30d",
-            "new_src_dst_port_cnt_lookback30d",
-            "high_risk_segment_sessions_cnt",
-            "high_risk_segment_unique_dsts",
-            "has_high_risk_segment_interaction",
-        ]
-
-        prefixes = ["", "in_"]
-        metrics: List[str] = []
-        for prefix in prefixes:
-            for base_metric in curated_base_metrics + curated_derived_metrics:
-                for window_label in WINDOW_LABELS:
-                    metrics.append(f"{prefix}{base_metric}_{window_label}")
-
-        return metrics
+        return build_default_metric_list()
 
     def _get_transform_list(self) -> List[str]:
         """Return the list of FG-C transforms to compute."""
         transforms = self.job_spec.get("transforms")
         if transforms:
             return transforms
-        return ["z_mad", "ratio", "log_ratio"]
+        return DEFAULT_TRANSFORMS
 
     # ------------------------------------------------------------------ #
     # Core horizon processing                                            #
@@ -292,10 +240,10 @@ class FGCorrBuilderJob(BaseRunner):
         horizons = self._get_horizons()
         for horizon in horizons:
             LOGGER.info("Processing FG-C for horizon '%s'.", horizon)
-            fg_c_df = self._build_fg_c_for_horizon(horizon)
-            self._write_fg_c_for_horizon(fg_c_df, horizon)
+            fg_c_df, metrics = self._build_fg_c_for_horizon(horizon)
+            self._write_fg_c_for_horizon(fg_c_df, horizon, metrics)
 
-    def _build_fg_c_for_horizon(self, horizon: str) -> DataFrame:
+    def _build_fg_c_for_horizon(self, horizon: str) -> Tuple[DataFrame, List[str]]:
         """Build FG-C features for a single baseline horizon.
 
         Parameters
@@ -361,7 +309,7 @@ class FGCorrBuilderJob(BaseRunner):
                     T.StructField("feature_spec_version", T.StringType(), True),
                 ]
             )
-            return self.spark.createDataFrame([], schema=empty_schema)
+            return self.spark.createDataFrame([], schema=empty_schema), []
 
         pair_context_df = self._load_pair_context(feature_spec_version)
         if pair_context_df is not None:
@@ -396,7 +344,7 @@ class FGCorrBuilderJob(BaseRunner):
                     T.StructField("feature_spec_version", T.StringType(), True),
                 ]
             )
-            return self.spark.createDataFrame([], schema=empty_schema)
+            return self.spark.createDataFrame([], schema=empty_schema), []
 
         metrics = self._get_metrics_to_compare(fg_a_df)
         self._validate_baseline_schema(metrics, host_baselines, segment_baselines)
@@ -451,7 +399,7 @@ class FGCorrBuilderJob(BaseRunner):
         joined = joined.withColumn("mini_batch_id", F.lit(self.runtime_config.mini_batch_id))
         joined = joined.withColumn("feature_spec_version", F.lit(feature_spec_version))
 
-        return joined
+        return joined, metrics
 
     def _read_fg_b_tables(
         self,
@@ -553,6 +501,16 @@ class FGCorrBuilderJob(BaseRunner):
         warm_df = joined_flags.filter(F.col("is_cold_start") == F.lit(0))
         cold_df = joined_flags.filter(F.col("is_cold_start") == F.lit(1))
 
+        counts = joined_flags.groupBy("is_cold_start").count().collect()
+        cold_counts = {row["is_cold_start"]: row["count"] for row in counts}
+        LOGGER.info(
+            "FG-C cold-start routing summary.",
+            extra={
+                "warm_rows": cold_counts.get(0, 0),
+                "cold_rows": cold_counts.get(1, 0),
+            },
+        )
+
         warm_join = warm_df.join(host_baselines, on=join_keys + ["baseline_horizon"], how="left")
 
         segment_join_keys = self.job_spec.get(
@@ -574,26 +532,110 @@ class FGCorrBuilderJob(BaseRunner):
         pair_host_df: Optional[DataFrame],
         pair_segment_df: Optional[DataFrame],
     ) -> DataFrame:
-        if pair_host_df is None or pair_segment_df is None:
-            return combined
+        if pair_host_df is None and pair_segment_df is None:
+            LOGGER.warning("Pair rarity baselines missing; defaulting pair rarity fields to zero.")
+            return self._apply_pair_rarity_defaults(combined, source_col=None, source_value="missing")
 
         required_cols = {"dst_ip", "dst_port"}
         if not required_cols.issubset(set(combined.columns)):
             LOGGER.warning("FG-A missing dst_ip/dst_port; skipping pair rarity join.")
-            return combined
+            return self._apply_pair_rarity_defaults(combined, source_col=None, source_value="missing")
 
         warm_join_keys = ["host_ip", "dst_ip", "dst_port", "baseline_horizon"]
         warm_rows = combined.filter(F.col("is_cold_start") == F.lit(0))
-        warm_pairs = warm_rows.join(pair_host_df, on=warm_join_keys, how="left")
+        warm_pairs = warm_rows
+        for field in PAIR_RARITY_FIELDS:
+            if field not in warm_pairs.columns:
+                warm_pairs = warm_pairs.withColumn(field, F.lit(None))
+        if pair_host_df is not None:
+            warm_pairs = warm_rows.join(pair_host_df, on=warm_join_keys, how="left")
+        if pair_segment_df is not None and "segment_id" in warm_pairs.columns:
+            segment_keys = ["segment_id", "dst_ip", "dst_port", "baseline_horizon"]
+            segment_cols = [
+                F.col(field).alias(f"segment_{field}") for field in PAIR_RARITY_FIELDS if field in pair_segment_df.columns
+            ]
+            segment_fallback = pair_segment_df.select(*segment_keys, *segment_cols)
+            warm_pairs = warm_pairs.join(segment_fallback, on=segment_keys, how="left")
+            segment_score_col = (
+                "segment_pair_rarity_score" if "segment_pair_rarity_score" in warm_pairs.columns else None
+            )
+            if segment_score_col:
+                warm_pairs = warm_pairs.withColumn(
+                    "pair_rarity_source",
+                    F.when(F.col("pair_rarity_score").isNotNull(), F.lit("host"))
+                    .when(F.col(segment_score_col).isNotNull(), F.lit("segment"))
+                    .otherwise(F.lit("missing")),
+                )
+            else:
+                warm_pairs = warm_pairs.withColumn(
+                    "pair_rarity_source",
+                    F.when(F.col("pair_rarity_score").isNotNull(), F.lit("host")).otherwise(F.lit("missing")),
+                )
+            for field in PAIR_RARITY_FIELDS:
+                if field in warm_pairs.columns and f"segment_{field}" in warm_pairs.columns:
+                    warm_pairs = warm_pairs.withColumn(
+                        field,
+                        F.coalesce(F.col(field), F.col(f"segment_{field}")),
+                    )
+        else:
+            warm_pairs = warm_pairs.withColumn(
+                "pair_rarity_source",
+                F.when(F.col("pair_rarity_score").isNotNull(), F.lit("host")).otherwise(F.lit("missing")),
+            )
 
         cold_join_keys = ["segment_id", "dst_ip", "dst_port", "baseline_horizon"]
         cold_rows = combined.filter(F.col("is_cold_start") == F.lit(1))
         if not set(cold_join_keys).issubset(set(cold_rows.columns)):
             LOGGER.warning("Cold-start rows missing segment_id; skipping segment pair rarity join.")
-            return combined
+            return self._apply_pair_rarity_defaults(combined, source_col=None, source_value="missing")
+        cold_pairs = cold_rows
+        for field in PAIR_RARITY_FIELDS:
+            if field not in cold_pairs.columns:
+                cold_pairs = cold_pairs.withColumn(field, F.lit(None))
+        if pair_segment_df is not None:
+            cold_pairs = cold_rows.join(pair_segment_df, on=cold_join_keys, how="left")
+        cold_pairs = cold_pairs.withColumn(
+            "pair_rarity_source",
+            F.when(F.col("pair_rarity_score").isNotNull(), F.lit("segment")).otherwise(F.lit("missing")),
+        )
 
-        cold_pairs = cold_rows.join(pair_segment_df, on=cold_join_keys, how="left")
-        return warm_pairs.unionByName(cold_pairs, allowMissingColumns=True)
+        combined = warm_pairs.unionByName(cold_pairs, allowMissingColumns=True)
+        combined = self._apply_pair_rarity_defaults(combined, source_col="pair_rarity_source", source_value="missing")
+        self._log_pair_rarity_audit(combined)
+        return combined
+
+    def _apply_pair_rarity_defaults(
+        self,
+        df: DataFrame,
+        source_col: Optional[str],
+        source_value: str,
+    ) -> DataFrame:
+        updated = df
+        for field in PAIR_RARITY_FIELDS:
+            if field not in updated.columns:
+                updated = updated.withColumn(field, F.lit(None))
+        condition = F.col(source_col) == F.lit(source_value) if source_col else F.lit(True)
+        defaults = {
+            "pair_seen_count": F.lit(0),
+            "active_days": F.lit(0),
+            "pair_daily_avg": F.lit(0.0),
+            "pair_rarity_score": F.lit(0.0),
+            "is_new_pair_flag": F.lit(0),
+            "is_rare_pair_flag": F.lit(0),
+        }
+        for field, default_value in defaults.items():
+            updated = updated.withColumn(
+                field,
+                F.when(condition, F.coalesce(F.col(field), default_value)).otherwise(F.col(field)),
+            )
+        return updated
+
+    def _log_pair_rarity_audit(self, df: DataFrame) -> None:
+        if "pair_rarity_source" not in df.columns:
+            return
+        counts = df.groupBy("pair_rarity_source").count().collect()
+        summary = {row["pair_rarity_source"]: row["count"] for row in counts}
+        LOGGER.info("FG-C pair rarity fallback summary.", extra=summary)
 
     def _validate_baseline_schema(
         self,
@@ -641,8 +683,7 @@ class FGCorrBuilderJob(BaseRunner):
             iqr_col = f"{m}_iqr"
 
             if median_col not in df.columns:
-                LOGGER.warning("Baseline column '%s' missing; skipping metric '%s' for FG-C.", median_col, m)
-                continue
+                raise ValueError(f"Baseline column '{median_col}' missing for metric '{m}'.")
 
             # Current value
             cur = F.col(m)
@@ -692,17 +733,7 @@ class FGCorrBuilderJob(BaseRunner):
         """Compute curated FG-C suspicion/anomaly features."""
         eps = float(self.job_spec.get("eps", 1e-6))
 
-        default_suspicion_metrics = [
-            "sessions_cnt_w_15m",
-            "bytes_src_sum_w_15m",
-            "bytes_dst_sum_w_15m",
-            "deny_ratio_w_15m",
-            "peer_ip_nunique_w_15m",
-            "in_sessions_cnt_w_15m",
-            "in_bytes_src_sum_w_15m",
-            "in_bytes_dst_sum_w_15m",
-        ]
-        suspicion_metrics = self.job_spec.get("suspicion_metrics", default_suspicion_metrics)
+        suspicion_metrics = self._get_suspicion_metrics()
 
         for metric in suspicion_metrics:
             p95_col = f"{metric}_p95"
@@ -788,10 +819,7 @@ class FGCorrBuilderJob(BaseRunner):
             )
         else:
             rarity_weight = F.lit(0.0)
-        rare_pair_metrics = self.job_spec.get(
-            "rare_pair_metrics",
-            ["sessions_cnt_w_15m", "bytes_src_sum_w_15m"],
-        )
+        rare_pair_metrics = self._get_rare_pair_metrics()
         for metric in rare_pair_metrics:
             z_col = f"{metric}_z_mad"
             if z_col not in df.columns:
@@ -806,25 +834,30 @@ class FGCorrBuilderJob(BaseRunner):
 
         return df
 
+    def _get_suspicion_metrics(self) -> List[str]:
+        default_suspicion_metrics = [
+            "sessions_cnt_w_15m",
+            "bytes_src_sum_w_15m",
+            "bytes_dst_sum_w_15m",
+            "deny_ratio_w_15m",
+            "peer_ip_nunique_w_15m",
+            "in_sessions_cnt_w_15m",
+            "in_bytes_src_sum_w_15m",
+            "in_bytes_dst_sum_w_15m",
+        ]
+        return self.job_spec.get("suspicion_metrics", default_suspicion_metrics)
+
+    def _get_rare_pair_metrics(self) -> List[str]:
+        return self.job_spec.get(
+            "rare_pair_metrics",
+            ["sessions_cnt_w_15m", "bytes_src_sum_w_15m"],
+        )
+
     # ------------------------------------------------------------------ #
     # Write results                                                      #
     # ------------------------------------------------------------------ #
-    def _write_fg_c_for_horizon(self, df: DataFrame, horizon: str) -> None:
-        """Write FG-C features for a single horizon to S3 as Parquet.
-
-        Output layout
-        -------------
-        base_path = JobSpec["fg_c_output"]["s3_prefix"]
-
-        Partition columns:
-            - feature_spec_version
-            - baseline_horizon
-            - dt = date(window_end_ts)
-
-        The job uses overwrite mode for the horizon + dt partitions of this
-        mini-batch. If stronger idempotency is required, consider including
-        mini_batch_id into the partitioning scheme as well.
-        """
+    def _write_fg_c_for_horizon(self, df: DataFrame, horizon: str, metrics: List[str]) -> None:
+        """Write FG-C features for a single horizon to S3 as Parquet."""
         fg_c_cfg = self.job_spec.get("fg_c_output", {})
         base_path = fg_c_cfg.get("s3_prefix")
         if not base_path:
@@ -840,9 +873,30 @@ class FGCorrBuilderJob(BaseRunner):
             LOGGER.warning("FG-C DataFrame is empty for horizon '%s'; nothing to write.", horizon)
             return
 
-        # Derive dt partition from window_end_ts
+        transforms = self._get_transform_list()
+        suspicion_metrics = self._get_suspicion_metrics()
+        suspicion_metrics = [
+            metric
+            for metric in suspicion_metrics
+            if f"{metric}_p95" in df.columns and f"{metric}_iqr" in df.columns
+        ]
+        rare_pair_metrics = self._get_rare_pair_metrics()
+        rare_pair_metrics = [
+            metric for metric in rare_pair_metrics if f"{metric}_z_mad" in df.columns
+        ]
+
         df = df.withColumn("dt", F.to_date(F.col("window_end_ts")))
         df = df.withColumn("baseline_horizon", F.lit(horizon))
+
+        include_time_band_violation = "time_band" in df.columns and "is_working_hours" in df.columns
+        manifest = build_fg_c_manifest(
+            metrics=metrics,
+            transforms=transforms,
+            suspicion_metrics=suspicion_metrics,
+            rare_pair_metrics=rare_pair_metrics if "z_mad" in transforms else [],
+            include_time_band_violation=include_time_band_violation,
+        )
+        df = enforce_schema(df, manifest, "fg_c", LOGGER)
 
         LOGGER.info(
             "Writing FG-C features.",

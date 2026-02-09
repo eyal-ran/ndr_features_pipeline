@@ -10,6 +10,8 @@ from ndr.config.job_spec_loader import JobSpecLoader
 from ndr.processing.base_runner import BaseProcessingRunner, RuntimeParams
 from ndr.processing import delta_builder_operators as ops
 from ndr.logging.logger import get_logger
+from ndr.catalog.schema_manifest import build_delta_manifest
+from ndr.processing.schema_enforcement import enforce_schema
 
 
 class DeltaBuilderRunner(BaseProcessingRunner):
@@ -167,6 +169,9 @@ class DeltaBuilderRunner(BaseProcessingRunner):
         return result
 
     def _write_output(self, df: DataFrame) -> None:
+        port_sets = self._load_port_sets()
+        manifest = build_delta_manifest(port_set_names=sorted(port_sets.keys()))
+        df = enforce_schema(df, manifest, "delta", self.logger)
         super()._write_output(df)
         pair_context_output = self.job_spec.pair_context_output
         if not pair_context_output or self._pair_context_df is None:

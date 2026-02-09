@@ -97,6 +97,12 @@ The `spec` payload must match the JobSpec dataclasses (see `ndr.config.job_spec_
 ### `fg_a_builder`
 - `delta_input.s3_prefix` **or** `delta_s3_prefix`
 - `fg_a_output.s3_prefix` **or** `output_s3_prefix`
+- Optional: `pair_context_input.s3_prefix`
+- Optional: `pair_context_output.s3_prefix`
+- Optional: `lookback30d.s3_prefix`
+- Optional: `lookback30d.rare_thresholds`
+- Optional: `high_risk_segments` (list of segment identifiers)
+- Optional: `segment_mapping` (segment configuration used to enrich FG-A)
 
 ### `pair_counts_builder`
 - `traffic_input.s3_prefix`
@@ -119,6 +125,10 @@ The `spec` payload must match the JobSpec dataclasses (see `ndr.config.job_spec_
 - `fg_c_output.s3_prefix`
 - Optional: `horizons`, `join_keys`, `metrics`, `pair_counts`, `segment_mapping`,
   `eps`, `z_max`
+- Optional: `pair_context_input.s3_prefix` (joinable pair context dataset)
+- Optional: `transforms` (override default transform list)
+- Optional: `suspicion_metrics` (override suspicion metric list)
+- Optional: `rare_pair_metrics` (override rare-pair metric list)
 
 ### `machine_inventory_unload`
 - `redshift`: `{ cluster_identifier, database, secret_arn, region, iam_role, db_user? }`

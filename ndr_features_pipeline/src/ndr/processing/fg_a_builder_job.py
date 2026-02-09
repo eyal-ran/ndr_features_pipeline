@@ -49,6 +49,8 @@ from ndr.model.fg_a_schema import (
     DERIVED_METRICS,
     build_feature_name,
 )
+from ndr.catalog.schema_manifest import build_fg_a_manifest
+from ndr.processing.schema_enforcement import enforce_schema
 from ndr.processing.segment_utils import add_segment_id
 
 
@@ -277,6 +279,7 @@ class FGABuilderJob(BaseProcessingJobRunner):
 
         # Derive dt partition column from window_end_ts.
         df = df.withColumn("dt", F.date_format(F.col("window_end_ts"), "yyyy-MM-dd"))
+        df = enforce_schema(df, build_fg_a_manifest(), "fg_a", logger)
 
         output_path = build_batch_output_prefix(
             base_prefix=self.config.output_s3_prefix,

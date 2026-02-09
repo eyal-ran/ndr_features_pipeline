@@ -26,6 +26,8 @@ from ndr.processing.base_runner import BaseRunner
 from ndr.io.s3_writer import S3Writer
 from ndr.processing.output_paths import build_batch_output_prefix
 from ndr.processing.segment_utils import add_segment_id
+from ndr.catalog.schema_manifest import build_pair_counts_manifest
+from ndr.processing.schema_enforcement import enforce_schema
 
 
 LOGGER = get_logger(__name__)
@@ -281,6 +283,7 @@ class PairCountsBuilderJob(BaseRunner):
             extra={"base_prefix": base_prefix},
         )
 
+        df = enforce_schema(df, build_pair_counts_manifest(), "pair_counts", LOGGER)
         self.s3_writer.write_parquet(
             df=df,
             base_path=base_prefix,

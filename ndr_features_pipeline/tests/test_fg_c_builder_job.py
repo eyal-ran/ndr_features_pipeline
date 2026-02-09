@@ -275,10 +275,16 @@ class TestFGCCorrelationBuilder(unittest.TestCase):
                 T.StructField("dst_port", T.IntegerType(), True),
                 T.StructField("baseline_horizon", T.StringType(), True),
                 T.StructField("pair_seen_count", T.IntegerType(), True),
+                T.StructField("pair_last_seen_ts", T.TimestampType(), True),
+                T.StructField("active_days", T.IntegerType(), True),
+                T.StructField("pair_daily_avg", T.DoubleType(), True),
+                T.StructField("pair_rarity_score", T.DoubleType(), True),
+                T.StructField("is_new_pair_flag", T.IntegerType(), True),
+                T.StructField("is_rare_pair_flag", T.IntegerType(), True),
             ]
         )
         pair_host_df = self.spark.createDataFrame(
-            [("10.0.0.1", "8.8.8.8", 53, "7d", 7)],
+            [("10.0.0.1", "8.8.8.8", 53, "7d", 7, None, 1, 7.0, 0.2, 0, 1)],
             schema=pair_host_schema,
         )
 
@@ -289,10 +295,16 @@ class TestFGCCorrelationBuilder(unittest.TestCase):
                 T.StructField("dst_port", T.IntegerType(), True),
                 T.StructField("baseline_horizon", T.StringType(), True),
                 T.StructField("pair_seen_count", T.IntegerType(), True),
+                T.StructField("pair_last_seen_ts", T.TimestampType(), True),
+                T.StructField("active_days", T.IntegerType(), True),
+                T.StructField("pair_daily_avg", T.DoubleType(), True),
+                T.StructField("pair_rarity_score", T.DoubleType(), True),
+                T.StructField("is_new_pair_flag", T.IntegerType(), True),
+                T.StructField("is_rare_pair_flag", T.IntegerType(), True),
             ]
         )
         pair_segment_df = self.spark.createDataFrame(
-            [("seg-b", "1.1.1.1", 443, "7d", 3)],
+            [("seg-b", "1.1.1.1", 443, "7d", 3, None, 1, 3.0, 0.5, 0, 1)],
             schema=pair_segment_schema,
         )
 

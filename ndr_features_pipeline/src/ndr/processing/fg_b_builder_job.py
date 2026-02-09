@@ -31,6 +31,13 @@ from ndr.io.s3_reader import S3Reader
 from ndr.io.s3_writer import S3Writer
 from ndr.processing.output_paths import build_batch_output_prefix
 from ndr.processing.segment_utils import add_segment_id
+from ndr.catalog.schema_manifest import (
+    build_fg_b_host_manifest,
+    build_fg_b_segment_manifest,
+    build_fg_b_ip_metadata_manifest,
+    build_pair_rarity_manifest,
+)
+from ndr.processing.schema_enforcement import enforce_schema
 
 
 LOGGER = get_logger(__name__)
@@ -734,7 +741,10 @@ class FGBaselineBuilderJob(BaseRunner):
             extra={"prefix": base_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
         )
 
+        metrics = self._extract_baseline_metrics(host_baselines)
+        host_manifest = build_fg_b_host_manifest(metrics)
         host_out = host_baselines.withColumn("feature_spec_version", F.lit(feature_spec_version))
+        host_out = enforce_schema(host_out, host_manifest, "fg_b_host", LOGGER)
         self.s3_writer.write_parquet(
             df=host_out,
             base_path=f"{base_prefix}/host/",
@@ -747,7 +757,9 @@ class FGBaselineBuilderJob(BaseRunner):
             extra={"prefix": base_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
         )
 
+        segment_manifest = build_fg_b_segment_manifest(metrics)
         segment_out = segment_baselines.withColumn("feature_spec_version", F.lit(feature_spec_version))
+        segment_out = enforce_schema(segment_out, segment_manifest, "fg_b_segment", LOGGER)
         self.s3_writer.write_parquet(
             df=segment_out,
             base_path=f"{base_prefix}/segment/",
@@ -760,7 +772,9 @@ class FGBaselineBuilderJob(BaseRunner):
             extra={"prefix": base_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
         )
 
+        ip_manifest = build_fg_b_ip_metadata_manifest()
         ip_metadata_out = ip_metadata.withColumn("feature_spec_version", F.lit(feature_spec_version))
+        ip_metadata_out = enforce_schema(ip_metadata_out, ip_manifest, "fg_b_ip_metadata", LOGGER)
         self.s3_writer.write_parquet(
             df=ip_metadata_out,
             base_path=f"{base_prefix}/ip_metadata/",
@@ -773,7 +787,9 @@ class FGBaselineBuilderJob(BaseRunner):
                 "Writing FG-B pair-level rarity baselines (host).",
                 extra={"prefix": base_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
             )
+            pair_manifest = build_pair_rarity_manifest(["host_ip", "dst_ip", "dst_port"])
             pair_out = pair_host_baselines.withColumn("feature_spec_version", F.lit(feature_spec_version))
+            pair_out = enforce_schema(pair_out, pair_manifest, "fg_b_pair_host", LOGGER)
             self.s3_writer.write_parquet(
                 df=pair_out,
                 base_path=f"{base_prefix}/pair/host/",
@@ -786,13 +802,23 @@ class FGBaselineBuilderJob(BaseRunner):
                 "Writing FG-B pair-level rarity baselines (segment).",
                 extra={"prefix": base_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
             )
+            pair_manifest = build_pair_rarity_manifest(["segment_id", "dst_ip", "dst_port"])
             pair_out = pair_segment_baselines.withColumn("feature_spec_version", F.lit(feature_spec_version))
+            pair_out = enforce_schema(pair_out, pair_manifest, "fg_b_pair_segment", LOGGER)
             self.s3_writer.write_parquet(
                 df=pair_out,
                 base_path=f"{base_prefix}/pair/segment/",
                 partition_cols=["feature_spec_version", "baseline_horizon"],
                 mode="overwrite",
             )
+
+    @staticmethod
+    def _extract_baseline_metrics(df: DataFrame) -> List[str]:
+        metrics = []
+        for col in df.columns:
+            if col.endswith("_median"):
+                metrics.append(col[:-7])
+        return sorted(set(metrics))
 
 
 def run_fg_b_builder_from_runtime_config(runtime_config: FGBaselineJobRuntimeConfig) -> None:

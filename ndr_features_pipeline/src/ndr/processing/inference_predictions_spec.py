@@ -30,6 +30,8 @@ class InferenceModelSpec:
 @dataclass
 class InferencePayloadSpec:
     feature_columns: List[str] | None = None
+    scaler_params: Dict[str, Dict[str, float]] | None = None
+    outlier_params: Dict[str, Dict[str, float]] | None = None
 
 
 @dataclass
@@ -121,8 +123,11 @@ def parse_inference_spec(job_spec: Dict[str, Any]) -> InferenceSpec:
         raise ValueError("Inference JobSpec must include output")
     output_spec = _parse_output_spec(output_payload, "inference_predictions")
 
+    payload_cfg = job_spec.get("payload", {})
     payload_spec = InferencePayloadSpec(
-        feature_columns=job_spec.get("payload", {}).get("feature_columns")
+        feature_columns=payload_cfg.get("feature_columns"),
+        scaler_params=payload_cfg.get("scaler_params"),
+        outlier_params=payload_cfg.get("outlier_params"),
     )
     prediction_schema = PredictionSchemaSpec(**job_spec.get("prediction_schema", {}))
 

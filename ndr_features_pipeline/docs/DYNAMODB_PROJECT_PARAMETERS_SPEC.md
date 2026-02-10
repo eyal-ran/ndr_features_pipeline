@@ -79,6 +79,7 @@ These fields are read from the `spec` payload itself by the JobSpec loader.
 - `fg_c_builder`
 - `machine_inventory_unload`
 - `inference_predictions`
+- `if_training` (dedicated Isolation Forest training pipeline parameters)
 - `project_parameters` (project-level parameters consumed by FG-B)
 
 ## Job-Specific Spec Payloads
@@ -146,6 +147,48 @@ The `spec` payload must match the JobSpec dataclasses (see `ndr.config.job_spec_
 - Optional: `payload.feature_columns` (subset of feature columns to send to the model)
 - Optional: `prediction_schema` (`score_column`, `label_column`)
 - Optional: `join_output` (same shape as `output`) if you want to write prediction+feature joins.
+
+### `if_training`
+Dedicated configuration for the Isolation Forest training pipeline (FG-A + FG-C).
+
+Recommended required keys:
+- `feature_inputs.fg_a.s3_prefix`
+- `feature_inputs.fg_c.s3_prefix`
+- `output.artifacts_s3_prefix`
+- `output.report_s3_prefix`
+- `model.version`
+- `window.lookback_months` (expected: `4`)
+- `window.gap_months` (expected: `1`)
+
+Recommended optional keys:
+- `join_keys` (defaults to `["host_ip", "window_label", "window_end_ts"]`)
+- `preprocessing`: `{ eps?, scaling_method?, outlier_method?, z_max? }`
+- `feature_selection`: `{ enabled?, variance_threshold?, corr_threshold?, stability_runs?, permutation_eval? }`
+- `tuning`: `{ method?, max_trials?, timeout_seconds?, search_space?, objective_weights? }`
+- `experiments`: `{ experiment_name?, trial_prefix?, capture_artifacts? }`
+- `deployment`: `{ deploy_on_success?, endpoint_name?, endpoint_config_name?, strategy? }`
+- `output.model_image_prefix` (S3 prefix for frozen final model image/package copy)
+
+Example (abbreviated):
+```json
+{
+  "project_name": "ndr-prod",
+  "job_name": "if_training#v1",
+  "spec": {
+    "feature_inputs": {
+      "fg_a": {"s3_prefix": "s3://<features-bucket>/fg_a/"},
+      "fg_c": {"s3_prefix": "s3://<features-bucket>/fg_c/"}
+    },
+    "window": {"lookback_months": 4, "gap_months": 1},
+    "output": {
+      "artifacts_s3_prefix": "s3://<models-bucket>/if_training/",
+      "report_s3_prefix": "s3://<models-bucket>/if_training/reports/",
+      "model_image_prefix": "s3://<models-bucket>/if_training/model_images/"
+    },
+    "deployment": {"deploy_on_success": false, "endpoint_name": "ndr-if-endpoint"}
+  }
+}
+```
 
 ### `project_parameters`
 Used by FG-B for shared project-level configuration. The item may store its payload under

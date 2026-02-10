@@ -344,3 +344,52 @@ This directory includes additional pipeline definition modules:
      }
    }
    ```
+
+## Isolation Forest Training Pipeline (FG-A + FG-C)
+
+A dedicated pipeline definition now exists at
+`src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py` and launches
+`ndr.scripts.run_if_training` with runtime args:
+
+- `--project-name`
+- `--feature-spec-version`
+- `--run-id`
+- `--execution-ts-iso`
+
+The training job resolves `if_training#<feature_spec_version>` from DynamoDB,
+reads FG-A + FG-C for `[T0-4mo, T0-1mo)`, enforces fail-fast preflight
+checks (row coverage + join sanity), applies robust scaler/outlier preprocessing
+using train-only statistics, runs variance/correlation feature filtering, performs
+Optuna Bayesian hyperparameter tuning with time-blocked validation (with a
+local Bayesian fallback when Optuna is unavailable), trains
+the final model (refit on the full training window), logs SageMaker Experiments trial metrics, optionally deploys
+via endpoint upsert with rollback, and writes run-scoped artifacts:
+
+- `preprocessing/scaler_params.json`
+- `preprocessing/outlier_params.json`
+- `preprocessing/feature_mask.json`
+- `metrics/final_metrics.json`
+- `metrics/tuning_metrics.json`
+- `model/model.joblib`
+- `model/model.tar.gz`
+- `SUCCESS`
+
+It also writes `final_training_report.json` to the configured report prefix and
+updates `inference_predictions.spec.payload` with `feature_columns`,
+`scaler_params`, and `outlier_params` for training/inference parity.
+
+When `deployment.deploy_on_success=true` and promotion gates pass, the training
+job creates a model + endpoint config and upserts the configured endpoint; on
+failure it attempts rollback to the previous endpoint config.
+Deployment uses the immutable run-scoped model artifact path (not the moving latest pointer); artifacts are persisted before deployment.
+The deployment API calls use bounded retry + exponential backoff controls from `if_training.reliability`, and the final training report now emits an Option-1 vs Option-4 monthly cost guardrail assessment (`option4_review_required`).
+The preprocessing stage now supports explicit imputation controls via `if_training.preprocessing.imputation_strategy` (`median_scaled`, `constant`, `none`) and `imputation_constant`.
+Failure guardrail context is written to `failure_report.json` and `failure_experiment_context.json` under the report prefix on hard preflight/training failures, while preflight-specific validation failures also emit `preflight_failure_context.json` before raising. Preflight now also enforces per-window minimum row coverage and join-key duplication limits (`rows_per_join_key`). Final report deterministic context includes the full resolved job-spec payload used for the run for reproducibility, and successful Experiment trial components now include explicit `final_report_s3_uri` linkage.
+
+Inference parity support was added to `inference_predictions` JobSpec payload:
+
+- `payload.scaler_params`
+- `payload.outlier_params`
+
+When present, inference applies the persisted clipping/scaling transformation
+before endpoint invocation.

@@ -17,6 +17,7 @@ from ndr.processing.inference_predictions_spec import (
     parse_inference_spec,
 )
 from ndr.processing.output_paths import build_batch_output_prefix
+from ndr.processing.schema_enforcement import enforce_schema
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, Row, SparkSession
@@ -242,6 +243,14 @@ class InferencePredictionsJob(BaseProcessingJobRunner):
             )
             if "feature_spec_version" in df.columns:
                 df = df.filter(F.col("feature_spec_version") == self.runtime_config.feature_spec_version)
+
+            if name == "fg_a":
+                from ndr.catalog.schema_manifest import build_fg_a_manifest
+                df = enforce_schema(df, build_fg_a_manifest(), "fg_a", logger)
+            elif name == "fg_c":
+                from ndr.catalog.feature_catalog import build_fg_c_metric_names
+                from ndr.catalog.schema_manifest import build_fg_c_manifest
+                df = enforce_schema(df, build_fg_c_manifest(metrics=build_fg_c_metric_names()), "fg_c", logger)
             if df.rdd.isEmpty():
                 message = f"Input {name} is empty at {input_prefix}"
                 if spec.required:
@@ -274,6 +283,7 @@ class InferencePredictionsJob(BaseProcessingJobRunner):
             raise ValueError(f"Missing required columns for inference: {sorted(missing)}")
 
         input_df = df.select(*(join_keys + ["feature_spec_version"] + feature_columns))
+        input_df = self._apply_training_preprocessing(input_df, feature_columns)
         schema = self._build_prediction_schema(input_df)
         runtime = self.runtime_config
         model_spec = self.inference_spec.model
@@ -347,6 +357,34 @@ class InferencePredictionsJob(BaseProcessingJobRunner):
 
         excluded = set(self.inference_spec.join_keys + ["feature_spec_version", "dt", "mini_batch_id"])
         return [col for col in df.columns if col not in excluded]
+
+    def _apply_training_preprocessing(self, df: DataFrame, feature_columns: List[str]) -> DataFrame:
+        from pyspark.sql import functions as F
+
+        payload_spec = self.inference_spec.payload
+        scaler_params = payload_spec.scaler_params or {}
+        outlier_params = payload_spec.outlier_params or {}
+        if not scaler_params and not outlier_params:
+            return df
+
+        for feature in feature_columns:
+            scaler = scaler_params.get(feature, {})
+            outlier = outlier_params.get(feature, {})
+            median = float(scaler.get("median", outlier.get("median", 0.0)))
+            iqr = float(scaler.get("iqr", 1.0))
+            mad = float(outlier.get("mad", 1.0))
+            z_max = float(outlier.get("z_max", 6.0))
+            eps = 1e-6
+            robust_z = (F.col(feature) - F.lit(median)) / (F.lit(mad) + F.lit(eps))
+            clipped = (
+                F.when(robust_z > z_max, F.lit(z_max))
+                .when(robust_z < -z_max, F.lit(-z_max))
+                .otherwise(robust_z)
+            )
+            scaled = (F.col(feature) - F.lit(median)) / (F.lit(iqr) + F.lit(eps))
+            df = df.withColumn(feature, F.coalesce(clipped, scaled, F.lit(0.0)))
+
+        return df
 
     def _build_prediction_schema(self, df: DataFrame) -> StructType:
         from pyspark.sql.types import (

@@ -38,3 +38,19 @@
 - Prefer `rg` for searching; avoid recursive `ls -R`/`grep -R` in large directories.
 - For any front-end or visual change, capture a screenshot using the browser tooling; otherwise skip screenshots.
 - Avoid wrapping imports in `try/except` blocks unless the existing codebase explicitly requires it.
+
+## Mandatory execution protocol (all tasks)
+- Before closing any coding or planning task, run a self-review of the proposed plan and/or generated code against production-quality criteria: best practices, scalable architecture, clean design, strong orchestration, observability/monitorability, reuse, OOP where applicable, and error-resistant behavior.
+- If any part does not meet those standards, iterate and improve it before finalizing.
+- In the final response, explicitly report the self-review outcome, including conclusions and any improvements made as a result of that review.
+- As part of the same mandatory review, verify coherence and coordination of the current plan/code with other active plans, all relevant codebase components, and all documented project conventions; resolve and document any inconsistencies before finalizing.
+- While executing any task, proactively identify missing context, ambiguous requirements, or instructions that could be made more specific. Ask all needed clarifying questions before final completion when additional information would improve the outcome, then incorporate the answers into the final solution.
+
+## Additional excellence standards (all tasks)
+- Start with a concise execution plan for non-trivial tasks, including assumptions, risks, dependencies, and explicit validation steps.
+- Favor minimal, high-impact changes that preserve backward compatibility; when breaking changes are unavoidable, document migration and rollback considerations.
+- Treat testing as part of delivery: run the most relevant automated checks for touched areas, report outcomes clearly, and explain any gaps or environment limitations.
+- Include operational readiness in solutions: ensure logging, metrics, and failure signals are sufficient for troubleshooting and monitoring in production.
+- Apply security and reliability hygiene by default (input validation, least-privilege assumptions, safe defaults, and clear error handling paths).
+- Keep code and documentation synchronized: update tests/docs/changelogs (as applicable) whenever behavior, contracts, schemas, or interfaces change.
+- Record trade-offs and rationale for major decisions so future contributors can understand why a solution was chosen.

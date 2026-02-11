@@ -1,0 +1,125 @@
+{
+  "Comment": "NDR monthly FG-B baseline orchestration with machine refresh (JSONata)",
+  "QueryLanguage": "JSONata",
+  "StartAt": "NormalizeIncomingMessage",
+  "States": {
+    "NormalizeIncomingMessage": {
+      "Type": "Pass",
+      "Assign": {
+        "raw_message": "{% $type($states.input)='string' ? $states.input : ($exists($states.input.message_body) ? $states.input.message_body : ($exists($states.input.Records[0].body) ? $states.input.Records[0].body : ($exists($states.input.Records[0].Sns.Message) ? $states.input.Records[0].Sns.Message : ''))) %}"
+      },
+      "Next": "ResolvePipelineRuntimeParams"
+    },
+    "ResolvePipelineRuntimeParams": {
+      "Type": "Pass",
+      "Assign": {
+        "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : 'ndr-project') %}",
+        "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : 'v1') %}",
+        "reference_month_iso": "{% $exists($states.input.reference_month_iso) ? $states.input.reference_month_iso : ($contains($raw_message,'reference_month_iso=') ? $split($split($raw_message,'reference_month_iso=')[1],';')[0] : '2025-01-01T00:00:00Z') %}",
+        "reference_time_iso": "{% $exists($states.input.reference_time_iso) ? $states.input.reference_time_iso : ($contains($raw_message,'reference_time_iso=') ? $split($split($raw_message,'reference_time_iso=')[1],';')[0] : '2025-01-31T23:59:59Z') %}",
+        "mode": "{% $exists($states.input.mode) ? $states.input.mode : ($contains($raw_message,'mode=') ? $split($split($raw_message,'mode=')[1],';')[0] : 'REGULAR') %}"
+      },
+      "Next": "StartMachineInventoryRefresh"
+    },
+    "StartMachineInventoryRefresh": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
+      "Arguments": {
+        "PipelineName": "${PipelineNameMachineInventory}",
+        "PipelineParameters": [
+          { "Name": "ProjectName", "Value": "{% $project_name %}" },
+          { "Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}" },
+          { "Name": "ReferenceMonthIso", "Value": "{% $reference_month_iso %}" }
+        ]
+      },
+      "Assign": { "inventory_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}" },
+      "Next": "WaitForInventoryCompletionEvent"
+    },
+    "WaitForInventoryCompletionEvent": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Arguments": {
+        "FunctionName": "${PipelineCompletionCallbackLambdaArn}",
+        "Payload": {
+          "taskToken": "{% $states.context.Task.Token %}",
+          "expected_pipeline_execution_arn": "{% $inventory_pipeline_execution_arn %}",
+          "success_statuses": ["Succeeded"],
+          "failure_statuses": ["Failed", "Stopped"]
+        }
+      },
+      "Next": "StartFGBBaselinePipeline"
+    },
+    "StartFGBBaselinePipeline": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
+      "Arguments": {
+        "PipelineName": "${PipelineNameFGB}",
+        "PipelineParameters": [
+          { "Name": "ProjectName", "Value": "{% $project_name %}" },
+          { "Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}" },
+          { "Name": "ReferenceTimeIso", "Value": "{% $reference_time_iso %}" },
+          { "Name": "Mode", "Value": "{% $mode %}" }
+        ]
+      },
+      "Assign": { "fgb_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}" },
+      "Next": "WaitForFGBCompletionEvent"
+    },
+    "WaitForFGBCompletionEvent": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Arguments": {
+        "FunctionName": "${PipelineCompletionCallbackLambdaArn}",
+        "Payload": {
+          "taskToken": "{% $states.context.Task.Token %}",
+          "expected_pipeline_execution_arn": "{% $fgb_pipeline_execution_arn %}",
+          "success_statuses": ["Succeeded"],
+          "failure_statuses": ["Failed", "Stopped"]
+        }
+      },
+      "Next": "BuildSupplementalBaselines"
+    },
+    "BuildSupplementalBaselines": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${SupplementalBaselineLambdaArn}",
+        "Payload": {
+          "project_name": "{% $project_name %}",
+          "feature_spec_version": "{% $feature_spec_version %}",
+          "reference_month_iso": "{% $reference_month_iso %}",
+          "components": ["segment_baselines", "cold_start_defaults", "population_global_fallback"]
+        }
+      },
+      "Assign": { "supplemental_baseline_result": "{% $states.result.Payload %}" },
+      "Next": "BuildBaselineManifest"
+    },
+    "BuildBaselineManifest": {
+      "Type": "Pass",
+      "Assign": {
+        "baseline_manifest": {
+          "project_name": "{% $project_name %}",
+          "feature_spec_version": "{% $feature_spec_version %}",
+          "reference_month_iso": "{% $reference_month_iso %}",
+          "components": ["host_baselines", "segment_baselines", "pair_baselines", "cold_start_defaults", "optional_population_baseline"],
+          "supplemental": "{% $supplemental_baseline_result %}"
+        }
+      },
+      "Next": "EmitBaselineReadyEvent"
+    },
+    "EmitBaselineReadyEvent": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Arguments": {
+        "Entries": [
+          {
+            "Source": "ndr.orchestration",
+            "DetailType": "NdrMonthlyBaselinesCompleted",
+            "EventBusName": "${EventBusName}",
+            "Detail": "{% $string($baseline_manifest) %}"
+          }
+        ]
+      },
+      "End": true
+    }
+  }
+}

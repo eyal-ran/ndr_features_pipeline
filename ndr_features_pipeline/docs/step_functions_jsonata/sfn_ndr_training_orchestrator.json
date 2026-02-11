@@ -1,0 +1,124 @@
+{
+  "Comment": "NDR training orchestrator with model publication and approval gate (JSONata)",
+  "QueryLanguage": "JSONata",
+  "StartAt": "NormalizeIncomingMessage",
+  "States": {
+    "NormalizeIncomingMessage": {
+      "Type": "Pass",
+      "Assign": {
+        "raw_message": "{% $type($states.input)='string' ? $states.input : ($exists($states.input.message_body) ? $states.input.message_body : ($exists($states.input.Records[0].body) ? $states.input.Records[0].body : ($exists($states.input.Records[0].Sns.Message) ? $states.input.Records[0].Sns.Message : ''))) %}"
+      },
+      "Next": "ResolvePipelineRuntimeParams"
+    },
+    "ResolvePipelineRuntimeParams": {
+      "Type": "Pass",
+      "Assign": {
+        "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : 'ndr-project') %}",
+        "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : 'v1') %}",
+        "run_id": "{% $exists($states.input.run_id) ? $states.input.run_id : ($contains($raw_message,'run_id=') ? $split($split($raw_message,'run_id=')[1],';')[0] : 'auto-train-run') %}",
+        "execution_ts_iso": "{% $exists($states.input.execution_ts_iso) ? $states.input.execution_ts_iso : ($contains($raw_message,'execution_ts_iso=') ? $split($split($raw_message,'execution_ts_iso=')[1],';')[0] : $now()) %}"
+      },
+      "Next": "StartTrainingPipeline"
+    },
+    "StartTrainingPipeline": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
+      "Arguments": {
+        "PipelineName": "${PipelineNameTraining}",
+        "PipelineParameters": [
+          { "Name": "ProjectName", "Value": "{% $project_name %}" },
+          { "Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}" },
+          { "Name": "RunId", "Value": "{% $run_id %}" },
+          { "Name": "ExecutionTsIso", "Value": "{% $execution_ts_iso %}" }
+        ]
+      },
+      "Assign": { "training_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}" },
+      "Next": "WaitForTrainingCompletionEvent"
+    },
+    "WaitForTrainingCompletionEvent": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Arguments": {
+        "FunctionName": "${PipelineCompletionCallbackLambdaArn}",
+        "Payload": {
+          "taskToken": "{% $states.context.Task.Token %}",
+          "expected_pipeline_execution_arn": "{% $training_pipeline_execution_arn %}",
+          "success_statuses": ["Succeeded"],
+          "failure_statuses": ["Failed", "Stopped"]
+        }
+      },
+      "Next": "PublishApprovedModelArtifacts"
+    },
+    "PublishApprovedModelArtifacts": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${ModelPublishLambdaArn}",
+        "Payload": {
+          "project_name": "{% $project_name %}",
+          "feature_spec_version": "{% $feature_spec_version %}",
+          "run_id": "{% $run_id %}",
+          "training_pipeline_execution_arn": "{% $training_pipeline_execution_arn %}",
+          "approved_model_prefix": "${ApprovedModelS3Prefix}"
+        }
+      },
+      "Assign": {
+        "model_registry_record": "{% $states.result.Payload.model_registry_record %}",
+        "deployment_required": "{% $states.result.Payload.deployment_required %}"
+      },
+      "Next": "RegisterModelAttributesMap"
+    },
+    "RegisterModelAttributesMap": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${ModelAttributesRegistryLambdaArn}",
+        "Payload": {
+          "model_registry_record": "{% $model_registry_record %}",
+          "attribute_schema_version": "v1"
+        }
+      },
+      "Assign": { "attributes_registration_result": "{% $states.result.Payload %}" },
+      "Next": "DeploymentRequiredChoice"
+    },
+    "DeploymentRequiredChoice": {
+      "Type": "Choice",
+      "Choices": [{ "Condition": "{% $deployment_required = true %}", "Next": "RequireHumanApproval" }],
+      "Default": "NoDeploymentNeeded"
+    },
+    "RequireHumanApproval": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Arguments": {
+        "FunctionName": "${HumanApprovalLambdaArn}",
+        "Payload": {
+          "taskToken": "{% $states.context.Task.Token %}",
+          "candidate_model": "{% $model_registry_record.model_id %}",
+          "currently_deployed_model": "{% $model_registry_record.current_model_id %}"
+        }
+      },
+      "Assign": { "approval_status": "{% $states.result.Payload.approval_status %}" },
+      "Next": "ApprovalDecision"
+    },
+    "ApprovalDecision": {
+      "Type": "Choice",
+      "Choices": [{ "Condition": "{% $approval_status = 'APPROVED' %}", "Next": "DeployApprovedModel" }],
+      "Default": "HoldApprovedModel"
+    },
+    "DeployApprovedModel": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${ModelDeployLambdaArn}",
+        "Payload": {
+          "model_registry_record": "{% $model_registry_record %}",
+          "attributes_registration_result": "{% $attributes_registration_result %}"
+        }
+      },
+      "Next": "Success"
+    },
+    "NoDeploymentNeeded": { "Type": "Succeed" },
+    "HoldApprovedModel": { "Type": "Succeed" },
+    "Success": { "Type": "Succeed" }
+  }
+}

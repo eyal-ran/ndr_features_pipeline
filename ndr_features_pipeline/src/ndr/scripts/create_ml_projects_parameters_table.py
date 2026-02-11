@@ -397,6 +397,7 @@ def _build_bootstrap_items(
             "project_name": project_name,
             "job_name": _versioned_job_name("machine_inventory_unload", feature_spec_version),
             "spec": {
+                "processing_image_uri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/ndr-pyspark:latest",
                 "redshift": {
                     "cluster_identifier": "REPLACE_ME",
                     "database": "REPLACE_ME",
@@ -410,6 +411,22 @@ def _build_bootstrap_items(
                     "output_format": "PARQUET",
                     "partitioning": ["snapshot_month"],
                 },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name": _versioned_job_name("prediction_feature_join", feature_spec_version),
+            "spec": {
+                "destination": {
+                    "type": "s3",
+                    "s3": {
+                        "s3_prefix": "s3://REPLACE_ME/prediction_feature_join/",
+                        "format": "PARQUET",
+                    },
+                }
             },
             "feature_spec_version": feature_spec_version,
             "updated_at": now,

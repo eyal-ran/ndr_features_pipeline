@@ -7,7 +7,10 @@ This `docs/` tree is organized to separate canonical architecture and operationa
 - `architecture/`
   - `overview.md`: canonical summary of the end-to-end NDR feature engineering system.
   - `orchestration/step_functions.md`: Step Functions orchestration responsibilities, state machine inventory, and deployment notes.
-  - `diagrams/pipeline_flow.md`: visual flow diagram for runtime data movement and control flow.
+  - `diagrams/pipeline_flow.md`: detailed runtime pipeline flow (15m, baselines, inference, training, publication).
+  - `diagrams/system_architecture.md`: complete AWS architecture diagram (orchestration, storage, eventing, and MLOps integrations).
+  - `diagrams/orchestration_event_lifecycle.md`: sequence diagram of callbacks, locks, and event publication.
+  - `diagrams/stakeholder_value_flow.md`: business-friendly value stream from signals to security outcomes.
 - `feature_builders/current_state.md`: production-grade current-state documentation for Delta, FG-A, Pair-Counts, FG-B, FG-C, inference prediction, IF training, machine inventory unload, and prediction feature join jobs.
 - `feature_catalog/` + `FEATURE_CATALOG.md`: generated feature catalog artifacts.
 - `step_functions_jsonata/`: JSONata state machine definitions used for deployment.

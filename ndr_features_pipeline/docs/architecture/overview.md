@@ -52,6 +52,10 @@ Primary data layers:
 ## Related docs
 
 - Step Functions details: `docs/architecture/orchestration/step_functions.md`
-- Diagram: `docs/architecture/diagrams/pipeline_flow.md`
+- Diagrams:
+  - `docs/architecture/diagrams/pipeline_flow.md` (runtime feature/data path)
+  - `docs/architecture/diagrams/system_architecture.md` (full AWS architecture view)
+  - `docs/architecture/diagrams/orchestration_event_lifecycle.md` (state-machine callback/event flow)
+  - `docs/architecture/diagrams/stakeholder_value_flow.md` (business-oriented value stream)
 - Processing + builders current state: `docs/feature_builders/current_state.md`
 - Feature definitions: `docs/FEATURE_CATALOG.md` and `docs/feature_catalog/`

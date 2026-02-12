@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 """SageMaker pipeline definition for IF training (FG-A + FG-C)."""
 
 import sagemaker
@@ -15,6 +16,7 @@ def build_if_training_pipeline(
     default_bucket: str,
     region_name: str,
 ) -> Pipeline:
+    """Execute the build if training pipeline stage of the workflow."""
     session = sagemaker.session.Session(default_bucket=default_bucket)
 
     project_name = ParameterString(name="ProjectName", default_value="ndr-project")

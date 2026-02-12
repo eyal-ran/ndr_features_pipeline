@@ -1,4 +1,7 @@
+"""NDR project parameters loader module."""
+
 from __future__ import annotations
+
 
 import os
 from typing import Any, Dict
@@ -14,6 +17,7 @@ class ProjectParametersLoader:
     """Loads project-level parameters from the ML projects DynamoDB table."""
 
     def __init__(self, table_name: str | None = None) -> None:
+        """Initialize the instance with required clients and runtime configuration."""
         self._ddb = boto3.resource("dynamodb")
         self._table_name = (
             table_name
@@ -33,6 +37,7 @@ class ProjectParametersLoader:
         feature_spec_version: str,
         job_name: str = DEFAULT_PROJECT_PARAMETERS_JOB_NAME,
     ) -> Dict[str, Any]:
+        """Load project parameters from DynamoDB for the requested project/version."""
         key = {
             "project_name": project_name,
             "job_name": f"{job_name}{JOB_SPEC_SORT_KEY_DELIMITER}{feature_spec_version}",

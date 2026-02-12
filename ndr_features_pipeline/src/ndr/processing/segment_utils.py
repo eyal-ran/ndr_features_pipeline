@@ -1,4 +1,7 @@
+"""NDR segment utils module."""
+
 from __future__ import annotations
+
 
 from typing import Any, Dict
 
@@ -33,6 +36,7 @@ def add_segment_id(
         strategy = "ipv4_prefix"
 
     def ipv4_prefix(ip: str) -> str:
+        """Execute the ipv4 prefix stage of the workflow."""
         if ip is None:
             return "SEG_UNKNOWN"
         parts = ip.split(".")

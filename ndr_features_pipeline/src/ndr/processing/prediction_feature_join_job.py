@@ -1,4 +1,7 @@
+"""NDR prediction feature join job module."""
+
 from __future__ import annotations
+
 
 import logging
 import time
@@ -30,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PredictionFeatureJoinRuntimeConfig:
+    """Data container for PredictionFeatureJoinRuntimeConfig."""
     project_name: str
     feature_spec_version: str
     mini_batch_id: str
@@ -47,12 +51,14 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
         inference_spec: InferenceSpec,
         join_spec: PredictionFeatureJoinSpec,
     ) -> None:
+        """Initialize the instance with required clients and runtime configuration."""
         super().__init__(spark)
         self.runtime_config = runtime_config
         self.inference_spec = inference_spec
         self.join_spec = join_spec
 
     def run(self) -> None:
+        """Execute the full workflow for this job runner."""
         predictions_df = self._load_predictions()
         if predictions_df.rdd.isEmpty():
             logger.warning("Predictions are empty; skipping join")
@@ -69,6 +75,7 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
         self._write_joined(joined)
 
     def _load_predictions(self) -> DataFrame:
+        """Execute the load predictions stage of the workflow."""
         output_spec = self.inference_spec.output
         predictions_prefix = build_batch_output_prefix(
             base_prefix=output_spec.s3_prefix,
@@ -83,6 +90,7 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
         return df
 
     def _load_features(self) -> DataFrame:
+        """Execute the load features stage of the workflow."""
         runtime = InferencePredictionsRuntimeConfig(
             project_name=self.runtime_config.project_name,
             feature_spec_version=self.runtime_config.feature_spec_version,
@@ -98,6 +106,7 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
     def _dedupe_feature_columns(
         self, features_df: DataFrame, predictions_df: DataFrame, join_keys: List[str]
     ) -> DataFrame:
+        """Execute the dedupe feature columns stage of the workflow."""
         prediction_columns = set(predictions_df.columns)
         feature_columns = [
             col
@@ -107,6 +116,7 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
         return features_df.select(*feature_columns)
 
     def _write_joined(self, df: DataFrame) -> None:
+        """Execute the write joined stage of the workflow."""
         df = df.withColumn("dt", F.date_format(F.col("window_end_ts"), "yyyy-MM-dd"))
         if self.join_spec.destination_type == "s3":
             if not self.join_spec.s3_output:
@@ -124,6 +134,7 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
         raise ValueError(f"Unsupported prediction_feature_join destination {self.join_spec.destination_type}")
 
     def _write_joined_to_s3(self, df: DataFrame, output_spec: InferenceOutputSpec) -> str:
+        """Execute the write joined to s3 stage of the workflow."""
         if output_spec.format.lower() != "parquet":
             raise ValueError("prediction_feature_join currently supports parquet output only")
         output_prefix = build_batch_output_prefix(
@@ -147,6 +158,7 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
         s3_prefix: str,
         redshift_spec: PredictionFeatureJoinDestinationRedshift,
     ) -> None:
+        """Execute the copy to redshift stage of the workflow."""
         data_api = boto3.client("redshift-data", region_name=redshift_spec.region)
         for sql in redshift_spec.pre_sql:
             self._execute_statement(data_api, redshift_spec, sql)
@@ -171,6 +183,7 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
         redshift_spec: PredictionFeatureJoinDestinationRedshift,
         sql: str,
     ) -> None:
+        """Execute the execute statement stage of the workflow."""
         params = dict(
             ClusterIdentifier=redshift_spec.cluster_identifier,
             Database=redshift_spec.database,
@@ -184,6 +197,7 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
         self._wait_for_statement(data_api, statement_id)
 
     def _wait_for_statement(self, data_api: Any, statement_id: str) -> None:
+        """Execute the wait for statement stage of the workflow."""
         while True:
             response = data_api.describe_statement(Id=statement_id)
             status = response["Status"]
@@ -197,6 +211,7 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
 def run_prediction_feature_join_from_runtime_config(
     runtime_config: PredictionFeatureJoinRuntimeConfig,
 ) -> None:
+    """Execute the run prediction feature join from runtime config stage of the workflow."""
     job_spec = load_job_spec(
         project_name=runtime_config.project_name,
         job_name="inference_predictions",

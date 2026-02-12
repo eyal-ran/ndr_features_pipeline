@@ -115,6 +115,7 @@ class FGABuilderJob(BaseProcessingJobRunner):
     """
 
     def __init__(self, spark: SparkSession, config: FGABuilderConfig) -> None:
+        """Initialize the instance with required clients and runtime configuration."""
         super().__init__(spark)
         self.config = config
 
@@ -146,6 +147,7 @@ class FGABuilderJob(BaseProcessingJobRunner):
 
     def _run_impl(self) -> None:
         # 1. Read delta tables for the relevant mini-batch.
+        """Execute the run impl stage of the workflow."""
         delta_df = self._read_delta_table()
 
         if delta_df.rdd.isEmpty():
@@ -247,6 +249,7 @@ class FGABuilderJob(BaseProcessingJobRunner):
         return df
 
     def _load_pair_context(self) -> Optional[DataFrame]:
+        """Execute the load pair context stage of the workflow."""
         if not self.config.pair_context_s3_prefix:
             return None
         logger.info("Reading pair context from %s", self.config.pair_context_s3_prefix)
@@ -258,6 +261,7 @@ class FGABuilderJob(BaseProcessingJobRunner):
         return df
 
     def _load_lookback_table(self) -> Optional[DataFrame]:
+        """Execute the load lookback table stage of the workflow."""
         if not self.config.lookback30d_s3_prefix:
             return None
         logger.info("Reading lookback30d table from %s", self.config.lookback30d_s3_prefix)
@@ -297,6 +301,7 @@ class FGABuilderJob(BaseProcessingJobRunner):
         )
 
     def _write_pair_context(self, df: DataFrame, anchor_ts: datetime) -> None:
+        """Execute the write pair context stage of the workflow."""
         if not self.config.pair_context_output_prefix:
             return
         if df.rdd.isEmpty():
@@ -590,6 +595,7 @@ class FGABuilderJob(BaseProcessingJobRunner):
         anchor_ts: datetime,
         prefix: str,
     ) -> DataFrame:
+        """Execute the attach novelty features stage of the workflow."""
         if pair_context_df is None or lookback_df is None:
             return aggregated
 
@@ -652,9 +658,11 @@ class FGABuilderJob(BaseProcessingJobRunner):
         )
 
         def safe_size(col_name: str) -> F.Column:
+            """Execute the safe size stage of the workflow."""
             return F.when(F.col(col_name).isNull(), F.lit(0)).otherwise(F.size(F.col(col_name)))
 
         def array_except_size(left: str, right: str) -> F.Column:
+            """Execute the array except size stage of the workflow."""
             return F.when(
                 F.col(left).isNull(),
                 F.lit(0),
@@ -663,6 +671,7 @@ class FGABuilderJob(BaseProcessingJobRunner):
             )
 
         def array_intersect_size(left: str, right: str) -> F.Column:
+            """Execute the array intersect size stage of the workflow."""
             return F.when(
                 F.col(left).isNull(),
                 F.lit(0),
@@ -719,6 +728,7 @@ class FGABuilderJob(BaseProcessingJobRunner):
         anchor_ts: datetime,
         prefix: str,
     ) -> DataFrame:
+        """Execute the attach high risk segment features stage of the workflow."""
         if pair_context_df is None:
             return aggregated
         high_risk_segments = self.config.high_risk_segments or []

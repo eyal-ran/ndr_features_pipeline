@@ -1,15 +1,20 @@
+"""NDR if training preprocessing module."""
+
 from __future__ import annotations
+
 
 from typing import Dict, Iterable, List, Tuple
 
 
 def split_metadata_and_feature_columns(columns: Iterable[str], join_keys: List[str]) -> Tuple[List[str], List[str]]:
+    """Execute the split metadata and feature columns stage of the workflow."""
     metadata = set(join_keys + ["feature_spec_version", "dt", "mini_batch_id"])
     feature_columns = [col for col in columns if col not in metadata]
     return sorted(metadata.intersection(set(columns))), sorted(feature_columns)
 
 
 def _quantile(values: List[float], q: float) -> float:
+    """Execute the quantile stage of the workflow."""
     if not values:
         return 0.0
     ordered = sorted(values)
@@ -21,6 +26,7 @@ def _quantile(values: List[float], q: float) -> float:
 
 
 def robust_statistics_by_feature(records: Iterable[Dict[str, float]], feature_columns: List[str]) -> Dict[str, Dict[str, float]]:
+    """Execute the robust statistics by feature stage of the workflow."""
     values_by_feature: Dict[str, List[float]] = {f: [] for f in feature_columns}
     for row in records:
         for feature in feature_columns:

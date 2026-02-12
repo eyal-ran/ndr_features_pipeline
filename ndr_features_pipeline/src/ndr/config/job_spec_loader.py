@@ -1,4 +1,6 @@
+"""NDR job spec loader module."""
 import os
+
 from typing import Any, Dict
 
 import boto3
@@ -27,6 +29,7 @@ class JobSpecLoader:
     """
 
     def __init__(self, table_name: str | None = None):
+        """Initialize the instance with required clients and runtime configuration."""
         self._ddb = boto3.resource("dynamodb")
         self._table_name = (
             table_name

@@ -1,4 +1,7 @@
+"""NDR prediction feature join spec module."""
+
 from __future__ import annotations
+
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
@@ -8,6 +11,7 @@ from ndr.processing.inference_predictions_spec import InferenceOutputSpec
 
 @dataclass
 class PredictionFeatureJoinDestinationRedshift:
+    """Data container for PredictionFeatureJoinDestinationRedshift."""
     cluster_identifier: str
     database: str
     secret_arn: str
@@ -23,12 +27,14 @@ class PredictionFeatureJoinDestinationRedshift:
 
 @dataclass
 class PredictionFeatureJoinSpec:
+    """Data container for PredictionFeatureJoinSpec."""
     destination_type: str
     s3_output: InferenceOutputSpec | None
     redshift_output: PredictionFeatureJoinDestinationRedshift | None
 
 
 def _parse_output_spec(payload: Dict[str, Any], default_dataset: str) -> InferenceOutputSpec:
+    """Execute the parse output spec stage of the workflow."""
     if "s3_prefix" not in payload:
         raise ValueError("Prediction feature join output spec requires s3_prefix")
     return InferenceOutputSpec(
@@ -41,6 +47,7 @@ def _parse_output_spec(payload: Dict[str, Any], default_dataset: str) -> Inferen
 
 
 def _normalize_sql_list(value: Any, name: str) -> List[str]:
+    """Execute the normalize sql list stage of the workflow."""
     if value is None:
         return []
     if isinstance(value, str):
@@ -51,6 +58,7 @@ def _normalize_sql_list(value: Any, name: str) -> List[str]:
 
 
 def parse_prediction_feature_join_spec(job_spec: Dict[str, Any]) -> PredictionFeatureJoinSpec:
+    """Execute the parse prediction feature join spec stage of the workflow."""
     destination_payload = job_spec.get("destination")
     if not destination_payload:
         raise ValueError("prediction_feature_join JobSpec requires destination")

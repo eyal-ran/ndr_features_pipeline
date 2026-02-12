@@ -1,4 +1,6 @@
+"""NDR delta builder operators module."""
 from typing import Dict, Any
+
 
 from pyspark.sql import DataFrame, functions as F
 

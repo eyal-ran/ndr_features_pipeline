@@ -1,4 +1,6 @@
+"""NDR logger module."""
 import logging
+
 import os
 
 

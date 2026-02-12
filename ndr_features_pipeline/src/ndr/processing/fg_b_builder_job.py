@@ -110,6 +110,7 @@ class FGBaselineBuilderJob(BaseRunner):
     """
 
     def __init__(self, runtime_config: FGBaselineJobRuntimeConfig) -> None:
+        """Initialize the instance with required clients and runtime configuration."""
         super().__init__()
         self.runtime_config = runtime_config
         self.spark: Optional[SparkSession] = None
@@ -518,6 +519,7 @@ class FGBaselineBuilderJob(BaseRunner):
         rarity_threshold: float,
         horizon: str,
     ) -> DataFrame:
+        """Execute the aggregate pair rarity stage of the workflow."""
         grouped = df.groupBy(*group_cols).agg(
             F.sum("sessions_cnt").alias("pair_seen_count"),
             F.max("event_ts").alias("pair_last_seen_ts"),
@@ -553,6 +555,7 @@ class FGBaselineBuilderJob(BaseRunner):
         return grouped
 
     def _get_baseline_metrics(self, df: DataFrame, excluded_cols: List[str]) -> List[str]:
+        """Execute the get baseline metrics stage of the workflow."""
         metrics = self.job_spec.get("baseline_metrics", [])
         if metrics:
             return metrics
@@ -567,6 +570,7 @@ class FGBaselineBuilderJob(BaseRunner):
         horizon: str,
         include_record_id: bool,
     ) -> DataFrame:
+        """Execute the build baseline stats stage of the workflow."""
         support_cfg = self.job_spec.get("support_min", {})
 
         good_df = df.filter(F.col("anomaly_weight") >= 1.0)
@@ -625,6 +629,7 @@ class FGBaselineBuilderJob(BaseRunner):
         return joined
 
     def _build_ip_metadata_flags(self, host_baselines: DataFrame, horizon: str) -> DataFrame:
+        """Execute the build ip metadata flags stage of the workflow."""
         assert self.project_parameters is not None, "Project parameters must be loaded before computing metadata."
         join_keys = self.job_spec.get("join_keys", ["host_ip", "window_label"])
         if "host_ip" not in join_keys:
@@ -684,6 +689,7 @@ class FGBaselineBuilderJob(BaseRunner):
         return flags_df.select(*join_keys, "baseline_horizon", "is_full_history", "is_non_persistent_machine", "is_cold_start")
 
     def _get_non_persistent_prefixes(self) -> List[str]:
+        """Execute the get non persistent prefixes stage of the workflow."""
         prefixes = self.job_spec.get("non_persistent_machine_prefixes")
         if prefixes:
             return prefixes
@@ -693,6 +699,7 @@ class FGBaselineBuilderJob(BaseRunner):
         return self.job_spec.get("vdi_hostname_prefixes", [])
 
     def _load_ip_machine_mapping(self) -> Tuple[DataFrame, str]:
+        """Execute the load ip machine mapping stage of the workflow."""
         mapping_cfg = self.job_spec.get("ip_machine_mapping", {})
         prefix_key = mapping_cfg.get("s3_prefix_key", "ip_machine_mapping_s3_prefix")
         mapping_prefix = self.project_parameters.get(prefix_key)
@@ -814,6 +821,7 @@ class FGBaselineBuilderJob(BaseRunner):
 
     @staticmethod
     def _extract_baseline_metrics(df: DataFrame) -> List[str]:
+        """Execute the extract baseline metrics stage of the workflow."""
         metrics = []
         for col in df.columns:
             if col.endswith("_median"):

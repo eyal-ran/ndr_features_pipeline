@@ -1,3 +1,5 @@
+"""Typed specification models and parser for IF training jobs."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,6 +8,8 @@ from typing import Any, Dict, List
 
 @dataclass
 class TrainingFeatureInputSpec:
+    """Defines one required feature input dataset for IF training."""
+
     s3_prefix: str
     dataset: str | None = None
     required: bool = True
@@ -13,12 +17,16 @@ class TrainingFeatureInputSpec:
 
 @dataclass
 class TrainingWindowSpec:
+    """Controls historical lookback and holdout gap windows."""
+
     lookback_months: int = 4
     gap_months: int = 1
 
 
 @dataclass
 class TrainingPreprocessingSpec:
+    """Parameters for deterministic feature preprocessing at train/inference time."""
+
     eps: float = 1e-6
     scaling_method: str = "robust"
     outlier_method: str = "robust_z_clip"
@@ -29,6 +37,8 @@ class TrainingPreprocessingSpec:
 
 @dataclass
 class TrainingFeatureSelectionSpec:
+    """Configuration for optional feature pruning heuristics."""
+
     enabled: bool = True
     variance_threshold: float = 1e-12
     corr_threshold: float = 0.95
@@ -36,6 +46,8 @@ class TrainingFeatureSelectionSpec:
 
 @dataclass
 class TrainingTuningSpec:
+    """Hyper-parameter optimization controls used by training orchestration."""
+
     method: str = "bayesian"
     max_trials: int = 20
     timeout_seconds: int = 3600
@@ -45,6 +57,8 @@ class TrainingTuningSpec:
 
 @dataclass
 class TrainingOutputSpec:
+    """Storage locations for model artifacts and training reports."""
+
     artifacts_s3_prefix: str
     report_s3_prefix: str
     model_image_prefix: str | None = None
@@ -52,6 +66,8 @@ class TrainingOutputSpec:
 
 @dataclass
 class TrainingDeploymentSpec:
+    """Settings for optional post-training model deployment."""
+
     deploy_on_success: bool = False
     endpoint_name: str | None = None
     instance_type: str = "ml.m5.large"
@@ -63,6 +79,8 @@ class TrainingDeploymentSpec:
 
 @dataclass
 class TrainingValidationGatesSpec:
+    """Acceptance thresholds evaluated before deployment."""
+
     min_relative_improvement: float = 0.0
     max_alert_volume_delta: float = 0.1
     max_score_drift: float = 0.5
@@ -70,6 +88,8 @@ class TrainingValidationGatesSpec:
 
 @dataclass
 class TrainingReliabilitySpec:
+    """Minimum data-quality and reliability guardrails for training."""
+
     min_rows_per_input: int = 100
     min_rows_per_window: int = 25
     min_join_rows: int = 100
@@ -84,6 +104,8 @@ class TrainingReliabilitySpec:
 
 @dataclass
 class TrainingCostGuardrailSpec:
+    """Budget constraints and estimated spend assumptions for training."""
+
     enabled: bool = True
     option1_hourly_rate_usd: float = 0.12
     option1_monthly_budget_usd: float = 86.4
@@ -92,6 +114,8 @@ class TrainingCostGuardrailSpec:
 
 @dataclass
 class TrainingExperimentsSpec:
+    """Experiment tracking controls for metadata lineage."""
+
     enabled: bool = True
     experiment_name: str | None = None
     trial_prefix: str = "if-training"
@@ -99,6 +123,8 @@ class TrainingExperimentsSpec:
 
 @dataclass
 class IFTrainingSpec:
+    """Fully parsed IF training specification used by runner code."""
+
     feature_inputs: Dict[str, TrainingFeatureInputSpec]
     output: TrainingOutputSpec
     model_version: str
@@ -117,6 +143,8 @@ class IFTrainingSpec:
 
 @dataclass
 class IFTrainingRuntimeConfig:
+    """Runtime context injected by orchestration for a single run."""
+
     project_name: str
     feature_spec_version: str
     run_id: str
@@ -124,6 +152,8 @@ class IFTrainingRuntimeConfig:
 
 
 def parse_if_training_spec(job_spec: Dict[str, Any]) -> IFTrainingSpec:
+    """Validate and normalize the IF training section of a JobSpec payload."""
+
     feature_inputs_payload = job_spec.get("feature_inputs")
     if not feature_inputs_payload:
         raise ValueError("IF training JobSpec must include feature_inputs")

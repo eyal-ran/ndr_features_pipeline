@@ -1,4 +1,6 @@
+"""NDR delta builder job module."""
 from dataclasses import dataclass
+
 from typing import Dict, Any
 
 import boto3
@@ -18,6 +20,7 @@ class DeltaBuilderRunner(BaseProcessingRunner):
     """Concrete runner that builds 15m delta tables from Palo Alto logs."""
 
     def __init__(self, spark: SparkSession, job_spec: JobSpec, runtime: RuntimeParams):
+        """Initialize the instance with required clients and runtime configuration."""
         super().__init__(spark, job_spec, runtime)
         self._s3_client = boto3.client("s3")
         self.logger = get_logger("DeltaBuilderRunner")  # override name
@@ -169,6 +172,7 @@ class DeltaBuilderRunner(BaseProcessingRunner):
         return result
 
     def _write_output(self, df: DataFrame) -> None:
+        """Execute the write output stage of the workflow."""
         port_sets = self._load_port_sets()
         manifest = build_delta_manifest(port_set_names=sorted(port_sets.keys()))
         df = enforce_schema(df, manifest, "delta", self.logger)

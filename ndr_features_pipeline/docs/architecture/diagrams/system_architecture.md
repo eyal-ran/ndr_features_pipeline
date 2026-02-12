@@ -6,28 +6,28 @@ This diagram provides a complete architecture view across orchestration, process
 flowchart TB
     subgraph Ingestion[Ingestion and Triggers]
         I1[Upstream Producers]
-        I2[EventBridge Rules\n(schedules + domain events)]
-        I3[SNS Topics\n(optional fan-out)]
-        I4[SQS Queues\n(optional buffering)]
+        I2[EventBridge Rules<br/>(schedules + domain events)]
+        I3[SNS Topics<br/>(optional fan-out)]
+        I4[SQS Queues<br/>(optional buffering)]
     end
 
     subgraph Orchestration[Workflow Orchestration]
-        O1[Step Functions\n15m Features + Inference]
-        O2[Step Functions\nMonthly FG-B Baselines]
-        O3[Step Functions\nTraining Orchestrator]
-        O4[Step Functions\nPrediction Publication]
+        O1[Step Functions<br/>15m Features + Inference]
+        O2[Step Functions<br/>Monthly FG-B Baselines]
+        O3[Step Functions<br/>Training Orchestrator]
+        O4[Step Functions<br/>Prediction Publication]
         O5[Lambda Callbacks / Utility Lambdas]
         O6[(DynamoDB Lock + Config Tables)]
     end
 
     subgraph Processing[SageMaker Pipelines and Jobs]
-        P1[15m Streaming Pipeline\nDelta → FG-A → Pair-Counts → FG-C]
+        P1[15m Streaming Pipeline<br/>Delta -> FG-A -> Pair-Counts -> FG-C]
         P2[FG-B Baseline Pipeline]
         P3[Machine Inventory Unload Pipeline]
         P4[Inference Predictions Pipeline]
         P5[Prediction Feature Join Pipeline]
         P6[IF Training Pipeline]
-        P7[SageMaker Processing\n(PySpark jobs)]
+        P7[SageMaker Processing<br/>(PySpark jobs)]
     end
 
     subgraph DataPlane[S3 and Feature Data]
@@ -44,10 +44,10 @@ flowchart TB
     end
 
     subgraph MLOps[SageMaker MLOps Integrations]
-        M1[SageMaker Feature Store\n(optional mirror/publish)]
-        M2[SageMaker Experiments\n(run tracking)]
-        M3[SageMaker Model Registry\n(approval / versions)]
-        M4[SageMaker Endpoint\n(optional online inference target)]
+        M1[SageMaker Feature Store<br/>(optional mirror/publish)]
+        M2[SageMaker Experiments<br/>(run tracking)]
+        M3[SageMaker Model Registry<br/>(approval / versions)]
+        M4[SageMaker Endpoint<br/>(optional online inference target)]
     end
 
     subgraph Consumers[Downstream Consumers]

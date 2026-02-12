@@ -6,9 +6,9 @@ This diagram provides a complete architecture view across orchestration, process
 flowchart TB
     subgraph Ingestion[Ingestion and Triggers]
         I1[Upstream Producers]
-        I2[EventBridge Rules<br/>(schedules + domain events)]
-        I3[SNS Topics<br/>(optional fan-out)]
-        I4[SQS Queues<br/>(optional buffering)]
+        I2[EventBridge Rules<br/>schedules and domain events]
+        I3[SNS Topics<br/>optional fan-out]
+        I4[SQS Queues<br/>optional buffering]
     end
 
     subgraph Orchestration[Workflow Orchestration]
@@ -27,7 +27,7 @@ flowchart TB
         P4[Inference Predictions Pipeline]
         P5[Prediction Feature Join Pipeline]
         P6[IF Training Pipeline]
-        P7[SageMaker Processing<br/>(PySpark jobs)]
+        P7[SageMaker Processing<br/>PySpark jobs]
     end
 
     subgraph DataPlane[S3 and Feature Data]
@@ -44,10 +44,10 @@ flowchart TB
     end
 
     subgraph MLOps[SageMaker MLOps Integrations]
-        M1[SageMaker Feature Store<br/>(optional mirror/publish)]
-        M2[SageMaker Experiments<br/>(run tracking)]
-        M3[SageMaker Model Registry<br/>(approval / versions)]
-        M4[SageMaker Endpoint<br/>(optional online inference target)]
+        M1[SageMaker Feature Store<br/>optional mirror and publish]
+        M2[SageMaker Experiments<br/>run tracking]
+        M3[SageMaker Model Registry<br/>approval and versions]
+        M4[SageMaker Endpoint<br/>optional online inference target]
     end
 
     subgraph Consumers[Downstream Consumers]

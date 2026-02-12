@@ -74,6 +74,7 @@ class PairCountsBuilderJob(BaseRunner):
     """
 
     def __init__(self, runtime_config: PairCountsJobRuntimeConfig) -> None:
+        """Initialize the instance with required clients and runtime configuration."""
         super().__init__()
         self.runtime_config = runtime_config
         self.spark: Optional[SparkSession] = None
@@ -84,6 +85,7 @@ class PairCountsBuilderJob(BaseRunner):
     # Entry point                                                    #
     # -------------------------------------------------------------- #
     def run(self) -> None:
+        """Execute the full workflow for this job runner."""
         LOGGER.info("Pair-Counts builder job started.")
         try:
             self.job_spec = load_job_spec(
@@ -124,6 +126,7 @@ class PairCountsBuilderJob(BaseRunner):
     # Spark & IO helpers                                             #
     # -------------------------------------------------------------- #
     def _build_spark_session(self) -> SparkSession:
+        """Execute the build spark session stage of the workflow."""
         LOGGER.info("Building SparkSession for Pair-Counts builder.")
         spark = (
             SparkSession.builder.appName("pair_counts_builder")

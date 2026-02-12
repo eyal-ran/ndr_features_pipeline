@@ -1,4 +1,6 @@
+"""NDR base runner module."""
 from dataclasses import dataclass
+
 from typing import Dict, Any
 
 from pyspark.sql import SparkSession, DataFrame
@@ -13,6 +15,7 @@ class BaseRunner:
     """Minimal base class for processing jobs that manage their own flow."""
 
     def __init__(self) -> None:
+        """Initialize the instance with required clients and runtime configuration."""
         self.logger = get_logger(self.__class__.__name__)
 
 
@@ -20,6 +23,7 @@ class BaseProcessingJobRunner:
     """Base class for Spark-based jobs that manage orchestration internally."""
 
     def __init__(self, spark: SparkSession) -> None:
+        """Initialize the instance with required clients and runtime configuration."""
         self.spark = spark
         self.logger = get_logger(self.__class__.__name__)
 
@@ -42,6 +46,7 @@ class BaseProcessingRunner:
     """Shared orchestration skeleton for all NDR processing jobs."""
 
     def __init__(self, spark: SparkSession, job_spec: JobSpec, runtime: RuntimeParams):
+        """Initialize the instance with required clients and runtime configuration."""
         self.spark = spark
         self.job_spec = job_spec
         self.runtime = runtime

@@ -1,4 +1,7 @@
+"""NDR inference predictions job module."""
+
 from __future__ import annotations
+
 
 import json
 import logging
@@ -31,18 +34,21 @@ class SagemakerEndpointInvoker:
     """Invoke a SageMaker endpoint with retry and payload chunking."""
 
     def __init__(self, model_spec: InferenceModelSpec) -> None:
+        """Initialize the instance with required clients and runtime configuration."""
         self.model_spec = model_spec
         import boto3
 
         self.client = boto3.client("sagemaker-runtime", region_name=model_spec.region)
 
     def _payload_size_bytes(self, records: Sequence[Dict[str, Any]]) -> int:
+        """Execute the payload size bytes stage of the workflow."""
         payload = json.dumps({"instances": records}).encode("utf-8")
         return len(payload)
 
     def _chunk_records(
         self, records: Sequence[Tuple[Dict[str, Any], Dict[str, Any]]]
     ) -> Iterable[List[Tuple[Dict[str, Any], Dict[str, Any]]]]:
+        """Execute the chunk records stage of the workflow."""
         max_payload_bytes = int(self.model_spec.max_payload_mb * 1024 * 1024)
         current: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
         for record in records:
@@ -63,6 +69,7 @@ class SagemakerEndpointInvoker:
             yield current
 
     def _invoke_payload(self, payload: str) -> Tuple[List[Any], Dict[str, Any]]:
+        """Execute the invoke payload stage of the workflow."""
         for attempt in range(self.model_spec.max_retries + 1):
             try:
                 response = self.client.invoke_endpoint(
@@ -85,6 +92,7 @@ class SagemakerEndpointInvoker:
         raise RuntimeError("Exceeded maximum retries for endpoint invocation")
 
     def _parse_predictions(self, payload: Any) -> List[Any]:
+        """Execute the parse predictions stage of the workflow."""
         if isinstance(payload, dict):
             if "predictions" in payload:
                 return payload["predictions"]
@@ -100,6 +108,7 @@ class SagemakerEndpointInvoker:
         schema: PredictionSchemaSpec,
         runtime: InferencePredictionsRuntimeConfig,
     ) -> Iterable[Dict[str, Any]]:
+        """Execute the invoke records stage of the workflow."""
         if not records:
             return []
 
@@ -130,6 +139,7 @@ class SagemakerEndpointInvoker:
         return results
 
     def _build_payload(self, batch: Sequence[Tuple[Dict[str, Any], Dict[str, Any]]]) -> str:
+        """Execute the build payload stage of the workflow."""
         records = [item[1] for item in batch]
         return json.dumps({"instances": records})
 
@@ -142,6 +152,7 @@ class SagemakerEndpointInvoker:
         inference_ts: datetime,
         response: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
+        """Execute the merge predictions stage of the workflow."""
         if len(predictions) != len(batch):
             raise ValueError(
                 "Prediction count does not match record count "
@@ -169,6 +180,7 @@ class SagemakerEndpointInvoker:
     def _extract_prediction(
         self, prediction: Any, schema: PredictionSchemaSpec
     ) -> Tuple[float | None, Any | None]:
+        """Execute the extract prediction stage of the workflow."""
         if isinstance(prediction, dict):
             score = (
                 prediction.get(schema.score_column)
@@ -199,11 +211,13 @@ class InferencePredictionsJob(BaseProcessingJobRunner):
         runtime_config: InferencePredictionsRuntimeConfig,
         inference_spec: InferenceSpec,
     ) -> None:
+        """Initialize the instance with required clients and runtime configuration."""
         super().__init__(spark)
         self.runtime_config = runtime_config
         self.inference_spec = inference_spec
 
     def run(self) -> None:
+        """Execute the full workflow for this job runner."""
         logger.info(
             "Starting inference predictions job for project=%s mini_batch_id=%s",
             self.runtime_config.project_name,
@@ -221,6 +235,7 @@ class InferencePredictionsJob(BaseProcessingJobRunner):
         logger.info("Inference predictions job completed")
 
     def load_features(self) -> DataFrame:
+        """Execute the load features stage of the workflow."""
         from pyspark.sql import functions as F
 
         join_keys = self.inference_spec.join_keys
@@ -275,6 +290,7 @@ class InferencePredictionsJob(BaseProcessingJobRunner):
         return combined
 
     def invoke_model(self, df: DataFrame) -> DataFrame:
+        """Execute the invoke model stage of the workflow."""
         join_keys = self.inference_spec.join_keys
         feature_columns = self._select_feature_columns(df)
         required_columns = set(join_keys + ["feature_spec_version"] + feature_columns)
@@ -290,11 +306,13 @@ class InferencePredictionsJob(BaseProcessingJobRunner):
         prediction_schema = self.inference_spec.prediction_schema
 
         def _invoke_partition(rows: Iterable[Row]) -> Iterable[Dict[str, Any]]:
+            """Execute the invoke partition stage of the workflow."""
             invoker = SagemakerEndpointInvoker(model_spec)
             buffer: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
             outputs: List[Dict[str, Any]] = []
 
             def flush() -> None:
+                """Execute the flush stage of the workflow."""
                 nonlocal outputs
                 if not buffer:
                     return
@@ -319,6 +337,7 @@ class InferencePredictionsJob(BaseProcessingJobRunner):
         return self.spark.createDataFrame(rdd, schema=schema)
 
     def write_predictions(self, df: DataFrame) -> None:
+        """Execute the write predictions stage of the workflow."""
         from pyspark.sql import functions as F
 
         output_spec = self.inference_spec.output
@@ -347,6 +366,7 @@ class InferencePredictionsJob(BaseProcessingJobRunner):
         )
 
     def _select_feature_columns(self, df: DataFrame) -> List[str]:
+        """Execute the select feature columns stage of the workflow."""
         if self.inference_spec.payload.feature_columns:
             missing = [
                 col for col in self.inference_spec.payload.feature_columns if col not in df.columns
@@ -359,6 +379,7 @@ class InferencePredictionsJob(BaseProcessingJobRunner):
         return [col for col in df.columns if col not in excluded]
 
     def _apply_training_preprocessing(self, df: DataFrame, feature_columns: List[str]) -> DataFrame:
+        """Execute the apply training preprocessing stage of the workflow."""
         from pyspark.sql import functions as F
 
         payload_spec = self.inference_spec.payload
@@ -387,6 +408,7 @@ class InferencePredictionsJob(BaseProcessingJobRunner):
         return df
 
     def _build_prediction_schema(self, df: DataFrame) -> StructType:
+        """Execute the build prediction schema stage of the workflow."""
         from pyspark.sql.types import (
             DoubleType,
             StringType,
@@ -413,6 +435,7 @@ class InferencePredictionsJob(BaseProcessingJobRunner):
 def run_inference_predictions_from_runtime_config(
     runtime_config: InferencePredictionsRuntimeConfig,
 ) -> None:
+    """Execute the run inference predictions from runtime config stage of the workflow."""
     from ndr.config.job_spec_loader import load_job_spec
     job_spec = load_job_spec(
         project_name=runtime_config.project_name,

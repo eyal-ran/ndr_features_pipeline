@@ -18,6 +18,7 @@ from ndr.model.fg_c_schema import DEFAULT_TRANSFORMS, build_default_metric_list
 
 @dataclass(frozen=True)
 class FeatureDefinition:
+    """Data container for FeatureDefinition."""
     feature_id: str
     feature_number: int
     feature_name: str
@@ -36,6 +37,7 @@ class FeatureDefinition:
     s3_storage_path: Optional[str]
 
     def to_dict(self) -> dict[str, object]:
+        """Execute the to dict stage of the workflow."""
         return {
             "feature_id": self.feature_id,
             "feature_number": self.feature_number,
@@ -58,11 +60,13 @@ class FeatureDefinition:
 
 @dataclass(frozen=True)
 class CatalogBundle:
+    """Data container for CatalogBundle."""
     model_inputs: List[FeatureDefinition]
     non_model_fields: List[FeatureDefinition]
 
 
 def build_fg_a_metric_names() -> List[str]:
+    """Execute the build fg a metric names stage of the workflow."""
     metric_families = (
         OUTBOUND_BASE_METRICS
         + DERIVED_METRICS
@@ -82,6 +86,7 @@ def build_fg_c_metric_names(
     metrics: Optional[Sequence[str]] = None,
     transforms: Optional[Sequence[str]] = None,
 ) -> List[str]:
+    """Execute the build fg c metric names stage of the workflow."""
     base_metrics = list(metrics) if metrics is not None else build_default_metric_list()
     transform_list = list(transforms) if transforms is not None else DEFAULT_TRANSFORMS
     features: List[str] = []
@@ -92,10 +97,12 @@ def build_fg_c_metric_names(
 
 
 def _feature_id(feature_spec_version: str, feature_group: str, feature_name: str) -> str:
+    """Execute the feature id stage of the workflow."""
     return f"{feature_spec_version}:{feature_group}:{feature_name}"
 
 
 def _metric_description(metric_name: str, feature_group: str) -> str:
+    """Execute the metric description stage of the workflow."""
     return f"{feature_group} feature derived for {metric_name}."
 
 
@@ -112,6 +119,7 @@ def _build_feature_defs(
     s3_storage_path: Optional[str] = None,
     start_index: int = 1,
 ) -> List[FeatureDefinition]:
+    """Execute the build feature defs stage of the workflow."""
     entries: List[FeatureDefinition] = []
     counter = start_index
     for name in feature_names:

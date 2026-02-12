@@ -65,6 +65,7 @@ def parse_args(argv=None):
 
 
 def main(argv=None) -> int:
+    """Command-line entry point."""
     args = parse_args(argv)
 
     LOGGER.info(

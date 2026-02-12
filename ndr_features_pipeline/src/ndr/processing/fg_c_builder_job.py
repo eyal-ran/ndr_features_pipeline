@@ -106,6 +106,7 @@ class FGCorrBuilderJob(BaseRunner):
     """
 
     def __init__(self, runtime_config: FGCorrJobRuntimeConfig) -> None:
+        """Initialize the instance with required clients and runtime configuration."""
         super().__init__()
         self.runtime_config = runtime_config
         self.spark: Optional[SparkSession] = None
@@ -183,6 +184,7 @@ class FGCorrBuilderJob(BaseRunner):
         return join_keys
 
     def _load_pair_context(self, feature_spec_version: str) -> Optional[DataFrame]:
+        """Execute the load pair context stage of the workflow."""
         pair_cfg = self.job_spec.get("pair_context_input", {})
         prefix = pair_cfg.get("s3_prefix")
         if not prefix:
@@ -407,6 +409,7 @@ class FGCorrBuilderJob(BaseRunner):
         feature_spec_version: str,
         horizon: str,
     ) -> Tuple[DataFrame, DataFrame, DataFrame, Optional[DataFrame], Optional[DataFrame]]:
+        """Execute the read fg b tables stage of the workflow."""
         base_prefix = fg_b_prefix.rstrip("/")
         host_prefix = f"{base_prefix}/host/"
         segment_prefix = f"{base_prefix}/segment/"
@@ -454,6 +457,7 @@ class FGCorrBuilderJob(BaseRunner):
         feature_spec_version: str,
         horizon: str,
     ) -> Optional[DataFrame]:
+        """Execute the try read pair baselines stage of the workflow."""
         pair_cfg = self.job_spec.get("pair_counts", {})
         if not pair_cfg.get("enabled", False):
             return None
@@ -468,6 +472,7 @@ class FGCorrBuilderJob(BaseRunner):
             return None
 
     def _ensure_segment_id(self, fg_a_df: DataFrame) -> DataFrame:
+        """Execute the ensure segment id stage of the workflow."""
         if "segment_id" in fg_a_df.columns:
             return fg_a_df
         seg_cfg = self.job_spec.get("segment_mapping", {})
@@ -483,6 +488,7 @@ class FGCorrBuilderJob(BaseRunner):
         pair_segment_df: Optional[DataFrame],
         horizon: str,
     ) -> DataFrame:
+        """Execute the apply cold start baselines stage of the workflow."""
         join_keys = self._get_join_keys()
         metadata_cols = join_keys + ["baseline_horizon", "is_cold_start"]
         missing_cols = [c for c in metadata_cols if c not in metadata_df.columns]
@@ -532,6 +538,7 @@ class FGCorrBuilderJob(BaseRunner):
         pair_host_df: Optional[DataFrame],
         pair_segment_df: Optional[DataFrame],
     ) -> DataFrame:
+        """Execute the attach pair rarity stage of the workflow."""
         if pair_host_df is None and pair_segment_df is None:
             LOGGER.warning("Pair rarity baselines missing; defaulting pair rarity fields to zero.")
             return self._apply_pair_rarity_defaults(combined, source_col=None, source_value="missing")
@@ -610,6 +617,7 @@ class FGCorrBuilderJob(BaseRunner):
         source_col: Optional[str],
         source_value: str,
     ) -> DataFrame:
+        """Execute the apply pair rarity defaults stage of the workflow."""
         updated = df
         for field in PAIR_RARITY_FIELDS:
             if field not in updated.columns:
@@ -631,6 +639,7 @@ class FGCorrBuilderJob(BaseRunner):
         return updated
 
     def _log_pair_rarity_audit(self, df: DataFrame) -> None:
+        """Execute the log pair rarity audit stage of the workflow."""
         if "pair_rarity_source" not in df.columns:
             return
         counts = df.groupBy("pair_rarity_source").count().collect()
@@ -643,6 +652,7 @@ class FGCorrBuilderJob(BaseRunner):
         host_baselines: DataFrame,
         segment_baselines: DataFrame,
     ) -> None:
+        """Execute the validate baseline schema stage of the workflow."""
         required_suffixes = ["median", "p25", "p75", "p95", "p99", "mad", "iqr", "support_count"]
         required_cols = {f"{m}_{suffix}" for m in metrics for suffix in required_suffixes}
 
@@ -773,6 +783,7 @@ class FGCorrBuilderJob(BaseRunner):
             )
 
         def max_abs_z(metrics: List[str]) -> F.Column:
+            """Execute the max abs z stage of the workflow."""
             z_cols = [F.abs(F.col(f"{m}_z_mad")) for m in metrics if f"{m}_z_mad" in df.columns]
             if not z_cols:
                 return F.lit(0.0)
@@ -835,6 +846,7 @@ class FGCorrBuilderJob(BaseRunner):
         return df
 
     def _get_suspicion_metrics(self) -> List[str]:
+        """Execute the get suspicion metrics stage of the workflow."""
         default_suspicion_metrics = [
             "sessions_cnt_w_15m",
             "bytes_src_sum_w_15m",
@@ -848,6 +860,7 @@ class FGCorrBuilderJob(BaseRunner):
         return self.job_spec.get("suspicion_metrics", default_suspicion_metrics)
 
     def _get_rare_pair_metrics(self) -> List[str]:
+        """Execute the get rare pair metrics stage of the workflow."""
         return self.job_spec.get(
             "rare_pair_metrics",
             ["sessions_cnt_w_15m", "bytes_src_sum_w_15m"],

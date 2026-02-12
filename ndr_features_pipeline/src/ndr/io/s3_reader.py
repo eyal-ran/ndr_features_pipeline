@@ -1,10 +1,13 @@
+"""NDR s3 reader module."""
 from pyspark.sql import SparkSession, DataFrame
+
 
 
 class S3Reader:
     """Wrapper around SparkSession for reading S3 JSON Lines GZIP input."""
 
     def __init__(self, spark: SparkSession | None = None):
+        """Initialize the instance with required clients and runtime configuration."""
         self._spark = spark
 
     def read_jsonlines_gzip(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 """SageMaker pipeline definition for decoupled inference predictions."""
 
 import sagemaker

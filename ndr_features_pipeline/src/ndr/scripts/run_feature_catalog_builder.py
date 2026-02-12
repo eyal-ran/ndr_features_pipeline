@@ -13,6 +13,7 @@ from ndr.catalog.feature_catalog import build_feature_catalog
 
 
 def _write_markdown(markdown: str, output_path: str) -> None:
+    """Execute the write markdown stage of the workflow."""
     if output_path.startswith("s3://"):
         bucket, key = output_path[5:].split("/", 1)
         boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=markdown.encode("utf-8"))
@@ -21,6 +22,7 @@ def _write_markdown(markdown: str, output_path: str) -> None:
 
 
 def _render_markdown(rows: List[dict]) -> str:
+    """Execute the render markdown stage of the workflow."""
     headers = [
         "feature_id",
         "feature_number",
@@ -47,6 +49,7 @@ def _render_markdown(rows: List[dict]) -> str:
 
 
 def main() -> None:
+    """Command-line entry point."""
     parser = argparse.ArgumentParser(description="Build NDR feature catalogs.")
     parser.add_argument("--feature-spec-version", required=True)
     parser.add_argument("--output-parquet-path", required=True)

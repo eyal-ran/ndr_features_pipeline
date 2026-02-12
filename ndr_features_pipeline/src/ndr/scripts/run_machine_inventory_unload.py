@@ -14,6 +14,7 @@ LOGGER = get_logger(__name__)
 
 
 def parse_args(argv=None):
+    """Parse command-line arguments for this script."""
     parser = argparse.ArgumentParser(
         description="Unload active machine inventory from Redshift to S3."
     )
@@ -36,6 +37,7 @@ def parse_args(argv=None):
 
 
 def main(argv=None) -> int:
+    """Command-line entry point."""
     args = parse_args(argv)
     LOGGER.info(
         "Starting machine inventory unload.",

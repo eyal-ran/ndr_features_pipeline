@@ -1,4 +1,7 @@
+"""NDR machine inventory unload job module."""
+
 from __future__ import annotations
+
 
 import time
 from dataclasses import dataclass
@@ -28,6 +31,7 @@ class MachineInventoryUnloadRuntimeConfig:
 
 @dataclass(frozen=True)
 class RedshiftDataApiConfig:
+    """Data container for RedshiftDataApiConfig."""
     cluster_identifier: str
     database: str
     secret_arn: str
@@ -38,6 +42,7 @@ class RedshiftDataApiConfig:
 
 @dataclass(frozen=True)
 class MachineInventoryQuerySpec:
+    """Data container for MachineInventoryQuerySpec."""
     sql: Optional[str]
     schema: Optional[str]
     table: Optional[str]
@@ -49,6 +54,7 @@ class MachineInventoryQuerySpec:
 
 @dataclass(frozen=True)
 class MachineInventoryOutputSpec:
+    """Data container for MachineInventoryOutputSpec."""
     s3_prefix: str
     output_format: str
     partitioning: List[str]
@@ -65,12 +71,14 @@ class MachineInventoryUnloadJob(BaseRunner):
         job_spec: Dict[str, Any],
         runtime_config: MachineInventoryUnloadRuntimeConfig,
     ) -> None:
+        """Initialize the instance with required clients and runtime configuration."""
         super().__init__()
         self.spark = spark
         self.job_spec = job_spec
         self.runtime_config = runtime_config
 
     def run(self) -> None:
+        """Execute the full workflow for this job runner."""
         redshift_cfg, query_spec, output_spec = parse_machine_inventory_spec(self.job_spec)
         snapshot_month = build_snapshot_month(self.runtime_config.reference_month_iso)
         partition_prefix = build_snapshot_output_prefix(output_spec.s3_prefix, snapshot_month)
@@ -127,6 +135,7 @@ class MachineInventoryUnloadJob(BaseRunner):
             )
 
     def _load_existing_ips(self, s3_prefix: str, ip_column: str) -> List[str]:
+        """Execute the load existing ips stage of the workflow."""
         if not s3_prefix:
             return []
         if not s3_prefix.startswith("s3://"):
@@ -155,6 +164,7 @@ class MachineInventoryUnloadJob(BaseRunner):
         partition_prefix: str,
         snapshot_month: str,
     ) -> str:
+        """Execute the select unload prefix stage of the workflow."""
         if not self._s3_prefix_has_objects(partition_prefix):
             return partition_prefix
         run_id = datetime.utcnow().strftime("%Y%m%d%H%M%S")
@@ -166,12 +176,14 @@ class MachineInventoryUnloadJob(BaseRunner):
         return temp_prefix
 
     def _s3_prefix_has_objects(self, s3_prefix: str) -> bool:
+        """Execute the s3 prefix has objects stage of the workflow."""
         bucket, key_prefix = parse_s3_uri(s3_prefix)
         s3 = boto3.client("s3")
         response = s3.list_objects_v2(Bucket=bucket, Prefix=key_prefix, MaxKeys=1)
         return response.get("KeyCount", 0) > 0
 
     def _copy_unload_objects(self, source_prefix: str, target_prefix: str) -> None:
+        """Execute the copy unload objects stage of the workflow."""
         if source_prefix == target_prefix:
             return
         source_bucket, source_key_prefix = parse_s3_uri(source_prefix)
@@ -217,6 +229,7 @@ class MachineInventoryUnloadJob(BaseRunner):
         target_key_prefix: str,
         expected_objects: List[Tuple[str, str]],
     ) -> bool:
+        """Execute the confirm copied objects stage of the workflow."""
         expected_keys = {target_key for _, target_key in expected_objects}
         s3 = boto3.client("s3")
         paginator = s3.get_paginator("list_objects_v2")
@@ -235,11 +248,13 @@ class MachineInventoryUnloadJob(BaseRunner):
         return True
 
     def _write_success_marker(self, bucket: str, key_prefix: str) -> None:
+        """Execute the write success marker stage of the workflow."""
         s3 = boto3.client("s3")
         marker_key = f"{key_prefix.rstrip('/')}/_SUCCESS"
         s3.put_object(Bucket=bucket, Key=marker_key, Body=b"")
 
     def _delete_prefix(self, bucket: str, key_prefix: str) -> None:
+        """Execute the delete prefix stage of the workflow."""
         s3 = boto3.client("s3")
         paginator = s3.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=bucket, Prefix=key_prefix):
@@ -256,6 +271,7 @@ class MachineInventoryUnloadJob(BaseRunner):
         output_spec: MachineInventoryOutputSpec,
         output_prefix: str,
     ) -> int:
+        """Execute the unload from redshift stage of the workflow."""
         source_query = build_source_query(query_spec)
         if existing_ips:
             self._execute_statement(
@@ -296,6 +312,7 @@ class MachineInventoryUnloadJob(BaseRunner):
         existing_ips: List[str],
         snapshot_month: str,
     ) -> None:
+        """Execute the fallback query and write stage of the workflow."""
         source_query = build_source_query(query_spec)
         statement_id = self._execute_statement(data_api, redshift_cfg, source_query)
         rows = self._fetch_statement_results(data_api, statement_id)
@@ -333,6 +350,7 @@ class MachineInventoryUnloadJob(BaseRunner):
         )
 
     def _execute_statement(self, data_api: Any, config: RedshiftDataApiConfig, sql: str) -> str:
+        """Execute the execute statement stage of the workflow."""
         params: Dict[str, Any] = {
             "ClusterIdentifier": config.cluster_identifier,
             "Database": config.database,
@@ -352,6 +370,7 @@ class MachineInventoryUnloadJob(BaseRunner):
         config: RedshiftDataApiConfig,
         existing_ips: List[str],
     ) -> None:
+        """Execute the insert existing ips stage of the workflow."""
         chunk_size = 500
         for chunk in chunked(existing_ips, chunk_size):
             parameters = [
@@ -371,6 +390,7 @@ class MachineInventoryUnloadJob(BaseRunner):
             self._wait_for_statement(data_api, response["Id"])
 
     def _wait_for_statement(self, data_api: Any, statement_id: str) -> None:
+        """Execute the wait for statement stage of the workflow."""
         while True:
             description = data_api.describe_statement(Id=statement_id)
             status = description["Status"]
@@ -384,10 +404,12 @@ class MachineInventoryUnloadJob(BaseRunner):
             time.sleep(1.0)
 
     def _get_unload_row_count(self, data_api: Any, statement_id: str) -> int:
+        """Execute the get unload row count stage of the workflow."""
         description = data_api.describe_statement(Id=statement_id)
         return int(description.get("ResultRows", 0))
 
     def _fetch_statement_results(self, data_api: Any, statement_id: str) -> List[Tuple[str, str]]:
+        """Execute the fetch statement results stage of the workflow."""
         rows: List[Tuple[str, str]] = []
         next_token = None
         while True:
@@ -408,6 +430,7 @@ class MachineInventoryUnloadJob(BaseRunner):
 def parse_machine_inventory_spec(
     job_spec: Dict[str, Any]
 ) -> Tuple[RedshiftDataApiConfig, MachineInventoryQuerySpec, MachineInventoryOutputSpec]:
+    """Execute the parse machine inventory spec stage of the workflow."""
     if not job_spec:
         raise ValueError("Job spec payload is empty.")
 
@@ -458,17 +481,20 @@ def parse_machine_inventory_spec(
 
 
 def build_snapshot_month(reference_month_iso: str) -> str:
+    """Execute the build snapshot month stage of the workflow."""
     reference = datetime.fromisoformat(reference_month_iso.replace("Z", "+00:00"))
     return reference.strftime("%Y-%m")
 
 
 def build_snapshot_output_prefix(base_prefix: str, snapshot_month: str) -> str:
+    """Execute the build snapshot output prefix stage of the workflow."""
     if not base_prefix.endswith("/"):
         base_prefix = f"{base_prefix}/"
     return f"{base_prefix}snapshot_month={snapshot_month}/"
 
 
 def build_temp_output_prefix(base_prefix: str, snapshot_month: str, run_id: str) -> str:
+    """Execute the build temp output prefix stage of the workflow."""
     partition_prefix = build_snapshot_output_prefix(base_prefix, snapshot_month)
     if not partition_prefix.endswith("/"):
         partition_prefix = f"{partition_prefix}/"
@@ -476,6 +502,7 @@ def build_temp_output_prefix(base_prefix: str, snapshot_month: str, run_id: str)
 
 
 def build_source_query(query_spec: MachineInventoryQuerySpec) -> str:
+    """Execute the build source query stage of the workflow."""
     if query_spec.sql:
         base_query = query_spec.sql.strip().rstrip(";")
         return f"SELECT {query_spec.ip_column} AS ip_address, {query_spec.name_column} AS machine_name FROM ({base_query}) AS base"
@@ -504,6 +531,7 @@ def build_unload_sql(
     output_format: str,
     iam_role: str,
 ) -> str:
+    """Execute the build unload sql stage of the workflow."""
     credentials = f"IAM_ROLE '{iam_role}'" if iam_role else ""
     format_clause = output_format.upper()
     return (
@@ -518,6 +546,7 @@ def build_unload_sql(
 
 
 def parse_s3_uri(uri: str) -> Tuple[str, str]:
+    """Execute the parse s3 uri stage of the workflow."""
     if not uri.startswith("s3://"):
         raise ValueError(f"Invalid S3 URI: {uri}")
     path = uri.replace("s3://", "", 1)
@@ -528,6 +557,7 @@ def parse_s3_uri(uri: str) -> Tuple[str, str]:
 
 
 def chunked(items: Iterable[str], size: int) -> Iterable[List[str]]:
+    """Execute the chunked stage of the workflow."""
     chunk: List[str] = []
     for item in items:
         chunk.append(item)
@@ -541,6 +571,7 @@ def chunked(items: Iterable[str], size: int) -> Iterable[List[str]]:
 def run_machine_inventory_unload_from_runtime_config(
     runtime_config: MachineInventoryUnloadRuntimeConfig,
 ) -> None:
+    """Execute the run machine inventory unload from runtime config stage of the workflow."""
     job_spec = load_job_spec(
         project_name=runtime_config.project_name,
         job_name="machine_inventory_unload",

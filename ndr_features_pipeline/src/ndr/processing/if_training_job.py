@@ -1,4 +1,7 @@
+"""NDR if training job module."""
+
 from __future__ import annotations
+
 
 import hashlib
 import io
@@ -23,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 class IFTrainingJob(BaseProcessingJobRunner):
+    """Data container for IFTrainingJob."""
     def __init__(
         self,
         spark,
@@ -30,12 +34,14 @@ class IFTrainingJob(BaseProcessingJobRunner):
         training_spec: IFTrainingSpec,
         resolved_spec_payload: Dict[str, Any] | None = None,
     ) -> str:
+        """Initialize the instance with required clients and runtime configuration."""
         super().__init__(spark)
         self.runtime_config = runtime_config
         self.training_spec = training_spec
         self.resolved_spec_payload = resolved_spec_payload or {}
 
     def run(self) -> None:
+        """Execute the full workflow for this job runner."""
         train_start, train_end = self._resolve_training_window()
         stage = "read_inputs"
         try:
@@ -171,6 +177,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
             raise
 
     def _resolve_training_window(self) -> Tuple[datetime, datetime]:
+        """Execute the resolve training window stage of the workflow."""
         exec_ts = self.runtime_config.execution_ts_iso.replace("Z", "+00:00")
         t0 = datetime.fromisoformat(exec_ts).astimezone(timezone.utc)
         month = t0.month - self.training_spec.window.gap_months
@@ -189,6 +196,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         return train_start, train_end
 
     def _read_windowed_input(self, name: str, train_start: datetime, train_end: datetime):
+        """Execute the read windowed input stage of the workflow."""
         from pyspark.sql import functions as F
 
         input_spec = self.training_spec.feature_inputs[name]
@@ -199,6 +207,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         return df.filter((F.col("window_end_ts") >= F.lit(train_start)) & (F.col("window_end_ts") < F.lit(train_end)))
 
     def _preflight_validation(self, fg_a_df, fg_c_df, train_start: datetime, train_end: datetime) -> Dict[str, Any]:
+        """Execute the preflight validation stage of the workflow."""
         required_join_keys = self.training_spec.join_keys
         reliability = self.training_spec.reliability
 
@@ -215,6 +224,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         join_key_duplication: Dict[str, Dict[str, float]] = {}
 
         def _fail_preflight(reason: str, payload: Dict[str, Any]) -> None:
+            """Execute the fail preflight stage of the workflow."""
             self._write_preflight_failure_artifact(train_start=train_start, train_end=train_end, reason=reason, context=payload)
             raise ValueError(reason)
 
@@ -353,6 +363,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         }
 
     def _fit_preprocessing_params(self, df, feature_columns: List[str]) -> Tuple[Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
+        """Execute the fit preprocessing params stage of the workflow."""
         from pyspark.sql import functions as F
 
         eps = self.training_spec.preprocessing.eps
@@ -374,6 +385,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         return scaler_params, outlier_params
 
     def _apply_preprocessing_with_params(self, df, feature_columns: List[str], scaler_params, outlier_params):
+        """Execute the apply preprocessing with params stage of the workflow."""
         from pyspark.sql import functions as F
 
         out = df
@@ -402,6 +414,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         return out
 
     def _select_features(self, train_processed, val_processed, feature_columns: List[str]) -> Tuple[List[str], Dict[str, Any]]:
+        """Execute the select features stage of the workflow."""
         from pyspark.sql import functions as F
         import numpy as np
         from sklearn.ensemble import IsolationForest
@@ -499,6 +512,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         return permutation_selected, meta
 
     def _tune_and_validate(self, train_processed, val_processed, selected_features: List[str]):
+        """Execute the tune and validate stage of the workflow."""
         import numpy as np
         from sklearn.ensemble import IsolationForest
         from ndr.processing.bayesian_search_fallback import run_bayesian_search
@@ -520,6 +534,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         }
 
         def eval_params(params: Dict[str, Any]) -> Dict[str, float]:
+            """Execute the eval params stage of the workflow."""
             model = IsolationForest(**params, random_state=self.training_spec.random_seed, n_jobs=1).fit(x_train)
             train_scores = -model.score_samples(x_train)
             val_scores = -model.score_samples(x_val)
@@ -549,6 +564,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
             study = optuna.create_study(direction="minimize", sampler=sampler)
 
             def objective(trial: optuna.trial.Trial) -> float:
+                """Execute the objective stage of the workflow."""
                 params = {
                     "n_estimators": trial.suggest_categorical("n_estimators", search_space["n_estimators"]),
                     "max_samples": trial.suggest_categorical("max_samples", search_space["max_samples"]),
@@ -638,6 +654,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         return tuning_summary, best_trial["params"], gates, val_metrics
 
     def _fit_final_model(self, full_processed, selected_features: List[str], best_params: Dict[str, Any]):
+        """Execute the fit final model stage of the workflow."""
         from sklearn.ensemble import IsolationForest
 
         full_pdf = full_processed.select(*selected_features).toPandas().fillna(0.0)
@@ -657,6 +674,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         gates: Dict[str, Any],
         val_metrics: Dict[str, Any],
     ) -> Dict[str, float]:
+        """Execute the build metrics stage of the workflow."""
         return {
             "full_training_row_count": float(full_processed.count()),
             "train_row_count": float(train_processed.count()),
@@ -671,6 +689,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         }
 
     def _maybe_deploy(self, model_data_url: str, gates: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        """Execute the maybe deploy stage of the workflow."""
         deployment = self.training_spec.deployment
         if not deployment.deploy_on_success:
             return {"attempted": False, "status": "skipped", "reason": "deploy_on_success=false"}
@@ -756,6 +775,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
             }
 
     def _call_with_retries(self, fn, **kwargs):
+        """Execute the call with retries stage of the workflow."""
         retries = max(self.training_spec.reliability.max_retries, 0)
         backoff = max(self.training_spec.reliability.backoff_seconds, 0.0)
         last_exc = None
@@ -770,6 +790,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         raise last_exc
 
     def _evaluate_option4_guardrail(self) -> Dict[str, Any]:
+        """Execute the evaluate option4 guardrail stage of the workflow."""
         cfg = self.training_spec.cost_guardrail
         option1_monthly = cfg.option1_hourly_rate_usd * 24 * 30
         option4_hours = (cfg.option4_batch_minutes / 60.0) * cfg.option4_runs_per_month
@@ -799,6 +820,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         train_start: datetime,
         train_end: datetime,
     ) -> Dict[str, str]:
+        """Execute the persist artifacts stage of the workflow."""
         import boto3
 
         bucket, key_prefix = _split_s3_uri(self.training_spec.output.artifacts_s3_prefix)
@@ -829,6 +851,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         }
 
     def _promote_latest_model_pointer(self, artifact_ctx: Dict[str, str]) -> str:
+        """Execute the promote latest model pointer stage of the workflow."""
         import boto3
 
         bucket = artifact_ctx["bucket"]
@@ -862,6 +885,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         artifact_ctx: Dict[str, str],
         latest_model_path: str | None,
     ) -> str:
+        """Execute the write final report and success stage of the workflow."""
         import boto3
         import sklearn
 
@@ -943,6 +967,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         reason: str,
         context: Dict[str, Any],
     ) -> None:
+        """Execute the write preflight failure artifact stage of the workflow."""
         import boto3
 
         report_bucket, report_key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
@@ -973,6 +998,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
             logger.warning("Failed to write preflight failure artifact: %s", exc)
 
     def _write_failure_report(self, stage: str, error: str, train_start: datetime, train_end: datetime) -> None:
+        """Execute the write failure report stage of the workflow."""
         import boto3
 
         report_bucket, report_key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
@@ -1008,6 +1034,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         train_start: datetime,
         train_end: datetime,
     ) -> None:
+        """Execute the write failure experiment artifact stage of the workflow."""
         import boto3
 
         report_bucket, report_key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
@@ -1075,6 +1102,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         selected_feature_count: int,
         all_feature_count: int,
     ) -> None:
+        """Execute the log sagemaker experiments stage of the workflow."""
         if not self.training_spec.experiments.enabled:
             return
         try:
@@ -1151,6 +1179,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         scaler_params: Dict[str, Dict[str, float]],
         outlier_params: Dict[str, Dict[str, float]],
     ) -> None:
+        """Execute the write inference preprocessing back stage of the workflow."""
         import boto3
 
         table_name = os.environ.get(DDB_TABLE_ENV_VAR) or os.environ.get(LEGACY_DDB_TABLE_ENV_VAR)
@@ -1182,6 +1211,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         )
 
     def _put_model_artifacts(self, client, bucket: str, model, model_key: str, model_tar_key: str) -> str:
+        """Execute the put model artifacts stage of the workflow."""
         import joblib
 
         model_buffer = io.BytesIO()
@@ -1201,6 +1231,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
 
 
 def _safe_create_experiment(client, experiment_name: str) -> None:
+    """Execute the safe create experiment stage of the workflow."""
     try:
         client.create_experiment(ExperimentName=experiment_name)
     except Exception as exc:  # pylint: disable=broad-except
@@ -1209,6 +1240,7 @@ def _safe_create_experiment(client, experiment_name: str) -> None:
 
 
 def _safe_create_trial(client, trial_name: str, experiment_name: str) -> None:
+    """Execute the safe create trial stage of the workflow."""
     try:
         client.create_trial(TrialName=trial_name, ExperimentName=experiment_name)
     except Exception as exc:  # pylint: disable=broad-except
@@ -1217,6 +1249,7 @@ def _safe_create_trial(client, trial_name: str, experiment_name: str) -> None:
 
 
 def _safe_create_trial_component(client, component_name: str) -> None:
+    """Execute the safe create trial component stage of the workflow."""
     try:
         client.create_trial_component(TrialComponentName=component_name)
     except Exception as exc:  # pylint: disable=broad-except
@@ -1225,12 +1258,14 @@ def _safe_create_trial_component(client, component_name: str) -> None:
 
 
 def _split_s3_uri(uri: str) -> Tuple[str, str]:
+    """Execute the split s3 uri stage of the workflow."""
     cleaned = uri.replace("s3://", "", 1)
     bucket, _, key = cleaned.partition("/")
     return bucket, key
 
 
 def _put_json(client, bucket: str, key: str, payload) -> None:
+    """Execute the put json stage of the workflow."""
     client.put_object(
         Bucket=bucket,
         Key=key,
@@ -1240,6 +1275,7 @@ def _put_json(client, bucket: str, key: str, payload) -> None:
 
 
 def run_if_training_from_runtime_config(runtime_config: IFTrainingRuntimeConfig) -> None:
+    """Execute the run if training from runtime config stage of the workflow."""
     from ndr.config.job_spec_loader import load_job_spec
     from pyspark.sql import SparkSession
 

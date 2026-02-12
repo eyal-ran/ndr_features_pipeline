@@ -21,6 +21,7 @@ TYPE_MAPPING: Dict[str, T.DataType] = {
 
 
 def _spark_type(data_type: str) -> T.DataType:
+    """Execute the spark type stage of the workflow."""
     if data_type not in TYPE_MAPPING:
         raise ValueError(f"Unsupported schema data type: {data_type}")
     return TYPE_MAPPING[data_type]
@@ -32,6 +33,7 @@ def enforce_schema(
     dataset_name: str,
     logger,
 ) -> DataFrame:
+    """Execute the enforce schema stage of the workflow."""
     missing_cols = [field.name for field in manifest.fields if field.name not in df.columns]
     if missing_cols:
         raise ValueError(
@@ -50,6 +52,7 @@ def _coerce_field(
     logger,
     dataset_name: str,
 ) -> DataFrame:
+    """Execute the coerce field stage of the workflow."""
     expected_type = _spark_type(field.data_type)
     actual_type = df.schema[field.name].dataType
     updated = df

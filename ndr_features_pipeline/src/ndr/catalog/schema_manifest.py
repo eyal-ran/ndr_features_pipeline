@@ -11,6 +11,7 @@ from ndr.model.fg_c_schema import DEFAULT_TRANSFORMS, build_default_metric_list
 
 @dataclass(frozen=True)
 class SchemaField:
+    """Data container for SchemaField."""
     name: str
     data_type: str
     nullable: bool = True
@@ -19,11 +20,13 @@ class SchemaField:
 
 @dataclass(frozen=True)
 class SchemaManifest:
+    """Data container for SchemaManifest."""
     name: str
     fields: Sequence[SchemaField]
 
     @property
     def field_names(self) -> List[str]:
+        """Execute the field names stage of the workflow."""
         return [field.name for field in self.fields]
 
 
@@ -39,6 +42,7 @@ PAIR_RARITY_FIELDS = [
 
 
 def build_delta_manifest(port_set_names: Sequence[str] | None = None) -> SchemaManifest:
+    """Execute the build delta manifest stage of the workflow."""
     base_fields = [
         SchemaField("host_ip", "string", False),
         SchemaField("role", "string", False),
@@ -70,6 +74,7 @@ def build_delta_manifest(port_set_names: Sequence[str] | None = None) -> SchemaM
 
 
 def build_fg_a_manifest() -> SchemaManifest:
+    """Execute the build fg a manifest stage of the workflow."""
     metric_fields = [SchemaField(name, "double") for name in build_fg_a_metric_names()]
     metadata_fields = [
         SchemaField("host_ip", "string", False),
@@ -90,6 +95,7 @@ def build_fg_a_manifest() -> SchemaManifest:
 
 
 def build_fg_b_manifest(metrics: Sequence[str], include_record_id: bool) -> SchemaManifest:
+    """Execute the build fg b manifest stage of the workflow."""
     suffixes = [
         "median",
         "p25",
@@ -115,6 +121,7 @@ def build_fg_b_manifest(metrics: Sequence[str], include_record_id: bool) -> Sche
 
 
 def build_fg_b_host_manifest(metrics: Sequence[str]) -> SchemaManifest:
+    """Execute the build fg b host manifest stage of the workflow."""
     fields = [
         SchemaField("host_ip", "string", False),
         SchemaField("role", "string", False),
@@ -129,6 +136,7 @@ def build_fg_b_host_manifest(metrics: Sequence[str]) -> SchemaManifest:
 
 
 def build_fg_b_segment_manifest(metrics: Sequence[str]) -> SchemaManifest:
+    """Execute the build fg b segment manifest stage of the workflow."""
     fields = [
         SchemaField("segment_id", "string", False),
         SchemaField("role", "string", False),
@@ -142,6 +150,7 @@ def build_fg_b_segment_manifest(metrics: Sequence[str]) -> SchemaManifest:
 
 
 def build_fg_b_ip_metadata_manifest() -> SchemaManifest:
+    """Execute the build fg b ip metadata manifest stage of the workflow."""
     fields = [
         SchemaField("host_ip", "string", False),
         SchemaField("window_label", "string", False),
@@ -154,6 +163,7 @@ def build_fg_b_ip_metadata_manifest() -> SchemaManifest:
 
 
 def build_pair_counts_manifest() -> SchemaManifest:
+    """Execute the build pair counts manifest stage of the workflow."""
     fields = [
         SchemaField("src_ip", "string", False),
         SchemaField("dst_ip", "string", False),
@@ -171,6 +181,7 @@ def build_pair_counts_manifest() -> SchemaManifest:
 
 
 def build_pair_rarity_manifest(group_keys: Sequence[str]) -> SchemaManifest:
+    """Execute the build pair rarity manifest stage of the workflow."""
     base_fields = [SchemaField(key, "string", False) for key in group_keys]
     metric_fields = []
     for name in PAIR_RARITY_FIELDS:
@@ -194,6 +205,7 @@ def build_fg_c_manifest(
     rare_pair_metrics: Sequence[str] | None = None,
     include_time_band_violation: bool = False,
 ) -> SchemaManifest:
+    """Execute the build fg c manifest stage of the workflow."""
     transform_list = list(transforms) if transforms is not None else DEFAULT_TRANSFORMS
     feature_names = build_fg_c_metric_names(metrics=metrics, transforms=transform_list)
 
@@ -255,5 +267,6 @@ def build_fg_c_manifest(
 
 
 def build_fg_c_default_metrics() -> List[str]:
+    """Execute the build fg c default metrics stage of the workflow."""
     return build_default_metric_list()
 

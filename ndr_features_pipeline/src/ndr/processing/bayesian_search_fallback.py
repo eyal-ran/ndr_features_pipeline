@@ -1,4 +1,7 @@
+"""NDR bayesian search fallback module."""
+
 from __future__ import annotations
+
 
 from itertools import product
 from math import erf, exp, pi, sqrt
@@ -7,14 +10,17 @@ from typing import Any, Callable, Dict, List, Tuple
 
 
 def _normal_pdf(x: float) -> float:
+    """Execute the normal pdf stage of the workflow."""
     return (1.0 / sqrt(2.0 * pi)) * exp(-0.5 * x * x)
 
 
 def _normal_cdf(x: float) -> float:
+    """Execute the normal cdf stage of the workflow."""
     return 0.5 * (1.0 + erf(x / sqrt(2.0)))
 
 
 def _distance(a: Tuple[Any, ...], b: Tuple[Any, ...]) -> float:
+    """Execute the distance stage of the workflow."""
     return float(sum(0.0 if x == y else 1.0 for x, y in zip(a, b)))
 
 
@@ -23,6 +29,7 @@ def _surrogate_stats(
     observed: List[Tuple[Tuple[Any, ...], float]],
 ) -> Tuple[float, float]:
     # Simple kernel-weighted surrogate model over categorical coordinates.
+    """Execute the surrogate stats stage of the workflow."""
     weights: List[float] = []
     ys: List[float] = []
     for key, y in observed:
@@ -63,9 +70,11 @@ def run_bayesian_search(
     seen = set()
 
     def key_for(params: Dict[str, Any]) -> Tuple[Any, ...]:
+        """Execute the key for stage of the workflow."""
         return tuple(params[name] for name in param_names)
 
     def evaluate(params: Dict[str, Any]) -> None:
+        """Execute the evaluate stage of the workflow."""
         score = evaluate_fn(params)
         trials.append({"trial": len(trials), "params": params, **score})
         seen.add(key_for(params))

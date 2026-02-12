@@ -1,4 +1,7 @@
+"""NDR inference predictions spec module."""
+
 from __future__ import annotations
+
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
@@ -6,6 +9,7 @@ from typing import Any, Dict, List
 
 @dataclass
 class InferenceFeatureInputSpec:
+    """Data container for InferenceFeatureInputSpec."""
     s3_prefix: str
     dataset: str | None = None
     required: bool = True
@@ -13,6 +17,7 @@ class InferenceFeatureInputSpec:
 
 @dataclass
 class InferenceModelSpec:
+    """Data container for InferenceModelSpec."""
     endpoint_name: str
     timeout_seconds: int = 60
     max_payload_mb: float = 5.0
@@ -29,6 +34,7 @@ class InferenceModelSpec:
 
 @dataclass
 class InferencePayloadSpec:
+    """Data container for InferencePayloadSpec."""
     feature_columns: List[str] | None = None
     scaler_params: Dict[str, Dict[str, float]] | None = None
     outlier_params: Dict[str, Dict[str, float]] | None = None
@@ -36,12 +42,14 @@ class InferencePayloadSpec:
 
 @dataclass
 class PredictionSchemaSpec:
+    """Data container for PredictionSchemaSpec."""
     score_column: str = "prediction_score"
     label_column: str | None = "prediction_label"
 
 
 @dataclass
 class InferenceOutputSpec:
+    """Data container for InferenceOutputSpec."""
     s3_prefix: str
     format: str = "parquet"
     partition_keys: List[str] = field(default_factory=lambda: ["feature_spec_version", "dt"])
@@ -51,6 +59,7 @@ class InferenceOutputSpec:
 
 @dataclass
 class InferenceSpec:
+    """Data container for InferenceSpec."""
     feature_inputs: Dict[str, InferenceFeatureInputSpec]
     join_keys: List[str]
     output: InferenceOutputSpec
@@ -62,6 +71,7 @@ class InferenceSpec:
 
 @dataclass
 class InferencePredictionsRuntimeConfig:
+    """Data container for InferencePredictionsRuntimeConfig."""
     project_name: str
     feature_spec_version: str
     mini_batch_id: str
@@ -70,6 +80,7 @@ class InferencePredictionsRuntimeConfig:
 
 
 def _parse_output_spec(payload: Dict[str, Any], default_dataset: str) -> InferenceOutputSpec:
+    """Execute the parse output spec stage of the workflow."""
     if "s3_prefix" not in payload:
         raise ValueError("Inference output spec requires s3_prefix")
     return InferenceOutputSpec(
@@ -82,6 +93,7 @@ def _parse_output_spec(payload: Dict[str, Any], default_dataset: str) -> Inferen
 
 
 def parse_inference_spec(job_spec: Dict[str, Any]) -> InferenceSpec:
+    """Execute the parse inference spec stage of the workflow."""
     feature_inputs_payload = job_spec.get("feature_inputs")
     if not feature_inputs_payload:
         raise ValueError("Inference JobSpec must include feature_inputs")

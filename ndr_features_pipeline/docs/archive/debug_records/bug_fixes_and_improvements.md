@@ -351,3 +351,232 @@
    - Add a small integration test (local Spark) to ensure FG-A → FG-B → FG-C pipeline can build with the curated metric list and new features.
 
 **Status:** ToDo.
+
+## 17) End-to-end IO contract hardening: scripts, data prefixes, and DynamoDB parameter model unification
+**Issue:** The current orchestration + processing stack still contains mixed IO contract patterns:
+- Some SageMaker pipeline steps resolve script locations from repo-local paths (`code="src/ndr/scripts/..."`), while only one path supports external code URI input.
+- Several orchestration definitions still embed hard-coded runtime defaults (project name/version/timestamps) instead of fetching canonical defaults/overrides from DynamoDB.
+- Data S3 prefixes are mostly JobSpec-driven, but there is no single enforced schema that guarantees every pipeline/job can resolve every required prefix/parameter from one DynamoDB source of truth.
+- Step Functions currently do not read the project parameters table for pipeline-level defaults or script-prefix routing.
+
+### Complete current-state IO map (as implemented)
+
+#### A) SageMaker Pipeline Steps that consume `.py` scripts and where they expect to find them
+1. `build_15m_streaming_pipeline` (`DeltaBuilderStep`, `FGABuilderStep`, `PairCountsBuilderStep`, `FGCCorrBuilderStep`) uses local repo paths in `ProcessingStep.code`:
+   - `src/ndr/scripts/run_delta_builder.py`
+   - `src/ndr/scripts/run_fg_a_builder.py`
+   - `src/ndr/scripts/run_pair_counts_builder.py`
+   - `src/ndr/scripts/run_fg_c_builder.py`
+2. `build_fg_b_baseline_pipeline` uses `code="src/ndr/scripts/run_fg_b_builder.py"`.
+3. `build_machine_inventory_unload_pipeline` uses `code="src/ndr/scripts/run_machine_inventory_unload.py"`.
+4. `build_inference_predictions_pipeline` uses `code="src/ndr/scripts/run_inference_predictions.py"`.
+5. `build_prediction_feature_join_pipeline` uses `code="src/ndr/scripts/run_prediction_feature_join.py"`.
+6. `build_if_training_pipeline` uses `code="src/ndr/scripts/run_if_training.py"`.
+7. Exception pattern: `build_delta_builder_pipeline` accepts `code_s3_uri` externally, making it the only pipeline that can point directly to S3 code location at definition time.
+
+**Gap vs desired structure:** No common mechanism exists for all pipeline definitions to resolve script object paths from DynamoDB (e.g., per project/version/pipeline script prefix + per-step script key).
+
+#### B) `.py` scripts / jobs that read data, and where they expect the data to be
+1. **Delta builder**
+   - Reads mini-batch input from `job_spec.input.s3_prefix` (via `RuntimeParams.mini_batch_s3_prefix`).
+   - Reads optional enrichment file from `job_spec.enrichment.port_sets_location` (`s3://...json`).
+   - Writes to JobSpec-configured output/pair-context locations.
+2. **FG-A builder**
+   - Reads delta data from `job_spec.delta_input.s3_prefix` (fallback: `delta_s3_prefix`).
+   - Reads optional pair-context input from `job_spec.pair_context_input.s3_prefix`.
+   - Reads optional lookback table from `job_spec.lookback30d.s3_prefix`.
+   - Writes FG-A to `job_spec.fg_a_output.s3_prefix` (fallback: `output_s3_prefix`) and optional pair-context output prefix.
+3. **Pair-counts builder**
+   - Reads traffic input from `job_spec.traffic_input.s3_prefix` and appends `/mini_batch_id/` by layout convention.
+   - Writes to `job_spec.pair_counts_output.s3_prefix`.
+4. **FG-B baseline builder**
+   - Reads FG-A from `job_spec.fg_a_input.s3_prefix`.
+   - Reads optional pair-counts from `job_spec.pair_counts.s3_prefix`.
+   - Reads IP↔machine mapping from `project_parameters[prefix_key]` where `prefix_key` defaults to `ip_machine_mapping_s3_prefix`.
+   - Writes FG-B outputs under `job_spec.fg_b_output.s3_prefix`.
+5. **FG-C builder**
+   - Reads FG-A from `job_spec.fg_a_input.s3_prefix`.
+   - Reads FG-B from `job_spec.fg_b_input.s3_prefix`.
+   - Reads optional pair context from `job_spec.pair_context_input.s3_prefix`.
+   - Writes to `job_spec.fg_c_output.s3_prefix`.
+6. **Inference predictions job**
+   - Reads each configured feature input from `job_spec.feature_inputs[*].s3_prefix` + dataset/batch-derived suffix.
+   - Writes predictions to `job_spec.output.s3_prefix`.
+7. **Prediction-feature-join job**
+   - Reads predictions from inference `job_spec.output.s3_prefix`.
+   - Reads features using the same inference `feature_inputs[*].s3_prefix` resolution.
+   - Writes to destination `destination.s3.s3_prefix` (or `join_output.s3_prefix`) and optionally copies to Redshift.
+8. **IF training job**
+   - Reads FG-A/FG-C from `job_spec.feature_inputs.{fg_a|fg_c}.s3_prefix`.
+   - Writes artifacts/reports to `job_spec.output.{artifacts_s3_prefix,report_s3_prefix}`.
+   - Writes trained preprocessing payload back into DynamoDB inference spec.
+9. **Machine inventory unload job**
+   - Reads/writes inventory data under `job_spec.output.s3_prefix`.
+   - Uses Redshift query/unload config from `job_spec.redshift` and `job_spec.query`.
+
+**Gap vs desired structure:** Most data paths are JobSpec-driven already, but several key path conventions are implicit (dataset/batch suffix composition) and not centrally modeled as explicit table contracts, making cross-pipeline compatibility fragile.
+
+#### C) DynamoDB reads/writes (Step Functions and scripts), and required keys
+1. **JobSpec loader (`load_job_spec`)**
+   - Table from env var `ML_PROJECTS_PARAMETERS_TABLE_NAME` (legacy fallback supported).
+   - Reads item key:
+     - `project_name` = runtime project
+     - `job_name` = `<logical_job_name>#<feature_spec_version>`
+2. **Project parameters loader (`load_project_parameters`)**
+   - Reads same table/key pattern using default logical job `project_parameters`.
+3. **Processing jobs using `load_job_spec`**
+   - `delta_builder`, `fg_a_builder`, `pair_counts_builder`, `fg_b_builder`, `fg_c_builder`, `inference_predictions`, `prediction_feature_join`, `if_training`, `machine_inventory_unload` each resolve via the same key convention.
+4. **Processing job using `load_project_parameters`**
+   - FG-B reads project-level parameters and expects keys such as `ip_machine_mapping_s3_prefix` (or configured alias key).
+5. **IF training job direct DynamoDB write-back**
+   - Reads and updates `inference_predictions#<feature_spec_version>` item using key `{project_name, job_name}`.
+6. **Step Functions DynamoDB usage**
+   - Current JSONata state machines only use DynamoDB for execution lock table put/delete (`pk`, `sk`, `ttl_epoch`) and do **not** read ML parameters table for defaults/prefixes.
+
+**Gap vs desired structure:** Step Functions are not parameter-table aware for project-level runtime defaults, script prefixes, or pipeline-specific config bootstrap. They rely on inline defaults and environment substitutions.
+
+### Places where the structure is not yet as required
+1. **Hard-coded local script locations in pipeline definitions** (all pipelines except delta-only backfill path), not resolved from DynamoDB-managed script prefix model.
+2. **Hard-coded runtime fallback values in Step Functions** (`ndr-project`, `v1`, static timestamps, default target lists), not read from DynamoDB.
+3. **Pipeline definition-time static defaults** in several pipelines (default `ProjectName`, `FeatureSpecVersion`, `ProcessingImageUri` literals) instead of table-driven dynamic defaults.
+4. **`build_machine_inventory_unload_pipeline` loads JobSpec at pipeline construction time using function default args**, creating drift risk if the runtime project/version differs from defaults.
+5. **No unified table schema contract for script objects** (e.g., step→script key map), so script artifact layout cannot be validated centrally.
+6. **No explicit DynamoDB-backed parameter contract for derived S3 path composition strategy** (dataset names, batch partition policy), leaving hidden coupling across jobs.
+7. **Step Functions do not fetch pipeline-specific required key sets from DynamoDB before starting pipelines**, so missing runtime args are masked by local defaults.
+
+### Comprehensive fix plan (ToDo)
+1) **Define an authoritative DynamoDB parameter model (single-table, versioned, complete):**
+   - Keep PK/SK: `project_name` + `job_name#feature_spec_version`.
+   - Add/standardize logical records:
+     - `project_parameters#<version>` (global defaults + shared S3 prefixes + naming conventions).
+     - `<pipeline_name>_pipeline#<version>` (pipeline-level script/preset/runtime requirements).
+     - Existing per-job records (`delta_builder`, `fg_a_builder`, etc.) remain for job internals.
+   - Add mandatory schema blocks:
+     - `scripts`: `{code_root_s3_prefix, steps: {<step_name>: {script_s3_uri|script_key, module, entry_args_contract}}}`
+     - `data_locations`: explicit input/output prefixes and path-composition policy.
+     - `required_runtime_params`: strict list per pipeline/job.
+     - `defaults`: optional default values only for non-critical params.
+     - `validation`: regex/type requirements for each parameter.
+
+2) **Create script artifact layout policy in S3 (direct file-addressable):**
+   - Canonical layout:
+     - `s3://<code-bucket>/projects/<project_name>/versions/<feature_spec_version>/pipelines/<pipeline_name>/scripts/<file>.py`
+   - Optional shared libs under:
+     - `.../shared/`
+   - Require each step to reference the exact script object (or zip root with explicit script key), avoiding implicit co-location assumptions.
+
+3) **Refactor all SageMaker pipeline builders to resolve script locations from DynamoDB:**
+   - Replace hard-coded `code="src/..."` with runtime resolution from the relevant pipeline/job spec (`scripts.steps[step]`).
+   - Add validation: fail pipeline build if any required script mapping is missing.
+   - Remove special-case-only behavior where just one pipeline supports `code_s3_uri`; make this universal and table-driven.
+
+4) **Refactor Step Functions to load runtime parameters from DynamoDB before any pipeline start:**
+   - Add an initial resolver task (Lambda) that reads `project_parameters#<version>` and pipeline-specific record.
+   - Resolution order:
+     1. Explicit event payload
+     2. DynamoDB defaults
+     3. Hard fail (no silent literal fallback for required keys)
+   - Remove inline literals like `'ndr-project'`, `'v1'`, static timestamps from state machine definitions.
+
+5) **Enforce strict runtime contract between Step Functions and pipelines:**
+   - Before `startPipelineExecution`, validate presence and type of all keys listed in `required_runtime_params`.
+   - Ensure each pipeline receives project/version keys needed for downstream JobSpec lookups.
+   - Add explicit failure state for missing/invalid runtime parameters.
+
+6) **Unify data prefix resolution contracts across jobs:**
+   - Keep job-level input/output prefixes in JobSpec but add centralized schema validation.
+   - Externalize dataset naming/path composition (`dataset`, time partitioning, batch-id encoding) into table config to eliminate hidden conventions.
+   - Add compatibility checks ensuring producer output contract == consumer input contract.
+
+7) **Fix machine-inventory pipeline definition-time lookup bug:**
+   - Remove eager `load_job_spec(...)` that depends on default args at build time.
+   - Resolve image URI and other mutable params either:
+     - from pipeline parameters at execution time, or
+     - from a dedicated resolver step that uses actual runtime `ProjectName`/`FeatureSpecVersion`.
+
+8) **Standardize and govern DynamoDB item lifecycle for multi-project/multi-version support:**
+   - Add mandatory metadata fields: `schema_version`, `updated_at`, `owner`, `status`, `checksum`.
+   - Add migration tooling for version upgrades and contract validation.
+   - Add CI checks that all required logical records exist for every registered project/version.
+
+9) **Observability and safety controls:**
+   - Emit structured logs for every resolved script/data prefix and source (payload vs table default).
+   - Add drift detection job to compare deployed pipeline definitions vs current DynamoDB records.
+   - Add canary validation that each script S3 URI exists and is readable before execution.
+
+10) **Rollout strategy (safe migration):**
+   - Phase 1: introduce resolver + dual-read (existing + new table schema).
+   - Phase 2: switch pipelines to table-driven script/data resolution.
+   - Phase 3: remove hard-coded defaults/paths and enforce strict validation.
+   - Phase 4: lock policy in CI/CD with break-glass override only.
+
+11) **Publish an explicit S3 hierarchy standard (documentation deliverable):**
+   - Add a dedicated architecture/operations document that defines the **recommended S3 hierarchy** under each project root prefix.
+   - The standard must cover both **scripts** and **data**, for example:
+     - `s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/<pipeline_name>/...`
+     - `s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/<dataset_family>/<dataset_name>/...`
+   - The document must include:
+     - naming conventions,
+     - required sub-prefixes per pipeline/job,
+     - ownership/update boundaries,
+     - compatibility and retention guidance,
+     - examples for 15m features, monthly baselines, inference, join/publication, and training.
+   - The resolver/Lambda and DynamoDB schema must reference this documented hierarchy as the authoritative contract.
+
+12) **Minimal script consumption model (simple, DynamoDB-driven, `.py`-first):**
+   - Keep the contract intentionally small. For each pipeline step, DynamoDB should provide only:
+     - `code_prefix_s3`: S3 prefix where step-consumable code files are stored.
+     - `entry_script`: the `.py` filename to execute for the step.
+     - `data_prefixes`: named input/output S3 prefixes required by that step.
+   - Recommended DynamoDB value examples (per project/version):
+     - `code_prefix_s3`:
+       - `s3://ndr-bucket/projects/ndr-project/versions/v1/code/pipelines/15m_features/DeltaBuilderStep/`
+       - `s3://ndr-bucket/projects/ndr-project/versions/v1/code/pipelines/15m_features/FGABuilderStep/`
+       - `s3://ndr-bucket/projects/ndr-project/versions/v1/code/pipelines/inference/InferencePredictionsStep/`
+     - `entry_script`:
+       - `run_delta_builder.py`
+       - `run_fg_a_builder.py`
+       - `run_inference_predictions.py`
+     - `data_prefixes`:
+       - `input_traffic`: `s3://ndr-bucket/projects/ndr-project/versions/v1/data/raw/traffic/`
+       - `input_delta`: `s3://ndr-bucket/projects/ndr-project/versions/v1/data/features/delta/`
+       - `output_fg_a`: `s3://ndr-bucket/projects/ndr-project/versions/v1/data/features/fg_a/`
+       - `output_fg_c`: `s3://ndr-bucket/projects/ndr-project/versions/v1/data/features/fg_c/`
+       - `output_predictions`: `s3://ndr-bucket/projects/ndr-project/versions/v1/data/inference/predictions/`
+   - Add explicit **placeholder-value guidance** to Dynamo table definition and seeding logic:
+     - Include template placeholders for every required IO key (for example `<bucket>`, `<project_name>`, `<feature_spec_version>`, `<pipeline_name>`, `<step_name>`).
+     - Ensure seed records are generated for every active pipeline/step with placeholder `code_prefix_s3`, `entry_script`, and `data_prefixes` values following the recommended hierarchy.
+     - Provide one baseline placeholder template row per job type (`project_parameters`, feature pipelines, inference, training, machine inventory, prediction join).
+   - Add a validation step in table-generation code to verify completeness/alignment:
+     - Generated table payload contains all required keys for Step Functions runtime params, Pipeline step script resolution, and script/job data IO prefixes.
+     - Missing required keys/placeholders must fail generation with explicit diagnostics.
+     - Validation report should list covered pipelines/steps/jobs and unresolved keys before deployment.
+   - Remove advanced hardening fields (no hash validation, no artifact-mode complexity, no runtime-compatibility matrix in contract).
+   - Use one unified storage style for scripts and dependencies:
+     - **Preferred and default:** plain `.py` files under a step/pipeline code prefix.
+     - Keep all required local imports alongside the entry script (same prefix tree), so the step can run without extra packaging logic.
+   - Recommended code layout under project/version:
+     - `.../code/pipelines/<pipeline_name>/<step_name>/entry/<entry_script>.py`
+     - `.../code/pipelines/<pipeline_name>/<step_name>/libs/*.py`
+     - Optional shared libs for multiple steps:
+       - `.../code/shared/*.py`
+   - Step-consumption flow (minimal):
+     1. Resolver reads `project_name`, `feature_spec_version`, and step config from DynamoDB.
+     2. It returns `code_prefix_s3`, `entry_script`, and all required `data_prefixes`.
+     3. Pipeline binds `ProcessingStep.code` to the resolved script location and passes only runtime params.
+     4. Job starts only after basic existence checks:
+        - entry script exists under `code_prefix_s3`,
+        - required data prefixes exist/are reachable.
+   - This keeps implementation simple while still enforcing your core goal: all script/data prefixes come from DynamoDB and are easy for each consumer step to use.
+
+13) **Acceptance criteria:**
+   - Zero hard-coded S3 prefixes in code for scripts/data routing.
+   - Zero hard-coded required runtime defaults in Step Functions.
+   - Every pipeline start validated against DynamoDB-declared required params.
+   - Every script/code location resolved from DynamoDB-backed S3 map.
+   - Published S3 hierarchy standard exists and is referenced by resolver + table schema.
+   - Every consumer step has a minimal DynamoDB script contract (`code_prefix_s3`, `entry_script`, `data_prefixes`) and passes basic existence checks.
+   - Table schema proven to support multiple projects and multiple versions concurrently.
+   - Dynamo table generation code includes all required IO keys with recommended placeholder values and fails fast on missing keys for Step Functions, Pipeline steps, and scripts.
+
+**Status:** ToDo.

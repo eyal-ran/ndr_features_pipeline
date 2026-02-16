@@ -52,6 +52,12 @@ from sagemaker.workflow.steps import ProcessingStep
 from sagemaker.spark.processing import PySparkProcessor
 
 from ndr.config.job_spec_loader import load_job_spec
+from ndr.pipeline.io_contract import resolve_step_code_uri
+
+
+PIPELINE_15M_STREAMING_JOB_NAME = "pipeline_15m_streaming"
+PIPELINE_FG_B_BASELINE_JOB_NAME = "pipeline_fg_b_baseline"
+PIPELINE_MACHINE_INVENTORY_UNLOAD_JOB_NAME = "pipeline_machine_inventory_unload"
 
 # ---------------------------------------------------------------------------
 # 1. Backfill / simple Delta-only pipeline
@@ -94,23 +100,23 @@ def build_delta_builder_pipeline(
     # Pipeline parameters
     project_name = ParameterString(
         name="ProjectName",
-        default_value="ndr-project",
+        default_value="<required:ProjectName>",
     )
     feature_spec_version = ParameterString(
         name="FeatureSpecVersion",
-        default_value="v1",
+        default_value="<required:FeatureSpecVersion>",
     )
     mini_batch_id = ParameterString(
         name="MiniBatchId",
-        default_value="dummy-mini-batch-id",
+        default_value="<required:MiniBatchId>",
     )
     batch_start_ts_iso = ParameterString(
         name="BatchStartTsIso",
-        default_value="2025-01-01T00:00:00Z",
+        default_value="<required:BatchStartTsIso>",
     )
     batch_end_ts_iso = ParameterString(
         name="BatchEndTsIso",
-        default_value="2025-01-01T00:15:00Z",
+        default_value="<required:BatchEndTsIso>",
     )
 
     delta_step = ProcessingStep(
@@ -209,32 +215,57 @@ def build_15m_streaming_pipeline(
     # Pipeline parameters (wired from Step Functions)
     project_name = ParameterString(
         name="ProjectName",
-        default_value="ndr-project",
+        default_value="<required:ProjectName>",
     )
     feature_spec_version = ParameterString(
         name="FeatureSpecVersion",
-        default_value="v1",
+        default_value="<required:FeatureSpecVersion>",
     )
     mini_batch_id = ParameterString(
         name="MiniBatchId",
-        default_value="dummy-mini-batch-id",
+        default_value="<required:MiniBatchId>",
     )
     batch_start_ts_iso = ParameterString(
         name="BatchStartTsIso",
-        default_value="2025-01-01T00:00:00Z",
+        default_value="<required:BatchStartTsIso>",
     )
     batch_end_ts_iso = ParameterString(
         name="BatchEndTsIso",
-        default_value="2025-01-01T00:15:00Z",
+        default_value="<required:BatchEndTsIso>",
     )
 
     # ------------------------------------------------------------------ #
     # Step 1: Delta Builder                                             #
     # ------------------------------------------------------------------ #
+    delta_code_uri = resolve_step_code_uri(
+        project_name=project_name.default_value,
+        feature_spec_version=feature_spec_version.default_value,
+        pipeline_job_name=PIPELINE_15M_STREAMING_JOB_NAME,
+        step_name="DeltaBuilderStep",
+    )
+    fg_a_code_uri = resolve_step_code_uri(
+        project_name=project_name.default_value,
+        feature_spec_version=feature_spec_version.default_value,
+        pipeline_job_name=PIPELINE_15M_STREAMING_JOB_NAME,
+        step_name="FGABuilderStep",
+    )
+    pair_counts_code_uri = resolve_step_code_uri(
+        project_name=project_name.default_value,
+        feature_spec_version=feature_spec_version.default_value,
+        pipeline_job_name=PIPELINE_15M_STREAMING_JOB_NAME,
+        step_name="PairCountsBuilderStep",
+    )
+    fg_c_code_uri = resolve_step_code_uri(
+        project_name=project_name.default_value,
+        feature_spec_version=feature_spec_version.default_value,
+        pipeline_job_name=PIPELINE_15M_STREAMING_JOB_NAME,
+        step_name="FGCCorrBuilderStep",
+    )
+
     delta_step = ProcessingStep(
         name="DeltaBuilderStep",
         processor=processor,
-        code="src/ndr/scripts/run_delta_builder.py",
+        code=delta_code_uri,
         job_arguments=[
             "python",
             "-m",
@@ -260,7 +291,7 @@ def build_15m_streaming_pipeline(
     fg_a_step = ProcessingStep(
         name="FGABuilderStep",
         processor=processor,
-        code="src/ndr/scripts/run_fg_a_builder.py",
+        code=fg_a_code_uri,
         job_arguments=[
             "python",
             "-m",
@@ -287,7 +318,7 @@ def build_15m_streaming_pipeline(
     pair_counts_step = ProcessingStep(
         name="PairCountsBuilderStep",
         processor=processor,
-        code="src/ndr/scripts/run_pair_counts_builder.py",
+        code=pair_counts_code_uri,
         job_arguments=[
             "python",
             "-m",
@@ -314,7 +345,7 @@ def build_15m_streaming_pipeline(
     fg_c_step = ProcessingStep(
         name="FGCCorrBuilderStep",
         processor=processor,
-        code="src/ndr/scripts/run_fg_c_builder.py",
+        code=fg_c_code_uri,
         job_arguments=[
             "python",
             "-m",
@@ -394,25 +425,32 @@ def build_fg_b_baseline_pipeline(
     # Pipeline parameters
     project_name = ParameterString(
         name="ProjectName",
-        default_value="ndr-project",
+        default_value="<required:ProjectName>",
     )
     feature_spec_version = ParameterString(
         name="FeatureSpecVersion",
-        default_value="v1",
+        default_value="<required:FeatureSpecVersion>",
     )
     reference_time_iso = ParameterString(
         name="ReferenceTimeIso",
-        default_value="2025-12-31T00:00:00Z",
+        default_value="<required:ReferenceTimeIso>",
     )
     mode_param = ParameterString(
         name="Mode",
         default_value="REGULAR",  # or BACKFILL
     )
 
+    fg_b_code_uri = resolve_step_code_uri(
+        project_name=project_name.default_value,
+        feature_spec_version=feature_spec_version.default_value,
+        pipeline_job_name=PIPELINE_FG_B_BASELINE_JOB_NAME,
+        step_name="FGBaselineBuilderStep",
+    )
+
     fg_b_step = ProcessingStep(
         name="FGBaselineBuilderStep",
         processor=processor,
-        code="src/ndr/scripts/run_fg_b_builder.py",
+        code=fg_b_code_uri,
         job_arguments=[
             "python",
             "-m",
@@ -454,8 +492,8 @@ def build_machine_inventory_unload_pipeline(
     role_arn: str,
     default_bucket: str,
     region_name: str,
-    project_name_value: str = "ndr-project",
-    feature_spec_version_value: str = "v1",
+    project_name_value: str = "<required:ProjectName>",
+    feature_spec_version_value: str = "<required:FeatureSpecVersion>",
 ) -> Pipeline:
     """Create the monthly machine inventory unload pipeline.
 
@@ -479,7 +517,7 @@ def build_machine_inventory_unload_pipeline(
     )
     reference_month_iso = ParameterString(
         name="ReferenceMonthIso",
-        default_value="2025-12-01T00:00:00Z",
+        default_value="<required:ReferenceMonthIso>",
     )
 
     instance_type = ParameterString(
@@ -513,10 +551,17 @@ def build_machine_inventory_unload_pipeline(
         sagemaker_session=session,
     )
 
+    unload_code_uri = resolve_step_code_uri(
+        project_name=project_name_value,
+        feature_spec_version=feature_spec_version_value,
+        pipeline_job_name=PIPELINE_MACHINE_INVENTORY_UNLOAD_JOB_NAME,
+        step_name="MachineInventoryUnloadStep",
+    )
+
     unload_step = ProcessingStep(
         name="MachineInventoryUnloadStep",
         processor=processor,
-        code="src/ndr/scripts/run_machine_inventory_unload.py",
+        code=unload_code_uri,
         job_arguments=[
             "python",
             "-m",

@@ -112,6 +112,47 @@ NO_SEED_PROFILE = "none"
 CUSTOM_JSON_SEED_PROFILE = "custom-json"
 VALID_SEED_PROFILES = (NDR_SEED_PROFILE, NO_SEED_PROFILE, CUSTOM_JSON_SEED_PROFILE)
 
+PIPELINE_RUNTIME_PARAMS = {
+    "pipeline_15m_streaming": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "MiniBatchId",
+        "BatchStartTsIso",
+        "BatchEndTsIso",
+    ],
+    "pipeline_fg_b_baseline": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "ReferenceTimeIso",
+        "Mode",
+    ],
+    "pipeline_machine_inventory_unload": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "ReferenceMonthIso",
+    ],
+    "pipeline_inference_predictions": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "MiniBatchId",
+        "BatchStartTsIso",
+        "BatchEndTsIso",
+    ],
+    "pipeline_prediction_feature_join": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "MiniBatchId",
+        "BatchStartTsIso",
+        "BatchEndTsIso",
+    ],
+    "pipeline_if_training": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "RunId",
+        "ExecutionTsIso",
+    ],
+}
+
 REQUIRED_TABLE_CREATE_KEYS = (
     "TableName",
     "AttributeDefinitions",
@@ -296,7 +337,168 @@ def _build_bootstrap_items(
     """
     now = _utc_now_iso8601()
 
-    return [
+    pipeline_items = [
+        {
+            "project_name": project_name,
+            "job_name": _versioned_job_name("pipeline_15m_streaming", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_15m_streaming"],
+                "scripts": {
+                    "steps": {
+                        "DeltaBuilderStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/15m_streaming/DeltaBuilderStep/",
+                            "entry_script": "run_delta_builder.py",
+                            "data_prefixes": {
+                                "input_traffic": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/raw/traffic/",
+                                "output_delta": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/delta/",
+                            },
+                        },
+                        "FGABuilderStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/15m_streaming/FGABuilderStep/",
+                            "entry_script": "run_fg_a_builder.py",
+                            "data_prefixes": {
+                                "input_delta": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/delta/",
+                                "output_fg_a": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_a/",
+                            },
+                        },
+                        "PairCountsBuilderStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/15m_streaming/PairCountsBuilderStep/",
+                            "entry_script": "run_pair_counts_builder.py",
+                            "data_prefixes": {
+                                "input_traffic": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/raw/traffic/",
+                                "output_pair_counts": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/pair_counts/",
+                            },
+                        },
+                        "FGCCorrBuilderStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/15m_streaming/FGCCorrBuilderStep/",
+                            "entry_script": "run_fg_c_builder.py",
+                            "data_prefixes": {
+                                "input_fg_a": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_a/",
+                                "input_fg_b": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_b/",
+                                "output_fg_c": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_c/",
+                            },
+                        },
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name": _versioned_job_name("pipeline_fg_b_baseline", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_fg_b_baseline"],
+                "scripts": {
+                    "steps": {
+                        "FGBaselineBuilderStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/fg_b_baseline/FGBaselineBuilderStep/",
+                            "entry_script": "run_fg_b_builder.py",
+                            "data_prefixes": {
+                                "input_fg_a": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_a/",
+                                "output_fg_b": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_b/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name": _versioned_job_name("pipeline_machine_inventory_unload", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_machine_inventory_unload"],
+                "scripts": {
+                    "steps": {
+                        "MachineInventoryUnloadStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/machine_inventory_unload/MachineInventoryUnloadStep/",
+                            "entry_script": "run_machine_inventory_unload.py",
+                            "data_prefixes": {
+                                "output_machine_inventory": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/reference/machine_inventory/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name": _versioned_job_name("pipeline_inference_predictions", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_inference_predictions"],
+                "scripts": {
+                    "steps": {
+                        "InferencePredictionsStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/inference_predictions/InferencePredictionsStep/",
+                            "entry_script": "run_inference_predictions.py",
+                            "data_prefixes": {
+                                "input_fg_a": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_a/",
+                                "input_fg_c": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_c/",
+                                "output_predictions": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/inference/predictions/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name": _versioned_job_name("pipeline_prediction_feature_join", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_prediction_feature_join"],
+                "scripts": {
+                    "steps": {
+                        "PredictionFeatureJoinStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/prediction_feature_join/PredictionFeatureJoinStep/",
+                            "entry_script": "run_prediction_feature_join.py",
+                            "data_prefixes": {
+                                "input_predictions": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/inference/predictions/",
+                                "output_join": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/publication/prediction_feature_join/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name": _versioned_job_name("pipeline_if_training", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_if_training"],
+                "scripts": {
+                    "steps": {
+                        "IFTrainingStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/IFTrainingStep/",
+                            "entry_script": "run_if_training.py",
+                            "data_prefixes": {
+                                "input_fg_a": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_a/",
+                                "input_fg_c": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_c/",
+                                "output_training": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/training/if_training/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+    ]
+
+    job_items = [
         {
             "project_name": project_name,
             "job_name": _versioned_job_name("delta_builder", feature_spec_version),
@@ -471,12 +673,65 @@ def _build_bootstrap_items(
             "job_name": _versioned_job_name("project_parameters", feature_spec_version),
             "spec": {
                 "ip_machine_mapping_s3_prefix": "s3://REPLACE_ME/config/ip_machine_mapping/",
+                "defaults": {
+                    "ProjectName": "<project_name>",
+                    "FeatureSpecVersion": "<feature_spec_version>",
+                    "MiniBatchId": "auto-mini-batch",
+                    "BatchStartTsIso": "<required:BatchStartTsIso>",
+                    "BatchEndTsIso": "<required:BatchEndTsIso>",
+                    "ReferenceTimeIso": "<required:ReferenceTimeIso>",
+                    "ReferenceMonthIso": "<required:ReferenceMonthIso>",
+                    "RunId": "manual-run",
+                    "ExecutionTsIso": "<required:ExecutionTsIso>",
+                },
+                "validation": {
+                    "FeatureSpecVersion": "^[a-zA-Z0-9_.-]+$",
+                    "ProjectName": "^[a-zA-Z0-9_.-]+$",
+                },
             },
             "feature_spec_version": feature_spec_version,
             "updated_at": now,
             "owner": owner,
         },
     ]
+
+    items = [*pipeline_items, *job_items]
+    _validate_seed_item_contracts(items)
+    return items
+
+
+def _validate_seed_item_contracts(items: list[dict[str, Any]]) -> None:
+    """Fail fast when seeded pipeline script/runtime contracts are incomplete."""
+    by_job_name = {item["job_name"].split(JOB_SPEC_SORT_KEY_DELIMITER, 1)[0]: item for item in items}
+
+    for pipeline_job_name, required_params in PIPELINE_RUNTIME_PARAMS.items():
+        item = by_job_name.get(pipeline_job_name)
+        if not item:
+            raise ValueError(f"Missing required pipeline seed item: {pipeline_job_name}")
+
+        spec = item.get("spec", {})
+        present_params = spec.get("required_runtime_params")
+        if present_params != required_params:
+            raise ValueError(
+                f"Pipeline '{pipeline_job_name}' required_runtime_params mismatch: "
+                f"expected {required_params}, got {present_params}"
+            )
+
+        scripts = spec.get("scripts", {})
+        steps = scripts.get("steps")
+        if not isinstance(steps, dict) or not steps:
+            raise ValueError(f"Pipeline '{pipeline_job_name}' missing scripts.steps mapping")
+
+        for step_name, step_spec in steps.items():
+            if not isinstance(step_spec, dict):
+                raise ValueError(f"Pipeline '{pipeline_job_name}' step '{step_name}' spec must be an object")
+            if not step_spec.get("code_prefix_s3"):
+                raise ValueError(f"Pipeline '{pipeline_job_name}' step '{step_name}' missing code_prefix_s3")
+            if not step_spec.get("entry_script"):
+                raise ValueError(f"Pipeline '{pipeline_job_name}' step '{step_name}' missing entry_script")
+            data_prefixes = step_spec.get("data_prefixes")
+            if not isinstance(data_prefixes, dict) or not data_prefixes:
+                raise ValueError(f"Pipeline '{pipeline_job_name}' step '{step_name}' missing data_prefixes")
 
 
 def _load_custom_seed_items(custom_seed_json: str) -> list[dict[str, Any]]:

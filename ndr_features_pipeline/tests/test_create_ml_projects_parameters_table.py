@@ -40,6 +40,12 @@ def test_bootstrap_items_include_all_runtime_jobs():
         "prediction_feature_join",
         "if_training",
         "project_parameters",
+        "pipeline_15m_streaming",
+        "pipeline_fg_b_baseline",
+        "pipeline_machine_inventory_unload",
+        "pipeline_inference_predictions",
+        "pipeline_prediction_feature_join",
+        "pipeline_if_training",
     }
 
     assert set(by_job.keys()) == expected_jobs
@@ -60,3 +66,25 @@ def test_prediction_feature_join_seed_has_required_destination_payload():
     join_spec = by_job["prediction_feature_join"]["spec"]
     assert join_spec["destination"]["type"] == "s3"
     assert join_spec["destination"]["s3"]["s3_prefix"].startswith("s3://")
+
+
+def test_pipeline_seed_items_have_runtime_and_script_contracts():
+    items = _build_bootstrap_items("ndr-prod", "v1", "ndr-team")
+    by_job = _items_by_job(items)
+
+    pipeline_spec = by_job["pipeline_15m_streaming"]["spec"]
+    assert pipeline_spec["required_runtime_params"] == [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "MiniBatchId",
+        "BatchStartTsIso",
+        "BatchEndTsIso",
+    ]
+
+    delta_step = pipeline_spec["scripts"]["steps"]["DeltaBuilderStep"]
+    assert delta_step["code_prefix_s3"].startswith("s3://")
+    assert delta_step["entry_script"] == "run_delta_builder.py"
+    assert delta_step["data_prefixes"]["input_traffic"].startswith("s3://")
+
+    project_defaults = by_job["project_parameters"]["spec"]["defaults"]
+    assert project_defaults["MiniBatchId"] == "auto-mini-batch"

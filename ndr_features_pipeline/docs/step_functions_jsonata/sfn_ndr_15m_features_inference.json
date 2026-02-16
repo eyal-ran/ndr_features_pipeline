@@ -8,18 +8,47 @@
       "Assign": {
         "raw_message": "{% $type($states.input)='string' ? $states.input : ($exists($states.input.message_body) ? $states.input.message_body : ($exists($states.input.Records[0].body) ? $states.input.Records[0].body : ($exists($states.input.Records[0].Sns.Message) ? $states.input.Records[0].Sns.Message : ''))) %}"
       },
+      "Next": "ParseIncomingProjectContext"
+    },
+    "ParseIncomingProjectContext": {
+      "Type": "Pass",
+      "Assign": {
+        "parsed_project_name": "{% $contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : '' %}",
+        "parsed_feature_spec_version": "{% $contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : '' %}"
+      },
+      "Next": "LoadProjectParametersFromDynamo"
+    },
+    "LoadProjectParametersFromDynamo": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+      "Arguments": {
+        "TableName": "${ProjectParametersTableName}",
+        "Key": {
+          "project_name": {
+            "S": "{% $exists($states.input.project_name) ? $states.input.project_name : $parsed_project_name %}"
+          },
+          "job_name": {
+            "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
+          }
+        },
+        "ConsistentRead": true
+      },
+      "Assign": {
+        "project_parameters_spec": "{% $exists($states.result.Item.spec.M) ? $states.result.Item.spec.M : {} %}",
+        "project_defaults": "{% $exists($states.result.Item.spec.M.defaults.M) ? $states.result.Item.spec.M.defaults.M : {} %}"
+      },
       "Next": "ResolvePipelineRuntimeParams"
     },
     "ResolvePipelineRuntimeParams": {
       "Type": "Pass",
       "Assign": {
-        "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : 'ndr-project') %}",
-        "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : 'v1') %}",
-        "mini_batch_id": "{% $exists($states.input.mini_batch_id) ? $states.input.mini_batch_id : ($contains($raw_message,'mini_batch_id=') ? $split($split($raw_message,'mini_batch_id=')[1],';')[0] : 'auto-mini-batch') %}",
-        "batch_start_ts_iso": "{% $exists($states.input.batch_start_ts_iso) ? $states.input.batch_start_ts_iso : ($contains($raw_message,'batch_start_ts_iso=') ? $split($split($raw_message,'batch_start_ts_iso=')[1],';')[0] : '2025-01-01T00:00:00Z') %}",
-        "batch_end_ts_iso": "{% $exists($states.input.batch_end_ts_iso) ? $states.input.batch_end_ts_iso : ($contains($raw_message,'batch_end_ts_iso=') ? $split($split($raw_message,'batch_end_ts_iso=')[1],';')[0] : '2025-01-01T00:15:00Z') %}",
-        "execution_ts_iso": "{% $exists($states.input.execution_ts_iso) ? $states.input.execution_ts_iso : $now() %}",
-        "lock_ttl_epoch": "{% $exists($states.input.lock_ttl_epoch) ? $states.input.lock_ttl_epoch : 1893456000 %}"
+        "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : ($exists($project_defaults.ProjectName.S) ? $project_defaults.ProjectName.S : '')) %}",
+        "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : ($exists($project_defaults.FeatureSpecVersion.S) ? $project_defaults.FeatureSpecVersion.S : '${DefaultFeatureSpecVersion}')) %}",
+        "mini_batch_id": "{% $exists($states.input.mini_batch_id) ? $states.input.mini_batch_id : ($contains($raw_message,'mini_batch_id=') ? $split($split($raw_message,'mini_batch_id=')[1],';')[0] : ($exists($project_defaults.MiniBatchId.S) ? $project_defaults.MiniBatchId.S : '')) %}",
+        "batch_start_ts_iso": "{% $exists($states.input.batch_start_ts_iso) ? $states.input.batch_start_ts_iso : ($contains($raw_message,'batch_start_ts_iso=') ? $split($split($raw_message,'batch_start_ts_iso=')[1],';')[0] : ($exists($project_defaults.BatchStartTsIso.S) ? $project_defaults.BatchStartTsIso.S : '')) %}",
+        "batch_end_ts_iso": "{% $exists($states.input.batch_end_ts_iso) ? $states.input.batch_end_ts_iso : ($contains($raw_message,'batch_end_ts_iso=') ? $split($split($raw_message,'batch_end_ts_iso=')[1],';')[0] : ($exists($project_defaults.BatchEndTsIso.S) ? $project_defaults.BatchEndTsIso.S : '')) %}",
+        "execution_ts_iso": "{% $exists($states.input.execution_ts_iso) ? $states.input.execution_ts_iso : ($contains($raw_message,'execution_ts_iso=') ? $split($split($raw_message,'execution_ts_iso=')[1],';')[0] : ($exists($project_defaults.ExecutionTsIso.S) ? $project_defaults.ExecutionTsIso.S : $now())) %}",
+        "lock_ttl_epoch": "{% $exists($states.input.lock_ttl_epoch) ? $states.input.lock_ttl_epoch : ($exists($project_defaults.LockTtlEpoch.N) ? $number($project_defaults.LockTtlEpoch.N) : 1893456000) %}"
       },
       "Next": "AcquireMiniBatchLock"
     },
@@ -29,16 +58,26 @@
       "Arguments": {
         "TableName": "${LockTableName}",
         "Item": {
-          "pk": { "S": "{% $project_name & '#' & $feature_spec_version %}" },
-          "sk": { "S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}" },
-          "ttl_epoch": { "N": "{% $string($lock_ttl_epoch) %}" },
-          "created_at": { "S": "{% $execution_ts_iso %}" }
+          "pk": {
+            "S": "{% $project_name & '#' & $feature_spec_version %}"
+          },
+          "sk": {
+            "S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"
+          },
+          "ttl_epoch": {
+            "N": "{% $string($lock_ttl_epoch) %}"
+          },
+          "created_at": {
+            "S": "{% $execution_ts_iso %}"
+          }
         },
         "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"
       },
       "Catch": [
         {
-          "ErrorEquals": ["DynamoDB.ConditionalCheckFailedException"],
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
           "Next": "DuplicateMiniBatch"
         }
       ],
@@ -55,17 +94,39 @@
       "Arguments": {
         "PipelineName": "${PipelineName15m}",
         "PipelineParameters": [
-          { "Name": "ProjectName", "Value": "{% $project_name %}" },
-          { "Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}" },
-          { "Name": "MiniBatchId", "Value": "{% $mini_batch_id %}" },
-          { "Name": "BatchStartTsIso", "Value": "{% $batch_start_ts_iso %}" },
-          { "Name": "BatchEndTsIso", "Value": "{% $batch_end_ts_iso %}" }
+          {
+            "Name": "ProjectName",
+            "Value": "{% $project_name %}"
+          },
+          {
+            "Name": "FeatureSpecVersion",
+            "Value": "{% $feature_spec_version %}"
+          },
+          {
+            "Name": "MiniBatchId",
+            "Value": "{% $mini_batch_id %}"
+          },
+          {
+            "Name": "BatchStartTsIso",
+            "Value": "{% $batch_start_ts_iso %}"
+          },
+          {
+            "Name": "BatchEndTsIso",
+            "Value": "{% $batch_end_ts_iso %}"
+          }
         ]
       },
       "Assign": {
         "features_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}"
       },
-      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "ReleaseMiniBatchLockOnFailure" }],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "ReleaseMiniBatchLockOnFailure"
+        }
+      ],
       "Next": "WaitForFeaturesCompletionEvent"
     },
     "WaitForFeaturesCompletionEvent": {
@@ -76,11 +137,23 @@
         "Payload": {
           "taskToken": "{% $states.context.Task.Token %}",
           "expected_pipeline_execution_arn": "{% $features_pipeline_execution_arn %}",
-          "success_statuses": ["Succeeded"],
-          "failure_statuses": ["Failed", "Stopped"]
+          "success_statuses": [
+            "Succeeded"
+          ],
+          "failure_statuses": [
+            "Failed",
+            "Stopped"
+          ]
         }
       },
-      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "ReleaseMiniBatchLockOnFailure" }],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "ReleaseMiniBatchLockOnFailure"
+        }
+      ],
       "Next": "StartInferencePipeline"
     },
     "StartInferencePipeline": {
@@ -89,17 +162,39 @@
       "Arguments": {
         "PipelineName": "${PipelineNameInference}",
         "PipelineParameters": [
-          { "Name": "ProjectName", "Value": "{% $project_name %}" },
-          { "Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}" },
-          { "Name": "MiniBatchId", "Value": "{% $mini_batch_id %}" },
-          { "Name": "BatchStartTsIso", "Value": "{% $batch_start_ts_iso %}" },
-          { "Name": "BatchEndTsIso", "Value": "{% $batch_end_ts_iso %}" }
+          {
+            "Name": "ProjectName",
+            "Value": "{% $project_name %}"
+          },
+          {
+            "Name": "FeatureSpecVersion",
+            "Value": "{% $feature_spec_version %}"
+          },
+          {
+            "Name": "MiniBatchId",
+            "Value": "{% $mini_batch_id %}"
+          },
+          {
+            "Name": "BatchStartTsIso",
+            "Value": "{% $batch_start_ts_iso %}"
+          },
+          {
+            "Name": "BatchEndTsIso",
+            "Value": "{% $batch_end_ts_iso %}"
+          }
         ]
       },
       "Assign": {
         "inference_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}"
       },
-      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "ReleaseMiniBatchLockOnFailure" }],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "ReleaseMiniBatchLockOnFailure"
+        }
+      ],
       "Next": "WaitForInferenceCompletionEvent"
     },
     "WaitForInferenceCompletionEvent": {
@@ -110,11 +205,23 @@
         "Payload": {
           "taskToken": "{% $states.context.Task.Token %}",
           "expected_pipeline_execution_arn": "{% $inference_pipeline_execution_arn %}",
-          "success_statuses": ["Succeeded"],
-          "failure_statuses": ["Failed", "Stopped"]
+          "success_statuses": [
+            "Succeeded"
+          ],
+          "failure_statuses": [
+            "Failed",
+            "Stopped"
+          ]
         }
       },
-      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "ReleaseMiniBatchLockOnFailure" }],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "ReleaseMiniBatchLockOnFailure"
+        }
+      ],
       "Next": "EmitInferenceCompleteEvent"
     },
     "EmitInferenceCompleteEvent": {
@@ -130,7 +237,14 @@
           }
         ]
       },
-      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "ReleaseMiniBatchLockOnFailure" }],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "ReleaseMiniBatchLockOnFailure"
+        }
+      ],
       "Next": "ReleaseMiniBatchLockOnSuccess"
     },
     "ReleaseMiniBatchLockOnSuccess": {
@@ -139,8 +253,12 @@
       "Arguments": {
         "TableName": "${LockTableName}",
         "Key": {
-          "pk": { "S": "{% $project_name & '#' & $feature_spec_version %}" },
-          "sk": { "S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}" }
+          "pk": {
+            "S": "{% $project_name & '#' & $feature_spec_version %}"
+          },
+          "sk": {
+            "S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"
+          }
         }
       },
       "Next": "Success"
@@ -151,11 +269,22 @@
       "Arguments": {
         "TableName": "${LockTableName}",
         "Key": {
-          "pk": { "S": "{% $project_name & '#' & $feature_spec_version %}" },
-          "sk": { "S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}" }
+          "pk": {
+            "S": "{% $project_name & '#' & $feature_spec_version %}"
+          },
+          "sk": {
+            "S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"
+          }
         }
       },
-      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "WorkflowFailed" }],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "WorkflowFailed"
+        }
+      ],
       "Next": "WorkflowFailed"
     },
     "WorkflowFailed": {

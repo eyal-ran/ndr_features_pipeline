@@ -9,6 +9,10 @@ from sagemaker.workflow.parameters import ParameterInteger, ParameterString
 from sagemaker.workflow.pipeline import Pipeline
 from sagemaker.workflow.steps import ProcessingStep
 
+from ndr.pipeline.io_contract import resolve_step_code_uri
+
+PIPELINE_JOB_NAME = "pipeline_if_training"
+
 
 def build_if_training_pipeline(
     pipeline_name: str,
@@ -19,10 +23,10 @@ def build_if_training_pipeline(
     """Execute the build if training pipeline stage of the workflow."""
     session = sagemaker.session.Session(default_bucket=default_bucket)
 
-    project_name = ParameterString(name="ProjectName", default_value="ndr-project")
-    feature_spec_version = ParameterString(name="FeatureSpecVersion", default_value="v1")
-    run_id = ParameterString(name="RunId", default_value="manual-run")
-    execution_ts_iso = ParameterString(name="ExecutionTsIso", default_value="2025-01-01T00:00:00Z")
+    project_name = ParameterString(name="ProjectName", default_value="<required:ProjectName>")
+    feature_spec_version = ParameterString(name="FeatureSpecVersion", default_value="<required:FeatureSpecVersion>")
+    run_id = ParameterString(name="RunId", default_value="<required:RunId>")
+    execution_ts_iso = ParameterString(name="ExecutionTsIso", default_value="<required:ExecutionTsIso>")
 
     processing_image_uri = ParameterString(
         name="ProcessingImageUri",
@@ -42,10 +46,17 @@ def build_if_training_pipeline(
         sagemaker_session=session,
     )
 
+    resolved_code_uri = resolve_step_code_uri(
+        project_name=project_name.default_value,
+        feature_spec_version=feature_spec_version.default_value,
+        pipeline_job_name=PIPELINE_JOB_NAME,
+        step_name="IFTrainingStep",
+    )
+
     training_step = ProcessingStep(
         name="IFTrainingStep",
         processor=processor,
-        code="src/ndr/scripts/run_if_training.py",
+        code=resolved_code_uri,
         job_arguments=[
             "python",
             "-m",

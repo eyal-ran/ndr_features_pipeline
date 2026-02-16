@@ -8,16 +8,45 @@
       "Assign": {
         "raw_message": "{% $type($states.input)='string' ? $states.input : ($exists($states.input.message_body) ? $states.input.message_body : ($exists($states.input.Records[0].body) ? $states.input.Records[0].body : ($exists($states.input.Records[0].Sns.Message) ? $states.input.Records[0].Sns.Message : ''))) %}"
       },
+      "Next": "ParseIncomingProjectContext"
+    },
+    "ParseIncomingProjectContext": {
+      "Type": "Pass",
+      "Assign": {
+        "parsed_project_name": "{% $contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : '' %}",
+        "parsed_feature_spec_version": "{% $contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : '' %}"
+      },
+      "Next": "LoadProjectParametersFromDynamo"
+    },
+    "LoadProjectParametersFromDynamo": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+      "Arguments": {
+        "TableName": "${ProjectParametersTableName}",
+        "Key": {
+          "project_name": {
+            "S": "{% $exists($states.input.project_name) ? $states.input.project_name : $parsed_project_name %}"
+          },
+          "job_name": {
+            "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
+          }
+        },
+        "ConsistentRead": true
+      },
+      "Assign": {
+        "project_parameters_spec": "{% $exists($states.result.Item.spec.M) ? $states.result.Item.spec.M : {} %}",
+        "project_defaults": "{% $exists($states.result.Item.spec.M.defaults.M) ? $states.result.Item.spec.M.defaults.M : {} %}"
+      },
       "Next": "ResolvePipelineRuntimeParams"
     },
     "ResolvePipelineRuntimeParams": {
       "Type": "Pass",
       "Assign": {
-        "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : 'ndr-project') %}",
-        "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : 'v1') %}",
-        "mini_batch_id": "{% $exists($states.input.mini_batch_id) ? $states.input.mini_batch_id : ($contains($raw_message,'mini_batch_id=') ? $split($split($raw_message,'mini_batch_id=')[1],';')[0] : 'auto-mini-batch') %}",
-        "batch_start_ts_iso": "{% $exists($states.input.batch_start_ts_iso) ? $states.input.batch_start_ts_iso : ($contains($raw_message,'batch_start_ts_iso=') ? $split($split($raw_message,'batch_start_ts_iso=')[1],';')[0] : '2025-01-01T00:00:00Z') %}",
-        "batch_end_ts_iso": "{% $exists($states.input.batch_end_ts_iso) ? $states.input.batch_end_ts_iso : ($contains($raw_message,'batch_end_ts_iso=') ? $split($split($raw_message,'batch_end_ts_iso=')[1],';')[0] : '2025-01-01T00:15:00Z') %}",
+        "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : ($exists($project_defaults.ProjectName.S) ? $project_defaults.ProjectName.S : '')) %}",
+        "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : ($exists($project_defaults.FeatureSpecVersion.S) ? $project_defaults.FeatureSpecVersion.S : '${DefaultFeatureSpecVersion}')) %}",
+        "mini_batch_id": "{% $exists($states.input.mini_batch_id) ? $states.input.mini_batch_id : ($contains($raw_message,'mini_batch_id=') ? $split($split($raw_message,'mini_batch_id=')[1],';')[0] : ($exists($project_defaults.MiniBatchId.S) ? $project_defaults.MiniBatchId.S : '')) %}",
+        "batch_start_ts_iso": "{% $exists($states.input.batch_start_ts_iso) ? $states.input.batch_start_ts_iso : ($contains($raw_message,'batch_start_ts_iso=') ? $split($split($raw_message,'batch_start_ts_iso=')[1],';')[0] : ($exists($project_defaults.BatchStartTsIso.S) ? $project_defaults.BatchStartTsIso.S : '')) %}",
+        "batch_end_ts_iso": "{% $exists($states.input.batch_end_ts_iso) ? $states.input.batch_end_ts_iso : ($contains($raw_message,'batch_end_ts_iso=') ? $split($split($raw_message,'batch_end_ts_iso=')[1],';')[0] : ($exists($project_defaults.BatchEndTsIso.S) ? $project_defaults.BatchEndTsIso.S : '')) %}",
         "targets": "{% $exists($states.input.targets) ? $states.input.targets : ['redshift','iceberg'] %}"
       },
       "Next": "StartPredictionJoinPipeline"
@@ -28,14 +57,31 @@
       "Arguments": {
         "PipelineName": "${PipelineNamePredictionJoin}",
         "PipelineParameters": [
-          { "Name": "ProjectName", "Value": "{% $project_name %}" },
-          { "Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}" },
-          { "Name": "MiniBatchId", "Value": "{% $mini_batch_id %}" },
-          { "Name": "BatchStartTsIso", "Value": "{% $batch_start_ts_iso %}" },
-          { "Name": "BatchEndTsIso", "Value": "{% $batch_end_ts_iso %}" }
+          {
+            "Name": "ProjectName",
+            "Value": "{% $project_name %}"
+          },
+          {
+            "Name": "FeatureSpecVersion",
+            "Value": "{% $feature_spec_version %}"
+          },
+          {
+            "Name": "MiniBatchId",
+            "Value": "{% $mini_batch_id %}"
+          },
+          {
+            "Name": "BatchStartTsIso",
+            "Value": "{% $batch_start_ts_iso %}"
+          },
+          {
+            "Name": "BatchEndTsIso",
+            "Value": "{% $batch_end_ts_iso %}"
+          }
         ]
       },
-      "Assign": { "prediction_join_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}" },
+      "Assign": {
+        "prediction_join_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}"
+      },
       "Next": "WaitForJoinCompletionEvent"
     },
     "WaitForJoinCompletionEvent": {
@@ -46,8 +92,13 @@
         "Payload": {
           "taskToken": "{% $states.context.Task.Token %}",
           "expected_pipeline_execution_arn": "{% $prediction_join_pipeline_execution_arn %}",
-          "success_statuses": ["Succeeded"],
-          "failure_statuses": ["Failed", "Stopped"]
+          "success_statuses": [
+            "Succeeded"
+          ],
+          "failure_statuses": [
+            "Failed",
+            "Stopped"
+          ]
         }
       },
       "Next": "PublishToTargets"
@@ -64,7 +115,9 @@
           "targets": "{% $targets %}"
         }
       },
-      "Assign": { "publication_result": "{% $states.result.Payload %}" },
+      "Assign": {
+        "publication_result": "{% $states.result.Payload %}"
+      },
       "Next": "EmitPublicationEvent"
     },
     "EmitPublicationEvent": {

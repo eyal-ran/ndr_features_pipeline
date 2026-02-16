@@ -8,13 +8,42 @@
       "Assign": {
         "raw_message": "{% $type($states.input)='string' ? $states.input : ($exists($states.input.message_body) ? $states.input.message_body : ($exists($states.input.Records[0].body) ? $states.input.Records[0].body : ($exists($states.input.Records[0].Sns.Message) ? $states.input.Records[0].Sns.Message : ''))) %}"
       },
+      "Next": "ParseIncomingProjectContext"
+    },
+    "ParseIncomingProjectContext": {
+      "Type": "Pass",
+      "Assign": {
+        "parsed_project_name": "{% $contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : '' %}",
+        "parsed_feature_spec_version": "{% $contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : '' %}"
+      },
+      "Next": "LoadProjectParametersFromDynamo"
+    },
+    "LoadProjectParametersFromDynamo": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+      "Arguments": {
+        "TableName": "${ProjectParametersTableName}",
+        "Key": {
+          "project_name": {
+            "S": "{% $exists($states.input.project_name) ? $states.input.project_name : $parsed_project_name %}"
+          },
+          "job_name": {
+            "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
+          }
+        },
+        "ConsistentRead": true
+      },
+      "Assign": {
+        "project_parameters_spec": "{% $exists($states.result.Item.spec.M) ? $states.result.Item.spec.M : {} %}",
+        "project_defaults": "{% $exists($states.result.Item.spec.M.defaults.M) ? $states.result.Item.spec.M.defaults.M : {} %}"
+      },
       "Next": "ResolvePipelineRuntimeParams"
     },
     "ResolvePipelineRuntimeParams": {
       "Type": "Pass",
       "Assign": {
-        "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : 'ndr-project') %}",
-        "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : 'v1') %}",
+        "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : ($exists($project_defaults.ProjectName.S) ? $project_defaults.ProjectName.S : '')) %}",
+        "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : ($exists($project_defaults.FeatureSpecVersion.S) ? $project_defaults.FeatureSpecVersion.S : '${DefaultFeatureSpecVersion}')) %}",
         "start_ts": "{% $exists($states.input.start_ts) ? $states.input.start_ts : ($contains($raw_message,'start_ts=') ? $split($split($raw_message,'start_ts=')[1],';')[0] : '2025-01-01T00:00:00Z') %}",
         "end_ts": "{% $exists($states.input.end_ts) ? $states.input.end_ts : ($contains($raw_message,'end_ts=') ? $split($split($raw_message,'end_ts=')[1],';')[0] : '2025-01-02T00:00:00Z') %}",
         "step_minutes": "{% $exists($states.input.step_minutes) ? $states.input.step_minutes : 15 %}"
@@ -34,7 +63,9 @@
           "feature_spec_version": "{% $feature_spec_version %}"
         }
       },
-      "Assign": { "windows": "{% $states.result.Payload.windows %}" },
+      "Assign": {
+        "windows": "{% $states.result.Payload.windows %}"
+      },
       "Next": "RunBackfillWindows"
     },
     "RunBackfillWindows": {
@@ -49,7 +80,9 @@
         "batch_end_ts_iso": "{% $states.context.Map.Item.Value.batch_end_ts_iso %}"
       },
       "ItemProcessor": {
-        "ProcessorConfig": { "Mode": "INLINE" },
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
         "StartAt": "StartBackfillPipeline",
         "States": {
           "StartBackfillPipeline": {
@@ -58,14 +91,31 @@
             "Arguments": {
               "PipelineName": "${PipelineNameBackfill15m}",
               "PipelineParameters": [
-                { "Name": "ProjectName", "Value": "{% $states.input.project_name %}" },
-                { "Name": "FeatureSpecVersion", "Value": "{% $states.input.feature_spec_version %}" },
-                { "Name": "MiniBatchId", "Value": "{% $states.input.mini_batch_id %}" },
-                { "Name": "BatchStartTsIso", "Value": "{% $states.input.batch_start_ts_iso %}" },
-                { "Name": "BatchEndTsIso", "Value": "{% $states.input.batch_end_ts_iso %}" }
+                {
+                  "Name": "ProjectName",
+                  "Value": "{% $states.input.project_name %}"
+                },
+                {
+                  "Name": "FeatureSpecVersion",
+                  "Value": "{% $states.input.feature_spec_version %}"
+                },
+                {
+                  "Name": "MiniBatchId",
+                  "Value": "{% $states.input.mini_batch_id %}"
+                },
+                {
+                  "Name": "BatchStartTsIso",
+                  "Value": "{% $states.input.batch_start_ts_iso %}"
+                },
+                {
+                  "Name": "BatchEndTsIso",
+                  "Value": "{% $states.input.batch_end_ts_iso %}"
+                }
               ]
             },
-            "Assign": { "pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}" },
+            "Assign": {
+              "pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}"
+            },
             "Next": "WaitForWindowCompletionEvent"
           },
           "WaitForWindowCompletionEvent": {
@@ -76,8 +126,13 @@
               "Payload": {
                 "taskToken": "{% $states.context.Task.Token %}",
                 "expected_pipeline_execution_arn": "{% $pipeline_execution_arn %}",
-                "success_statuses": ["Succeeded"],
-                "failure_statuses": ["Failed", "Stopped"]
+                "success_statuses": [
+                  "Succeeded"
+                ],
+                "failure_statuses": [
+                  "Failed",
+                  "Stopped"
+                ]
               }
             },
             "End": true

@@ -8,15 +8,44 @@
       "Assign": {
         "raw_message": "{% $type($states.input)='string' ? $states.input : ($exists($states.input.message_body) ? $states.input.message_body : ($exists($states.input.Records[0].body) ? $states.input.Records[0].body : ($exists($states.input.Records[0].Sns.Message) ? $states.input.Records[0].Sns.Message : ''))) %}"
       },
+      "Next": "ParseIncomingProjectContext"
+    },
+    "ParseIncomingProjectContext": {
+      "Type": "Pass",
+      "Assign": {
+        "parsed_project_name": "{% $contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : '' %}",
+        "parsed_feature_spec_version": "{% $contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : '' %}"
+      },
+      "Next": "LoadProjectParametersFromDynamo"
+    },
+    "LoadProjectParametersFromDynamo": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+      "Arguments": {
+        "TableName": "${ProjectParametersTableName}",
+        "Key": {
+          "project_name": {
+            "S": "{% $exists($states.input.project_name) ? $states.input.project_name : $parsed_project_name %}"
+          },
+          "job_name": {
+            "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
+          }
+        },
+        "ConsistentRead": true
+      },
+      "Assign": {
+        "project_parameters_spec": "{% $exists($states.result.Item.spec.M) ? $states.result.Item.spec.M : {} %}",
+        "project_defaults": "{% $exists($states.result.Item.spec.M.defaults.M) ? $states.result.Item.spec.M.defaults.M : {} %}"
+      },
       "Next": "ResolvePipelineRuntimeParams"
     },
     "ResolvePipelineRuntimeParams": {
       "Type": "Pass",
       "Assign": {
-        "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : 'ndr-project') %}",
-        "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : 'v1') %}",
-        "reference_month_iso": "{% $exists($states.input.reference_month_iso) ? $states.input.reference_month_iso : ($contains($raw_message,'reference_month_iso=') ? $split($split($raw_message,'reference_month_iso=')[1],';')[0] : '2025-01-01T00:00:00Z') %}",
-        "reference_time_iso": "{% $exists($states.input.reference_time_iso) ? $states.input.reference_time_iso : ($contains($raw_message,'reference_time_iso=') ? $split($split($raw_message,'reference_time_iso=')[1],';')[0] : '2025-01-31T23:59:59Z') %}",
+        "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : ($exists($project_defaults.ProjectName.S) ? $project_defaults.ProjectName.S : '')) %}",
+        "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : ($exists($project_defaults.FeatureSpecVersion.S) ? $project_defaults.FeatureSpecVersion.S : '${DefaultFeatureSpecVersion}')) %}",
+        "reference_month_iso": "{% $exists($states.input.reference_month_iso) ? $states.input.reference_month_iso : ($contains($raw_message,'reference_month_iso=') ? $split($split($raw_message,'reference_month_iso=')[1],';')[0] : ($exists($project_defaults.ReferenceMonthIso.S) ? $project_defaults.ReferenceMonthIso.S : '')) %}",
+        "reference_time_iso": "{% $exists($states.input.reference_time_iso) ? $states.input.reference_time_iso : ($contains($raw_message,'reference_time_iso=') ? $split($split($raw_message,'reference_time_iso=')[1],';')[0] : ($exists($project_defaults.ReferenceTimeIso.S) ? $project_defaults.ReferenceTimeIso.S : '')) %}",
         "mode": "{% $exists($states.input.mode) ? $states.input.mode : ($contains($raw_message,'mode=') ? $split($split($raw_message,'mode=')[1],';')[0] : 'REGULAR') %}"
       },
       "Next": "StartMachineInventoryRefresh"
@@ -27,12 +56,23 @@
       "Arguments": {
         "PipelineName": "${PipelineNameMachineInventory}",
         "PipelineParameters": [
-          { "Name": "ProjectName", "Value": "{% $project_name %}" },
-          { "Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}" },
-          { "Name": "ReferenceMonthIso", "Value": "{% $reference_month_iso %}" }
+          {
+            "Name": "ProjectName",
+            "Value": "{% $project_name %}"
+          },
+          {
+            "Name": "FeatureSpecVersion",
+            "Value": "{% $feature_spec_version %}"
+          },
+          {
+            "Name": "ReferenceMonthIso",
+            "Value": "{% $reference_month_iso %}"
+          }
         ]
       },
-      "Assign": { "inventory_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}" },
+      "Assign": {
+        "inventory_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}"
+      },
       "Next": "WaitForInventoryCompletionEvent"
     },
     "WaitForInventoryCompletionEvent": {
@@ -43,8 +83,13 @@
         "Payload": {
           "taskToken": "{% $states.context.Task.Token %}",
           "expected_pipeline_execution_arn": "{% $inventory_pipeline_execution_arn %}",
-          "success_statuses": ["Succeeded"],
-          "failure_statuses": ["Failed", "Stopped"]
+          "success_statuses": [
+            "Succeeded"
+          ],
+          "failure_statuses": [
+            "Failed",
+            "Stopped"
+          ]
         }
       },
       "Next": "StartFGBBaselinePipeline"
@@ -55,13 +100,27 @@
       "Arguments": {
         "PipelineName": "${PipelineNameFGB}",
         "PipelineParameters": [
-          { "Name": "ProjectName", "Value": "{% $project_name %}" },
-          { "Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}" },
-          { "Name": "ReferenceTimeIso", "Value": "{% $reference_time_iso %}" },
-          { "Name": "Mode", "Value": "{% $mode %}" }
+          {
+            "Name": "ProjectName",
+            "Value": "{% $project_name %}"
+          },
+          {
+            "Name": "FeatureSpecVersion",
+            "Value": "{% $feature_spec_version %}"
+          },
+          {
+            "Name": "ReferenceTimeIso",
+            "Value": "{% $reference_time_iso %}"
+          },
+          {
+            "Name": "Mode",
+            "Value": "{% $mode %}"
+          }
         ]
       },
-      "Assign": { "fgb_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}" },
+      "Assign": {
+        "fgb_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}"
+      },
       "Next": "WaitForFGBCompletionEvent"
     },
     "WaitForFGBCompletionEvent": {
@@ -72,8 +131,13 @@
         "Payload": {
           "taskToken": "{% $states.context.Task.Token %}",
           "expected_pipeline_execution_arn": "{% $fgb_pipeline_execution_arn %}",
-          "success_statuses": ["Succeeded"],
-          "failure_statuses": ["Failed", "Stopped"]
+          "success_statuses": [
+            "Succeeded"
+          ],
+          "failure_statuses": [
+            "Failed",
+            "Stopped"
+          ]
         }
       },
       "Next": "BuildSupplementalBaselines"
@@ -87,10 +151,16 @@
           "project_name": "{% $project_name %}",
           "feature_spec_version": "{% $feature_spec_version %}",
           "reference_month_iso": "{% $reference_month_iso %}",
-          "components": ["segment_baselines", "cold_start_defaults", "population_global_fallback"]
+          "components": [
+            "segment_baselines",
+            "cold_start_defaults",
+            "population_global_fallback"
+          ]
         }
       },
-      "Assign": { "supplemental_baseline_result": "{% $states.result.Payload %}" },
+      "Assign": {
+        "supplemental_baseline_result": "{% $states.result.Payload %}"
+      },
       "Next": "BuildBaselineManifest"
     },
     "BuildBaselineManifest": {
@@ -100,7 +170,13 @@
           "project_name": "{% $project_name %}",
           "feature_spec_version": "{% $feature_spec_version %}",
           "reference_month_iso": "{% $reference_month_iso %}",
-          "components": ["host_baselines", "segment_baselines", "pair_baselines", "cold_start_defaults", "optional_population_baseline"],
+          "components": [
+            "host_baselines",
+            "segment_baselines",
+            "pair_baselines",
+            "cold_start_defaults",
+            "optional_population_baseline"
+          ],
           "supplemental": "{% $supplemental_baseline_result %}"
         }
       },

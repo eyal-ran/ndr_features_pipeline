@@ -60,6 +60,7 @@ from botocore.exceptions import ClientError
 DDB_TABLE_ENV_VAR = "ML_PROJECTS_PARAMETERS_TABLE_NAME"
 LEGACY_DDB_TABLE_ENV_VAR = "JOB_SPEC_DDB_TABLE_NAME"
 DEFAULT_TABLE_NAME = "ml_projects_parameters"
+DEFAULT_ROUTING_TABLE_NAME = "ml_projects_routing"
 JOB_SPEC_SORT_KEY_DELIMITER = "#"
 
 TABLE_SPEC_JSON: dict[str, Any] = {
@@ -159,6 +160,17 @@ REQUIRED_TABLE_CREATE_KEYS = (
     "KeySchema",
     "BillingMode",
 )
+
+
+def resolve_routing_table_name(explicit_table_name: str | None = None) -> str:
+    """Resolve DynamoDB routing table name.
+
+    Resolution precedence:
+    1. explicit argument
+    2. ``ML_PROJECTS_ROUTING_TABLE_NAME``
+    3. default constant
+    """
+    return explicit_table_name or os.getenv("ML_PROJECTS_ROUTING_TABLE_NAME") or DEFAULT_ROUTING_TABLE_NAME
 
 
 def _utc_now_iso8601() -> str:
@@ -266,6 +278,61 @@ def _validate_create_table_payload(payload: dict[str, Any]) -> None:
         raise ValueError(
             "KeySchema must include project_name(HASH) and job_name(RANGE)"
         )
+
+
+def _build_routing_table_payload(table_name: str) -> dict[str, Any]:
+    """Build payload for routing table creation (org_key HASH)."""
+    return {
+        "TableName": table_name,
+        "AttributeDefinitions": [
+            {"AttributeName": "org_key", "AttributeType": "S"},
+        ],
+        "KeySchema": [
+            {"AttributeName": "org_key", "KeyType": "HASH"},
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+    }
+
+
+def create_routing_table_if_missing(
+    table_name: str,
+    region_name: str | None = None,
+) -> dict[str, Any]:
+    """Create routing table if absent and wait until it exists."""
+    ddb_client = boto3.client("dynamodb", region_name=region_name)
+
+    try:
+        return ddb_client.describe_table(TableName=table_name)["Table"]
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+            raise
+
+    ddb_client.create_table(**_build_routing_table_payload(table_name))
+    waiter = ddb_client.get_waiter("table_exists")
+    waiter.wait(TableName=table_name)
+    return ddb_client.describe_table(TableName=table_name)["Table"]
+
+
+def upsert_routing_items(
+    table_name: str,
+    items: list[dict[str, Any]],
+    region_name: str | None = None,
+) -> int:
+    """Validate and upsert routing records into the routing table."""
+    if not items:
+        return 0
+
+    table = boto3.resource("dynamodb", region_name=region_name).Table(table_name)
+    required_item_keys = {"org_key", "project_name", "ingestion_prefix"}
+
+    with table.batch_writer(overwrite_by_pkeys=["org_key"]) as writer:
+        for item in items:
+            missing = required_item_keys - set(item.keys())
+            if missing:
+                raise ValueError(f"Routing item missing required keys {sorted(missing)}: {item}")
+            writer.put_item(Item=item)
+
+    return len(items)
 
 
 def create_table_if_missing(
@@ -836,6 +903,11 @@ def provision_table(
     use_json_table_definition: bool = False,
     seed_profile: str = NDR_SEED_PROFILE,
     custom_seed_json: str | None = None,
+    create_routing_table: bool = False,
+    routing_table_name: str | None = None,
+    org1: str | None = None,
+    org2: str | None = None,
+    ingestion_prefix: str | None = None,
 ) -> dict[str, Any]:
     """Create table and upsert starter records.
 
@@ -860,6 +932,12 @@ def provision_table(
     custom_seed_json:
         JSON list (or path to JSON file) for custom item seeding when
         ``seed_profile='custom-json'``.
+    create_routing_table:
+        When ``True``, also create/validate the org-path routing table.
+    routing_table_name:
+        Optional routing table name override.
+    org1, org2, ingestion_prefix:
+        Optional seed values for a routing record.
 
     Returns
     -------
@@ -883,6 +961,31 @@ def provision_table(
     if items:
         written = upsert_items(resolved_table_name, items, region_name=region_name)
 
+    routing_table_status = None
+    routing_items_written = 0
+    resolved_routing_table_name = None
+    if create_routing_table:
+        resolved_routing_table_name = resolve_routing_table_name(routing_table_name)
+        routing_description = create_routing_table_if_missing(
+            resolved_routing_table_name,
+            region_name=region_name,
+        )
+        routing_table_status = routing_description.get("TableStatus")
+        if org1 and org2 and ingestion_prefix:
+            routing_items_written = upsert_routing_items(
+                resolved_routing_table_name,
+                [
+                    {
+                        "org_key": f"{org1}#{org2}",
+                        "project_name": project_name,
+                        "ingestion_prefix": ingestion_prefix,
+                        "feature_spec_version": feature_spec_version,
+                        "updated_at": _utc_now_iso8601(),
+                    }
+                ],
+                region_name=region_name,
+            )
+
     return {
         "table_name": resolved_table_name,
         "table_status": table_description.get("TableStatus"),
@@ -891,6 +994,9 @@ def provision_table(
         "feature_spec_version": feature_spec_version,
         "used_json_table_definition": use_json_table_definition,
         "seed_profile": seed_profile,
+        "routing_table_name": resolved_routing_table_name,
+        "routing_table_status": routing_table_status,
+        "routing_items_written": routing_items_written,
     }
 
 
@@ -910,6 +1016,9 @@ def run_from_notebook(params: dict[str, Any]) -> dict[str, Any]:
     - ``use_json_table_definition`` (default: ``False``)
     - ``seed_profile`` (default: ``ndr``)
     - ``custom_seed_json`` (required for ``seed_profile='custom-json'``)
+    - ``create_routing_table`` (default: ``False``)
+    - ``routing_table_name``
+    - ``org1``, ``org2``, ``ingestion_prefix`` (optional routing seed)
 
     Parameters
     ----------
@@ -935,6 +1044,11 @@ def run_from_notebook(params: dict[str, Any]) -> dict[str, Any]:
         use_json_table_definition=bool(params.get("use_json_table_definition", False)),
         seed_profile=params.get("seed_profile", NDR_SEED_PROFILE),
         custom_seed_json=params.get("custom_seed_json"),
+        create_routing_table=bool(params.get("create_routing_table", False)),
+        routing_table_name=params.get("routing_table_name"),
+        org1=params.get("org1"),
+        org2=params.get("org2"),
+        ingestion_prefix=params.get("ingestion_prefix"),
     )
 
 
@@ -990,6 +1104,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "--seed-profile custom-json."
         ),
     )
+    parser.add_argument(
+        "--create-routing-table",
+        action="store_true",
+        help="Also create the org-path routing table (ml_projects_routing by default).",
+    )
+    parser.add_argument(
+        "--routing-table-name",
+        default=None,
+        help="Override routing table name. Defaults to ML_PROJECTS_ROUTING_TABLE_NAME or ml_projects_routing.",
+    )
+    parser.add_argument("--org1", default=None, help="Org convention 1 value for optional routing seed.")
+    parser.add_argument("--org2", default=None, help="Org convention 2 value for optional routing seed.")
+    parser.add_argument(
+        "--ingestion-prefix",
+        default=None,
+        help="Ingestion S3 prefix for optional routing seed (requires --org1 and --org2).",
+    )
     args = parser.parse_args(argv)
 
     if not args.print_table_spec_json:
@@ -1021,6 +1152,11 @@ def main(argv: list[str] | None = None) -> int:
         use_json_table_definition=args.use_json_table_definition,
         seed_profile=args.seed_profile,
         custom_seed_json=args.custom_seed_json,
+        create_routing_table=args.create_routing_table,
+        routing_table_name=args.routing_table_name,
+        org1=args.org1,
+        org2=args.org2,
+        ingestion_prefix=args.ingestion_prefix,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0

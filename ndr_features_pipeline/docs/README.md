@@ -12,6 +12,7 @@ This `docs/` tree is organized to separate canonical architecture and operationa
   - `diagrams/orchestration_event_lifecycle.md`: sequence diagram of callbacks, locks, and event publication.
   - `diagrams/stakeholder_value_flow.md`: business-friendly value stream from signals to security outcomes.
 - `feature_builders/current_state.md`: production-grade current-state documentation for Delta, FG-A, Pair-Counts, FG-B, FG-C, inference prediction, IF training, machine inventory unload, and prediction feature join jobs.
+- `palo_alto_raw_partitioning_strategy.md`: ML-orchestration guidance for consuming Palo Alto 15-minute ingestion batches and managing mini-batch runtime identity.
 - `feature_catalog/` + `FEATURE_CATALOG.md`: generated feature catalog artifacts.
 - `step_functions_jsonata/`: JSONata state machine definitions used for deployment.
 - `legacy_specs/word/`: historical Word specifications kept for traceability.

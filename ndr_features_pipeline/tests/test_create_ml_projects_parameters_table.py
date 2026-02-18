@@ -18,7 +18,10 @@ botocore_module.exceptions = exceptions_module
 sys.modules.setdefault("botocore", botocore_module)
 sys.modules.setdefault("botocore.exceptions", exceptions_module)
 
-from ndr.scripts.create_ml_projects_parameters_table import _build_bootstrap_items
+from ndr.scripts.create_ml_projects_parameters_table import (
+    _build_bootstrap_items,
+    resolve_routing_table_name,
+)
 
 
 def _items_by_job(items):
@@ -88,3 +91,7 @@ def test_pipeline_seed_items_have_runtime_and_script_contracts():
 
     project_defaults = by_job["project_parameters"]["spec"]["defaults"]
     assert project_defaults["MiniBatchId"] == "auto-mini-batch"
+
+
+def test_resolve_routing_table_name_defaults_to_expected_value():
+    assert resolve_routing_table_name() == "ml_projects_routing"

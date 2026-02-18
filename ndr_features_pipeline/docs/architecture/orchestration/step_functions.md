@@ -55,3 +55,31 @@ Definitions contain deploy-time placeholders (for names/ARNs/resources). Replace
 - Architecture overview: `docs/architecture/overview.md`
 - Flow diagram: `docs/architecture/diagrams/pipeline_flow.md`
 - Pipeline implementations: `src/ndr/pipeline/`
+
+
+## S3 ingestion event routing contract (Palo Alto raw->ingestion)
+
+For 15-minute inference triggering from ingestion-bucket writes, the canonical contract is:
+
+1. S3 ObjectCreated event (ingestion bucket) -> SNS -> SQS.
+2. Step Functions normalizes message wrappers and resolves `s3_key`.
+3. Step Functions extracts `org1`, `org2`, date path fragments, and batch folder from the key.
+4. Step Functions loads routing metadata from DynamoDB (`project_routing` style item keyed by `org1#org2`) to resolve:
+   - `project_name`
+   - base `ingestion_prefix`
+5. Step Functions loads `project_parameters#<feature_spec_version>` and resolves runtime defaults.
+6. The state machine accepts only batch marker events (for example `.../<hashed_batch_folder>/_SUCCESS`) unless `force_process=true` is provided for controlled replay.
+7. A single execution is launched per `(project_name, batch_folder)`; duplicate file events are suppressed via lock/dedupe semantics.
+
+This pattern supports both regular inference cadence and deterministic back-processing by replaying explicit batch-folder prefixes from ingestion storage.
+
+
+## Palo Alto implementation plan alignment (approved constraints)
+
+- Use the existing `sfn_ndr_15m_features_inference.json` and `sfn_ndr_backfill_reprocessing.json` state machines; do not introduce a new state machine for this scope.
+- Producer payload assumptions are minimal: full `s3_key` + payload timestamp only.
+- Derive `project_name` and `mini_batch_id` from the path.
+- Resolve `feature_spec_version` and policy defaults from DynamoDB (`project_parameters#<feature_spec_version>`).
+- Apply cron-floor policy `8-59/15 * * * ? *` for `batch_start_ts_iso` (minutes `08/23/38/53`) and preserve the source timestamp as `batch_end_ts_iso`.
+- Keep existing lock-table conditional-write behavior to suppress duplicates on retries/redelivery.
+- For non-inference historical runs, add a preliminary SageMaker ProcessingStep that enumerates folders and emits `(project_name, feature_spec_version, mini_batch_id, batch_start_ts_iso, batch_end_ts_iso)` entries consumed by backfill map execution.

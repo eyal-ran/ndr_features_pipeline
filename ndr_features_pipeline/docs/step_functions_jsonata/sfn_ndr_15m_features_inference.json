@@ -14,8 +14,56 @@
       "Type": "Pass",
       "Assign": {
         "parsed_project_name": "{% $contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : '' %}",
-        "parsed_feature_spec_version": "{% $contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : '' %}"
+        "parsed_feature_spec_version": "{% $contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : '' %}",
+        "parsed_s3_key": "{% $exists($states.input.s3_key) ? $states.input.s3_key : ($contains($raw_message,'s3_key=') ? $split($split($raw_message,'s3_key=')[1],';')[0] : '') %}",
+        "parsed_org1": "{% $count($split($parsed_s3_key,'/')) >= 3 ? $split($parsed_s3_key,'/')[1] : '' %}",
+        "parsed_org2": "{% $count($split($parsed_s3_key,'/')) >= 4 ? $split($parsed_s3_key,'/')[2] : '' %}",
+        "parsed_date_prefix": "{% $count($split($parsed_s3_key,'/')) >= 8 ? $join([$split($parsed_s3_key,'/')[3],$split($parsed_s3_key,'/')[4],$split($parsed_s3_key,'/')[5],$split($parsed_s3_key,'/')[6]],'/') : '' %}",
+        "parsed_batch_folder": "{% $count($split($parsed_s3_key,'/')) >= 8 ? $split($parsed_s3_key,'/')[7] : '' %}"
       },
+      "Next": "BatchMarkerEventChoice"
+    },
+    "BatchMarkerEventChoice": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $exists($states.input.force_process) ? $states.input.force_process = true : false %}",
+          "Next": "LoadProjectRoutingFromDynamo"
+        },
+        {
+          "Condition": "{% $parsed_s3_key != '' and $exists($match($parsed_s3_key, /\\/_SUCCESS$/)) %}",
+          "Next": "LoadProjectRoutingFromDynamo"
+        }
+      ],
+      "Default": "IgnoreNonBatchMarkerEvent"
+    },
+    "IgnoreNonBatchMarkerEvent": {
+      "Type": "Succeed"
+    },
+    "LoadProjectRoutingFromDynamo": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+      "Arguments": {
+        "TableName": "${ProjectRoutingTableName}",
+        "Key": {
+          "org_key": {
+            "S": "{% $parsed_org1 & '#' & $parsed_org2 %}"
+          }
+        },
+        "ConsistentRead": true
+      },
+      "Assign": {
+        "routed_project_name": "{% $exists($states.result.Item.project_name.S) ? $states.result.Item.project_name.S : '' %}",
+        "routed_ingestion_prefix": "{% $exists($states.result.Item.ingestion_prefix.S) ? $states.result.Item.ingestion_prefix.S : '' %}"
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "LoadProjectParametersFromDynamo"
+        }
+      ],
       "Next": "LoadProjectParametersFromDynamo"
     },
     "LoadProjectParametersFromDynamo": {
@@ -25,7 +73,7 @@
         "TableName": "${ProjectParametersTableName}",
         "Key": {
           "project_name": {
-            "S": "{% $exists($states.input.project_name) ? $states.input.project_name : $parsed_project_name %}"
+            "S": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : $routed_project_name) %}"
           },
           "job_name": {
             "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
@@ -42,13 +90,14 @@
     "ResolvePipelineRuntimeParams": {
       "Type": "Pass",
       "Assign": {
-        "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : ($exists($project_defaults.ProjectName.S) ? $project_defaults.ProjectName.S : '')) %}",
+        "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : ($routed_project_name != '' ? $routed_project_name : ($exists($project_defaults.ProjectName.S) ? $project_defaults.ProjectName.S : ''))) %}",
         "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : ($exists($project_defaults.FeatureSpecVersion.S) ? $project_defaults.FeatureSpecVersion.S : '${DefaultFeatureSpecVersion}')) %}",
         "mini_batch_id": "{% $exists($states.input.mini_batch_id) ? $states.input.mini_batch_id : ($contains($raw_message,'mini_batch_id=') ? $split($split($raw_message,'mini_batch_id=')[1],';')[0] : ($exists($project_defaults.MiniBatchId.S) ? $project_defaults.MiniBatchId.S : '')) %}",
         "batch_start_ts_iso": "{% $exists($states.input.batch_start_ts_iso) ? $states.input.batch_start_ts_iso : ($contains($raw_message,'batch_start_ts_iso=') ? $split($split($raw_message,'batch_start_ts_iso=')[1],';')[0] : ($exists($project_defaults.BatchStartTsIso.S) ? $project_defaults.BatchStartTsIso.S : '')) %}",
         "batch_end_ts_iso": "{% $exists($states.input.batch_end_ts_iso) ? $states.input.batch_end_ts_iso : ($contains($raw_message,'batch_end_ts_iso=') ? $split($split($raw_message,'batch_end_ts_iso=')[1],';')[0] : ($exists($project_defaults.BatchEndTsIso.S) ? $project_defaults.BatchEndTsIso.S : '')) %}",
         "execution_ts_iso": "{% $exists($states.input.execution_ts_iso) ? $states.input.execution_ts_iso : ($contains($raw_message,'execution_ts_iso=') ? $split($split($raw_message,'execution_ts_iso=')[1],';')[0] : ($exists($project_defaults.ExecutionTsIso.S) ? $project_defaults.ExecutionTsIso.S : $now())) %}",
-        "lock_ttl_epoch": "{% $exists($states.input.lock_ttl_epoch) ? $states.input.lock_ttl_epoch : ($exists($project_defaults.LockTtlEpoch.N) ? $number($project_defaults.LockTtlEpoch.N) : 1893456000) %}"
+        "lock_ttl_epoch": "{% $exists($states.input.lock_ttl_epoch) ? $states.input.lock_ttl_epoch : ($exists($project_defaults.LockTtlEpoch.N) ? $number($project_defaults.LockTtlEpoch.N) : 1893456000) %}",
+        "mini_batch_s3_prefix": "{% $exists($states.input.mini_batch_s3_prefix) ? $states.input.mini_batch_s3_prefix : ($routed_ingestion_prefix != '' and $parsed_date_prefix != '' and $parsed_batch_folder != '' ? $routed_ingestion_prefix & '/' & $parsed_date_prefix & '/' & $parsed_batch_folder & '/' : ($exists($project_defaults.MiniBatchS3Prefix.S) ? $project_defaults.MiniBatchS3Prefix.S : '')) %}"
       },
       "Next": "AcquireMiniBatchLock"
     },

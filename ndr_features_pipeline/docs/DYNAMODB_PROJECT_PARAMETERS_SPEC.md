@@ -210,3 +210,71 @@ Used by FG-B for shared project-level configuration. The item may store its payl
 ## Notes
 - If feature specs are large, consider storing the `spec` as an S3 URI and keeping only a reference in DynamoDB.
 - The pipeline entry step should read the required specs for all jobs in one pass.
+
+
+## Additional items for org-path routing and S3 event ingestion
+
+To support ingestion-bucket event routing where path fragments are known in advance (`org1`, `org2`, vendor prefix), keep these items in DynamoDB.
+
+### `project_routing` item (recommended)
+
+Store in a dedicated routing table (recommended name: `ml_projects_routing`), keyed by org convention path:
+
+- PK: `org_key` (string) with value `<org1>#<org2>`
+- Attributes:
+  - `project_name` (string)
+  - `ingestion_prefix` (string), e.g. `s3://<ingestion_bucket>/paloalto/<org1>/<org2>`
+  - optional `feature_spec_version` default
+  - optional `enabled` flag / lifecycle metadata
+
+Example:
+```json
+{
+  "org_key": "acme#finance",
+  "project_name": "ndr-acme-prod",
+  "ingestion_prefix": "s3://ndr-ingestion/paloalto/acme/finance",
+  "feature_spec_version": "v1"
+}
+```
+
+### `project_parameters#<feature_spec_version>` defaults additions
+
+Under `spec.defaults`, include optional static path/runtime hints used by Step Functions when resolving messages:
+
+- `Org1`, `Org2`
+- `VendorPrefix` (e.g. `paloalto`)
+- `IngestionBasePrefix`
+- `MiniBatchS3Prefix` (fallback explicit batch prefix)
+
+These defaults are fallback-only; explicit event-derived values and direct invocation parameters still take precedence.
+
+
+## Provisioning automation requirements
+
+The repository provisioning script must create both tables when requested:
+
+- `ml_projects_parameters` (project/job specs; PK=`project_name`, SK=`job_name`)
+- `ml_projects_routing` (org-path routing; PK=`org_key`)
+
+The script should also support optional seed insertion for routing records so deployments do not rely on manual table bootstrapping.
+
+
+## Palo Alto orchestration-specific defaults (ML-only)
+
+For the Palo Alto ingestion-to-ML orchestration, keep these optional defaults under `project_parameters#<feature_spec_version>.spec.defaults`:
+
+- `ProjectName`
+- `FeatureSpecVersion`
+- `MiniBatchS3Prefix` (fallback only)
+- `WindowCronExpression` (expected value: `8-59/15 * * * ? *`)
+- `WindowFloorMinutes` (expected list: `[8, 23, 38, 53]`)
+
+Runtime policy:
+- `batch_start_ts_iso` is derived by flooring the source timestamp to one of `08/23/38/53`.
+- `batch_end_ts_iso` is the actual source timestamp (SNS payload timestamp for inference, S3 LastModified for non-inference).
+
+Minimal producer event payload assumptions:
+- full `s3_key` of one file in the mini-batch folder,
+- event timestamp close to batch creation time.
+
+All other runtime fields (`project_name`, `mini_batch_id`, `feature_spec_version`) are derived from path parsing and DynamoDB lookups.

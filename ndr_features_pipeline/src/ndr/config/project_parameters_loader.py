@@ -6,6 +6,8 @@ from __future__ import annotations
 import os
 from typing import Any, Dict
 
+from boto3.dynamodb.conditions import Key
+
 import boto3
 
 from .job_spec_loader import DDB_TABLE_ENV_VAR, LEGACY_DDB_TABLE_ENV_VAR, JOB_SPEC_SORT_KEY_DELIMITER
@@ -74,3 +76,38 @@ def load_project_parameters(
         feature_spec_version=feature_spec_version,
         job_name=job_name,
     )
+
+
+def resolve_feature_spec_version(
+    project_name: str,
+    preferred_feature_spec_version: str | None = None,
+    table_name: str | None = None,
+    job_name: str = DEFAULT_PROJECT_PARAMETERS_JOB_NAME,
+) -> str:
+    """Resolve feature spec version for a project from project-parameters records."""
+    loader = ProjectParametersLoader(table_name=table_name)
+
+    if preferred_feature_spec_version:
+        loader.load(
+            project_name=project_name,
+            feature_spec_version=preferred_feature_spec_version,
+            job_name=job_name,
+        )
+        return preferred_feature_spec_version
+
+    response = loader._table.query(
+        KeyConditionExpression=Key("project_name").eq(project_name) & Key("job_name").begins_with(f"{job_name}{JOB_SPEC_SORT_KEY_DELIMITER}"),
+    )
+    items = response.get("Items", [])
+    if not items:
+        raise KeyError(f"No project_parameters records found for project={project_name}")
+
+    def _item_rank(item: Dict[str, Any]) -> tuple[str, str]:
+        updated_at = str(item.get("updated_at", ""))
+        item_job_name = str(item.get("job_name", ""))
+        return (updated_at, item_job_name)
+
+    best = sorted(items, key=_item_rank, reverse=True)[0]
+    job_name_value = str(best["job_name"])
+    _, feature_spec_version = job_name_value.split(JOB_SPEC_SORT_KEY_DELIMITER, 1)
+    return feature_spec_version

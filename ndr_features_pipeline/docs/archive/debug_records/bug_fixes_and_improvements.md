@@ -656,4 +656,4 @@
 - Pair-Counts reads source fields only via Dynamo specification (typed contract), with no hard-coded field fallback.
 - Documentation, Dynamo defaults, and orchestration definitions are consistent.
 
-**Status:** ToDo.
+**Status:** Implemented. Inference/backfill orchestration contracts now derive runtime windows from source timestamps (08/23/38/53 floor policy), backfill includes a preliminary historical extractor pipeline step whose output feeds map execution, and both Pair-Counts/Delta raw reads are specification-driven via Dynamo field mappings, with docs/defaults/tests synchronized.

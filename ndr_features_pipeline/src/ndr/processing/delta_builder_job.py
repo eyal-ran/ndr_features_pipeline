@@ -14,6 +14,10 @@ from ndr.processing import delta_builder_operators as ops
 from ndr.logging.logger import get_logger
 from ndr.catalog.schema_manifest import build_delta_manifest
 from ndr.processing.schema_enforcement import enforce_schema
+from ndr.processing.raw_traffic_fields import (
+    normalize_raw_traffic_fields,
+    REQUIRED_DELTA_TRAFFIC_FIELDS,
+)
 
 
 class DeltaBuilderRunner(BaseProcessingRunner):
@@ -25,6 +29,18 @@ class DeltaBuilderRunner(BaseProcessingRunner):
         self._s3_client = boto3.client("s3")
         self.logger = get_logger("DeltaBuilderRunner")  # override name
         self._pair_context_df: DataFrame | None = None
+
+
+    def _read_input(self) -> DataFrame:
+        """Read raw mini-batch data and normalize input columns using JobSpec mapping."""
+        df = super()._read_input()
+        input_spec = self.job_spec.input
+        return normalize_raw_traffic_fields(
+            df,
+            field_mapping=input_spec.field_mapping,
+            required_canonical_fields=REQUIRED_DELTA_TRAFFIC_FIELDS,
+            context_name="delta_builder.input",
+        )
 
     def _apply_data_quality(self, df: DataFrame) -> DataFrame:
         """Apply Palo Alto specific DQ cleaning rules."""

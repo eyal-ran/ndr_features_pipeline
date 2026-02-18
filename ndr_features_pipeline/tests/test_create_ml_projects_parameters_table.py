@@ -49,6 +49,7 @@ def test_bootstrap_items_include_all_runtime_jobs():
         "pipeline_inference_predictions",
         "pipeline_prediction_feature_join",
         "pipeline_if_training",
+        "pipeline_backfill_historical_extractor",
     }
 
     assert set(by_job.keys()) == expected_jobs
@@ -89,9 +90,41 @@ def test_pipeline_seed_items_have_runtime_and_script_contracts():
     assert delta_step["entry_script"] == "run_delta_builder.py"
     assert delta_step["data_prefixes"]["input_traffic"].startswith("s3://")
 
+    extractor_step = by_job["pipeline_backfill_historical_extractor"]["spec"]["scripts"]["steps"]["HistoricalWindowsExtractorStep"]
+    assert extractor_step["entry_script"] == "run_historical_windows_extractor.py"
+
     project_defaults = by_job["project_parameters"]["spec"]["defaults"]
     assert project_defaults["MiniBatchId"] == "auto-mini-batch"
+    assert project_defaults["WindowCronExpression"] == "8-59/15 * * * ? *"
+    assert project_defaults["WindowFloorMinutes"] == [8, 23, 38, 53]
+    assert project_defaults["HistoricalInputS3Prefix"].startswith("s3://")
+    assert project_defaults["HistoricalWindowsOutputS3Prefix"].startswith("s3://")
+
+
+def test_pair_counts_seed_has_required_field_mapping_contract():
+    items = _build_bootstrap_items("ndr-prod", "v1", "ndr-team")
+    by_job = _items_by_job(items)
+
+    pair_counts_spec = by_job["pair_counts_builder"]["spec"]
+    field_mapping = pair_counts_spec["traffic_input"]["field_mapping"]
+    assert set(field_mapping.keys()) == {
+        "source_ip",
+        "destination_ip",
+        "destination_port",
+        "event_start",
+        "event_end",
+    }
 
 
 def test_resolve_routing_table_name_defaults_to_expected_value():
     assert resolve_routing_table_name() == "ml_projects_routing"
+
+
+def test_delta_builder_seed_has_field_mapping_contract():
+    items = _build_bootstrap_items("ndr-prod", "v1", "ndr-team")
+    by_job = _items_by_job(items)
+    field_mapping = by_job["delta_builder"]["spec"]["input"]["field_mapping"]
+    assert set(field_mapping.keys()) == {
+        "source_ip", "destination_ip", "source_port", "destination_port",
+        "source_bytes", "destination_bytes", "event_start", "event_end"
+    }

@@ -11,6 +11,7 @@ class InputSpec:
     format: str
     compression: Optional[str] = None
     schema_projection: Optional[List[str]] = None
+    field_mapping: Optional[Dict[str, str]] = None
 
 
 @dataclass
@@ -70,3 +71,37 @@ class JobSpec:
     operators: List[OperatorSpec]
     output: OutputSpec
     pair_context_output: Optional[OutputSpec] = None
+
+
+@dataclass
+class PairCountsTrafficInputSpec:
+    """Input configuration for Pair-Counts traffic reads."""
+
+    s3_prefix: str
+    layout: str = "batch_folder"
+    field_mapping: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class PairCountsFilterSpec:
+    """Optional filters for Pair-Counts source rows."""
+
+    require_nonnull_ips: bool = True
+    require_destination_port: bool = True
+
+
+@dataclass
+class PairCountsOutputSpec:
+    """Output configuration for Pair-Counts dataset."""
+
+    s3_prefix: str
+
+
+@dataclass
+class PairCountsJobSpec:
+    """Strongly typed JobSpec payload for ``pair_counts_builder``."""
+
+    traffic_input: PairCountsTrafficInputSpec
+    pair_counts_output: PairCountsOutputSpec
+    filters: PairCountsFilterSpec = field(default_factory=PairCountsFilterSpec)
+    segment_mapping: Dict[str, Any] = field(default_factory=dict)

@@ -42,6 +42,7 @@ Primary data layers:
 - **Inference predictions pipeline** (`sagemaker_pipeline_definitions_inference.py`)
 - **IF training pipeline** (`sagemaker_pipeline_definitions_if_training.py`)
 - **Prediction feature join pipeline** (`sagemaker_pipeline_definitions_prediction_feature_join.py`)
+- **Backfill historical extractor pipeline** (`sagemaker_pipeline_definitions_backfill_historical_extractor.py`)
 
 ## Operational expectations
 

@@ -16,10 +16,12 @@
         "parsed_project_name": "{% $contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : '' %}",
         "parsed_feature_spec_version": "{% $contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : '' %}",
         "parsed_s3_key": "{% $exists($states.input.s3_key) ? $states.input.s3_key : ($contains($raw_message,'s3_key=') ? $split($split($raw_message,'s3_key=')[1],';')[0] : '') %}",
-        "parsed_org1": "{% $count($split($parsed_s3_key,'/')) >= 3 ? $split($parsed_s3_key,'/')[1] : '' %}",
-        "parsed_org2": "{% $count($split($parsed_s3_key,'/')) >= 4 ? $split($parsed_s3_key,'/')[2] : '' %}",
-        "parsed_date_prefix": "{% $count($split($parsed_s3_key,'/')) >= 8 ? $join([$split($parsed_s3_key,'/')[3],$split($parsed_s3_key,'/')[4],$split($parsed_s3_key,'/')[5],$split($parsed_s3_key,'/')[6]],'/') : '' %}",
-        "parsed_batch_folder": "{% $count($split($parsed_s3_key,'/')) >= 8 ? $split($parsed_s3_key,'/')[7] : '' %}"
+        "parsed_org1": "{% $count($split($parsed_s3_key,'/')) >= 1 ? $split($parsed_s3_key,'/')[0] : '' %}",
+        "parsed_org2": "{% $count($split($parsed_s3_key,'/')) >= 2 ? $split($parsed_s3_key,'/')[1] : '' %}",
+        "parsed_date_prefix": "{% $count($split($parsed_s3_key,'/')) >= 7 ? $join([$split($parsed_s3_key,'/')[3],$split($parsed_s3_key,'/')[4],$split($parsed_s3_key,'/')[5]],'/') : '' %}",
+        "parsed_batch_folder": "{% $count($split($parsed_s3_key,'/')) >= 7 ? $split($parsed_s3_key,'/')[6] : '' %}",
+        "parsed_project_name_from_path": "{% $count($split($parsed_s3_key,'/')) >= 3 ? $split($parsed_s3_key,'/')[2] : '' %}",
+        "parsed_source_ts_iso": "{% $exists($states.input.timestamp) ? $states.input.timestamp : ($exists($states.input.event_ts) ? $states.input.event_ts : ($contains($raw_message,'timestamp=') ? $split($split($raw_message,'timestamp=')[1],';')[0] : $now())) %}"
       },
       "Next": "BatchMarkerEventChoice"
     },
@@ -90,14 +92,15 @@
     "ResolvePipelineRuntimeParams": {
       "Type": "Pass",
       "Assign": {
-        "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : ($routed_project_name != '' ? $routed_project_name : ($exists($project_defaults.ProjectName.S) ? $project_defaults.ProjectName.S : ''))) %}",
+        "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : ($parsed_project_name_from_path != '' ? $parsed_project_name_from_path : ($routed_project_name != '' ? $routed_project_name : ($exists($project_defaults.ProjectName.S) ? $project_defaults.ProjectName.S : '')))) %}",
         "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : ($exists($project_defaults.FeatureSpecVersion.S) ? $project_defaults.FeatureSpecVersion.S : '${DefaultFeatureSpecVersion}')) %}",
-        "mini_batch_id": "{% $exists($states.input.mini_batch_id) ? $states.input.mini_batch_id : ($contains($raw_message,'mini_batch_id=') ? $split($split($raw_message,'mini_batch_id=')[1],';')[0] : ($exists($project_defaults.MiniBatchId.S) ? $project_defaults.MiniBatchId.S : '')) %}",
-        "batch_start_ts_iso": "{% $exists($states.input.batch_start_ts_iso) ? $states.input.batch_start_ts_iso : ($contains($raw_message,'batch_start_ts_iso=') ? $split($split($raw_message,'batch_start_ts_iso=')[1],';')[0] : ($exists($project_defaults.BatchStartTsIso.S) ? $project_defaults.BatchStartTsIso.S : '')) %}",
-        "batch_end_ts_iso": "{% $exists($states.input.batch_end_ts_iso) ? $states.input.batch_end_ts_iso : ($contains($raw_message,'batch_end_ts_iso=') ? $split($split($raw_message,'batch_end_ts_iso=')[1],';')[0] : ($exists($project_defaults.BatchEndTsIso.S) ? $project_defaults.BatchEndTsIso.S : '')) %}",
+        "mini_batch_id": "{% $exists($states.input.mini_batch_id) ? $states.input.mini_batch_id : ($parsed_batch_folder != '' ? $parsed_batch_folder : ($contains($raw_message,'mini_batch_id=') ? $split($split($raw_message,'mini_batch_id=')[1],';')[0] : ($exists($project_defaults.MiniBatchId.S) ? $project_defaults.MiniBatchId.S : ''))) %}",
+        "batch_start_ts_iso": "{% $exists($states.input.batch_start_ts_iso) ? $states.input.batch_start_ts_iso : ($exists($source_timestamp_iso) and $source_timestamp_iso != '' ? $fromMillis($toMillis($source_timestamp_iso) - (($number($substring($source_timestamp_iso,14,2)) >= 53 ? $number($substring($source_timestamp_iso,14,2)) - 53 : ($number($substring($source_timestamp_iso,14,2)) >= 38 ? $number($substring($source_timestamp_iso,14,2)) - 38 : ($number($substring($source_timestamp_iso,14,2)) >= 23 ? $number($substring($source_timestamp_iso,14,2)) - 23 : ($number($substring($source_timestamp_iso,14,2)) >= 8 ? $number($substring($source_timestamp_iso,14,2)) - 8 : $number($substring($source_timestamp_iso,14,2)) + 7)))) * 60000)) : ($exists($project_defaults.BatchStartTsIso.S) ? $project_defaults.BatchStartTsIso.S : '')) %}",
+        "batch_end_ts_iso": "{% $source_timestamp_iso %}",
         "execution_ts_iso": "{% $exists($states.input.execution_ts_iso) ? $states.input.execution_ts_iso : ($contains($raw_message,'execution_ts_iso=') ? $split($split($raw_message,'execution_ts_iso=')[1],';')[0] : ($exists($project_defaults.ExecutionTsIso.S) ? $project_defaults.ExecutionTsIso.S : $now())) %}",
         "lock_ttl_epoch": "{% $exists($states.input.lock_ttl_epoch) ? $states.input.lock_ttl_epoch : ($exists($project_defaults.LockTtlEpoch.N) ? $number($project_defaults.LockTtlEpoch.N) : 1893456000) %}",
-        "mini_batch_s3_prefix": "{% $exists($states.input.mini_batch_s3_prefix) ? $states.input.mini_batch_s3_prefix : ($routed_ingestion_prefix != '' and $parsed_date_prefix != '' and $parsed_batch_folder != '' ? $routed_ingestion_prefix & '/' & $parsed_date_prefix & '/' & $parsed_batch_folder & '/' : ($exists($project_defaults.MiniBatchS3Prefix.S) ? $project_defaults.MiniBatchS3Prefix.S : '')) %}"
+        "mini_batch_s3_prefix": "{% $exists($states.input.mini_batch_s3_prefix) ? $states.input.mini_batch_s3_prefix : ($routed_ingestion_prefix != '' and $parsed_date_prefix != '' and $parsed_batch_folder != '' ? $routed_ingestion_prefix & '/' & $parsed_date_prefix & '/' & $parsed_batch_folder & '/' : ($exists($project_defaults.MiniBatchS3Prefix.S) ? $project_defaults.MiniBatchS3Prefix.S : '')) %}",
+        "source_timestamp_iso": "{% $exists($states.input.batch_end_ts_iso) ? $states.input.batch_end_ts_iso : $parsed_source_ts_iso %}"
       },
       "Next": "AcquireMiniBatchLock"
     },

@@ -13,6 +13,10 @@ from .job_spec_models import (
     RoleMappingSpec,
     OperatorSpec,
     OutputSpec,
+    PairCountsJobSpec,
+    PairCountsTrafficInputSpec,
+    PairCountsFilterSpec,
+    PairCountsOutputSpec,
 )
 
 LEGACY_DDB_TABLE_ENV_VAR = "JOB_SPEC_DDB_TABLE_NAME"
@@ -111,3 +115,53 @@ def load_job_spec(
             f"feature_spec_version={feature_spec_version}"
         )
     return response["Item"]["spec"]
+
+
+def load_pair_counts_job_spec(
+    project_name: str,
+    feature_spec_version: str,
+    table_name: str | None = None,
+) -> PairCountsJobSpec:
+    """Load a strongly typed Pair-Counts JobSpec payload from DynamoDB."""
+    payload = load_job_spec(
+        project_name=project_name,
+        job_name="pair_counts_builder",
+        feature_spec_version=feature_spec_version,
+        table_name=table_name,
+    )
+
+    traffic_payload: Dict[str, Any] = payload.get("traffic_input", {})
+    output_payload: Dict[str, Any] = payload.get("pair_counts_output", {})
+    filters_payload: Dict[str, Any] = payload.get("filters", {})
+
+    traffic_input = PairCountsTrafficInputSpec(
+        s3_prefix=traffic_payload["s3_prefix"],
+        layout=traffic_payload.get("layout", "batch_folder"),
+        field_mapping=dict(traffic_payload.get("field_mapping", {})),
+    )
+    if not traffic_input.field_mapping:
+        raise ValueError(
+            "pair_counts_builder.traffic_input.field_mapping is required and must map "
+            "source_ip/destination_ip/destination_port/event_start/event_end to source columns."
+        )
+
+    required_mapping_keys = {
+        "source_ip",
+        "destination_ip",
+        "destination_port",
+        "event_start",
+        "event_end",
+    }
+    missing_mapping_keys = sorted(required_mapping_keys - set(traffic_input.field_mapping.keys()))
+    if missing_mapping_keys:
+        raise ValueError(
+            "pair_counts_builder.traffic_input.field_mapping missing required keys: "
+            f"{missing_mapping_keys}"
+        )
+
+    return PairCountsJobSpec(
+        traffic_input=traffic_input,
+        pair_counts_output=PairCountsOutputSpec(s3_prefix=output_payload["s3_prefix"]),
+        filters=PairCountsFilterSpec(**filters_payload),
+        segment_mapping=dict(payload.get("segment_mapping", {})),
+    )

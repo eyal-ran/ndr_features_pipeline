@@ -80,7 +80,8 @@ These fields are read from the `spec` payload itself by the JobSpec loader.
 - `machine_inventory_unload`
 - `inference_predictions`
 - `if_training` (dedicated Isolation Forest training pipeline parameters)
-- `project_parameters` (project-level parameters consumed by FG-B)
+- `project_parameters` (project-level parameters consumed across orchestration flows)
+- `pipeline_backfill_historical_extractor` (pipeline-level script/runtime contract for preliminary historical window extraction)
 
 ## Job-Specific Spec Payloads
 Below are the *minimum* payload expectations based on runtime usage. Additional keys are allowed.
@@ -88,7 +89,8 @@ Below are the *minimum* payload expectations based on runtime usage. Additional 
 ### `delta_builder` (strongly-typed JobSpec)
 The `spec` payload must match the JobSpec dataclasses (see `ndr.config.job_spec_models`):
 - `project_name`, `job_name`, `feature_spec_version`
-- `input`: `{ s3_prefix, format, compression?, schema_projection? }`
+- `input`: `{ s3_prefix, format, compression?, schema_projection?, field_mapping? }`
+  - Recommended `field_mapping` keys for Palo Alto raw logs: `source_ip`, `destination_ip`, `source_port`, `destination_port`, `source_bytes`, `destination_bytes`, `event_start`, `event_end`.
 - `dq`: `{ drop_malformed_ip?, duration_non_negative?, bytes_non_negative?, filter_null_bytes_ports?, emit_metrics? }`
 - `enrichment`: `{ vdi_hostname_prefixes?, port_sets_location? }`
 - `roles`: list of `{ name, host_ip, peer_ip, bytes_sent, bytes_recv, peer_port }`
@@ -107,6 +109,8 @@ The `spec` payload must match the JobSpec dataclasses (see `ndr.config.job_spec_
 
 ### `pair_counts_builder`
 - `traffic_input.s3_prefix`
+- `traffic_input.field_mapping` with required keys:
+  - `source_ip`, `destination_ip`, `destination_port`, `event_start`, `event_end`
 - `pair_counts_output.s3_prefix`
 - Optional: `traffic_input.layout` (defaults to `batch_folder`)
 - Optional: `filters` (`require_nonnull_ips`, `require_destination_port`)
@@ -268,6 +272,8 @@ For the Palo Alto ingestion-to-ML orchestration, keep these optional defaults un
 - `MiniBatchS3Prefix` (fallback only)
 - `WindowCronExpression` (expected value: `8-59/15 * * * ? *`)
 - `WindowFloorMinutes` (expected list: `[8, 23, 38, 53]`)
+- `HistoricalInputS3Prefix` (fallback raw prefix for historical-window extraction)
+- `HistoricalWindowsOutputS3Prefix` (fallback output prefix for extractor-emitted windows)
 
 Runtime policy:
 - `batch_start_ts_iso` is derived by flooring the source timestamp to one of `08/23/38/53`.
@@ -278,3 +284,6 @@ Minimal producer event payload assumptions:
 - event timestamp close to batch creation time.
 
 All other runtime fields (`project_name`, `mini_batch_id`, `feature_spec_version`) are derived from path parsing and DynamoDB lookups.
+
+Backfill extractor callback contract:
+- Backfill Step Functions expects extractor completion payload to include `windows` compatible with map items containing at least `mini_batch_id`, `batch_start_ts_iso`, and `batch_end_ts_iso`.

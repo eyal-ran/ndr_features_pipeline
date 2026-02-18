@@ -580,3 +580,80 @@
    - Dynamo table generation code includes all required IO keys with recommended placeholder values and fails fast on missing keys for Step Functions, Pipeline steps, and scripts.
 
 **Status:** ToDo.
+
+## 18) Palo Alto ingestion-batch orchestration hardening (ML-only, cron-window aligned)
+
+**Issue:** The Palo Alto ingestion-triggered orchestration still needs an implementation-ready, integrated plan that satisfies the latest constraints:
+- payload from the producer is limited to `s3_key` + timestamp,
+- runtime parameters must be derived from path + DynamoDB,
+- no new state machine for now,
+- non-inference/historical extraction must be implemented as a SageMaker Pipeline ProcessingStep,
+- and window derivation must follow cron `8-59/15 * * * ? *`.
+
+### Approved implementation scope
+
+1. **Inference path**
+   - Keep `sfn_ndr_15m_features_inference.json` as the active orchestrator.
+   - Parse path segments to derive `project_name`, `org1`, `org2`, `mini_batch_id`, and `mini_batch_s3_prefix`.
+   - Resolve `feature_spec_version` and defaults from DynamoDB project parameters.
+   - Derive time window using:
+     - floor minute set `{08, 23, 38, 53}` for `batch_start_ts_iso`,
+     - source payload timestamp as `batch_end_ts_iso`.
+   - Preserve lock-table conditional-write idempotency behavior.
+
+2. **Non-inference (initial deployment/backfill) path**
+   - Reuse `sfn_ndr_backfill_reprocessing.json` (no new Step Function).
+   - Add a preliminary SageMaker ProcessingStep that:
+     - enumerates historical mini-batch folders,
+     - extracts `project_name` and `mini_batch_id` from S3 paths,
+     - looks up `feature_spec_version` in DynamoDB by `project_name`,
+     - reads S3 `LastModified` as source timestamp,
+     - computes `batch_start_ts_iso` via floor minutes `{08,23,38,53}`,
+     - assigns `batch_end_ts_iso = LastModified`,
+     - emits execution rows consumed by backfill map execution.
+
+3. **Pair-Counts builder hardening (mandatory, no fallback behavior)**
+   - Refactor Pair-Counts builder to rely on DynamoDB-provided field specification only (same principle used by Delta builder).
+   - Remove hard-coded input field assumptions in Pair-Counts read path.
+   - Move Pair-Counts to typed JobSpec loader path (`JobSpecLoader.load`) instead of plain dict retrieval, and enforce typed schema contract for required input mappings.
+   - Update Pair-Counts JobSpec contract in DynamoDB specification with explicit field mapping keys for source/destination IP, destination port, and event timestamps.
+   - Update supporting components as needed (loader models/spec docs/tests) so Pair-Counts can parse flattened raw-log fields smoothly via specification-driven mapping.
+   - No compatibility fallback path is required; existing behavior can be replaced directly per current project constraints.
+
+4. **DynamoDB defaults and generation script**
+   - Ensure project-parameter defaults include window policy (`WindowCronExpression`, `WindowFloorMinutes`) and runtime fallbacks.
+   - Update the table provisioning script to seed/maintain required defaults for this flow.
+   - Seed/validate Pair-Counts field-mapping keys as part of generated defaults/templates.
+
+5. **Documentation synchronization**
+   - Update strategy and orchestration docs to match the above behavior and contracts.
+   - Explicitly state that no persistent batch catalog is introduced in this phase.
+
+### Detailed implementation checklist
+
+- [ ] Add/confirm parser utility for project/batch extraction from `s3_key`.
+- [ ] Add/confirm time-window utility implementing cron-floor minutes `{08,23,38,53}`.
+- [ ] Wire inference runtime derivation to use timestamp-floor policy and actual timestamp end.
+- [ ] Implement preliminary SageMaker ProcessingStep for historical folder extraction + attachment.
+- [ ] Wire backfill map input contract to extractor output (`mini_batch_id`, `batch_start_ts_iso`, `batch_end_ts_iso`).
+- [ ] Extend Dynamo defaults and provisioning script entries for window policy values.
+- [ ] Refactor Pair-Counts to typed JobSpec loader path and specification-only input-field mapping.
+- [ ] Update Pair-Counts schema contract docs and Dynamo seed/template generation for required field mappings.
+- [ ] Add tests:
+  - path extraction cases,
+  - floor-minute window derivation correctness,
+  - duplicate-lock behavior on repeated input,
+  - extractor output schema/contract tests,
+  - Pair-Counts field-mapping resolution and required-column enforcement via typed spec.
+- [ ] Run final repository check and revert any unrelated changes before merge.
+
+### Acceptance criteria
+
+- One mini-batch event results in exactly one successful orchestration path unless lock detects duplicate.
+- Derived windows always align to floor minutes `08/23/38/53`.
+- Historical runs can process previous-month data with deterministic `mini_batch_id` + window pairs.
+- Backfill orchestration consumes extractor output without introducing additional state machines.
+- Pair-Counts reads source fields only via Dynamo specification (typed contract), with no hard-coded field fallback.
+- Documentation, Dynamo defaults, and orchestration definitions are consistent.
+
+**Status:** ToDo.

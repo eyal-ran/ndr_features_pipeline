@@ -14,20 +14,25 @@ from __future__ import annotations
 import sys
 import traceback
 from dataclasses import dataclass
-from typing import Dict, Any, Optional
+from typing import Optional
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
 from ndr.logging.logger import get_logger
-from ndr.config.job_spec_loader import load_job_spec
+from ndr.config.job_spec_loader import load_pair_counts_job_spec
+from ndr.config.job_spec_models import PairCountsJobSpec
 from ndr.processing.base_runner import BaseRunner
 from ndr.io.s3_writer import S3Writer
 from ndr.processing.output_paths import build_batch_output_prefix
 from ndr.processing.segment_utils import add_segment_id
 from ndr.catalog.schema_manifest import build_pair_counts_manifest
 from ndr.processing.schema_enforcement import enforce_schema
+from ndr.processing.raw_traffic_fields import (
+    normalize_raw_traffic_fields,
+    REQUIRED_CANONICAL_TRAFFIC_FIELDS,
+)
 
 
 LOGGER = get_logger(__name__)
@@ -79,7 +84,7 @@ class PairCountsBuilderJob(BaseRunner):
         self.runtime_config = runtime_config
         self.spark: Optional[SparkSession] = None
         self.s3_writer = S3Writer()
-        self.job_spec: Optional[Dict[str, Any]] = None
+        self.job_spec: Optional[PairCountsJobSpec] = None
 
     # -------------------------------------------------------------- #
     # Entry point                                                    #
@@ -88,14 +93,13 @@ class PairCountsBuilderJob(BaseRunner):
         """Execute the full workflow for this job runner."""
         LOGGER.info("Pair-Counts builder job started.")
         try:
-            self.job_spec = load_job_spec(
+            self.job_spec = load_pair_counts_job_spec(
                 project_name=self.runtime_config.project_name,
-                job_name="pair_counts_builder",
                 feature_spec_version=self.runtime_config.feature_spec_version,
             )
             LOGGER.info(
                 "Loaded JobSpec for pair_counts_builder.",
-                extra={"job_spec_keys": list(self.job_spec.keys())},
+                extra={"traffic_layout": self.job_spec.traffic_input.layout},
             )
 
             self.spark = self._build_spark_session()
@@ -145,12 +149,9 @@ class PairCountsBuilderJob(BaseRunner):
               s3_prefix / mini_batch_id / *.gz
         - Files are JSON Lines, compressed with gzip, as per your integration bucket.
         """
-        traffic_cfg = self.job_spec.get("traffic_input", {})
-        base_prefix = traffic_cfg.get("s3_prefix")
-        layout = traffic_cfg.get("layout", "batch_folder")
-
-        if not base_prefix:
-            raise ValueError("traffic_input.s3_prefix must be configured for pair_counts_builder.")
+        traffic_cfg = self.job_spec.traffic_input
+        base_prefix = traffic_cfg.s3_prefix
+        layout = traffic_cfg.layout
 
         mini_batch_id = self.runtime_config.mini_batch_id
 
@@ -168,20 +169,12 @@ class PairCountsBuilderJob(BaseRunner):
         # Spark handles .gz JSON Lines automatically
         df = self.spark.read.json(path)
 
-        # Ensure expected columns exist; schema enforcement is done upstream,
-        # but we defensively check for presence of the core fields.
-        required_cols = [
-            "source_ip",
-            "destination_ip",
-            "destination_port",
-            "event_start",
-            "event_end",
-        ]
-        missing = [c for c in required_cols if c not in df.columns]
-        if missing:
-            raise ValueError(f"Missing required columns in traffic input: {missing}")
-
-        return df
+        return normalize_raw_traffic_fields(
+            df,
+            field_mapping=traffic_cfg.field_mapping,
+            required_canonical_fields=REQUIRED_CANONICAL_TRAFFIC_FIELDS,
+            context_name="pair_counts_builder.traffic_input",
+        )
 
     def _apply_filters(self, df: DataFrame) -> DataFrame:
         """Filter out non-traffic records or malformed entries.
@@ -193,9 +186,9 @@ class PairCountsBuilderJob(BaseRunner):
 
         Additional filters can be encoded via JobSpec.filters.
         """
-        filters_cfg = self.job_spec.get("filters", {})
-        require_nonnull_ips = bool(filters_cfg.get("require_nonnull_ips", True))
-        require_destination_port = bool(filters_cfg.get("require_destination_port", True))
+        filters_cfg = self.job_spec.filters
+        require_nonnull_ips = bool(filters_cfg.require_nonnull_ips)
+        require_destination_port = bool(filters_cfg.require_destination_port)
 
         if require_nonnull_ips:
             df = df.filter(
@@ -213,6 +206,7 @@ class PairCountsBuilderJob(BaseRunner):
             df = df.filter(F.col("event_name") == F.lit("TRAFFIC"))
 
         return df
+
 
     # -------------------------------------------------------------- #
     # Core pair-counts computation                                   #
@@ -238,8 +232,11 @@ class PairCountsBuilderJob(BaseRunner):
         # Use batch_end_ts as the representative timestamp for the 15m slice.
         event_ts_lit = F.to_timestamp(F.lit(batch_end_ts_iso))
 
-        seg_cfg = self.job_spec.get("segment_mapping", {})
-        df = add_segment_id(df=df, ip_col="source_ip", segment_mapping=seg_cfg)
+        df = add_segment_id(
+            df=df,
+            ip_col="source_ip",
+            segment_mapping=self.job_spec.segment_mapping,
+        )
 
         grouped = (
             df.groupBy("source_ip", "destination_ip", "destination_port", "segment_id")
@@ -267,13 +264,7 @@ class PairCountsBuilderJob(BaseRunner):
     # -------------------------------------------------------------- #
     def _write_pair_counts(self, df: DataFrame) -> None:
         """Write pair-counts output as partitioned Parquet to S3."""
-        output_cfg = self.job_spec.get("pair_counts_output", {})
-        base_prefix = output_cfg.get("s3_prefix")
-
-        if not base_prefix:
-            raise ValueError(
-                "pair_counts_output.s3_prefix must be configured for pair_counts_builder."
-            )
+        base_prefix = self.job_spec.pair_counts_output.s3_prefix
         base_prefix = build_batch_output_prefix(
             base_prefix=base_prefix,
             dataset="pair_counts",

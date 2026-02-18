@@ -41,7 +41,7 @@ Pair Counts reads from:
 
 - `<traffic_input.s3_prefix>/<mini_batch_id>/`
 
-and expects flat traffic columns (`source_ip`, `destination_ip`, `destination_port`, `event_start`, `event_end`).
+and uses specification-driven `traffic_input.field_mapping` to map source columns into canonical traffic fields (`source_ip`, `destination_ip`, `destination_port`, `event_start`, `event_end`).
 
 ## Timestamp and window derivation policy (authoritative)
 
@@ -58,7 +58,7 @@ Source timestamp by flow:
 - inference: payload timestamp from SNS/SQS message.
 - non-inference/backfill: S3 object `LastModified` timestamp.
 
-## Updated orchestration plan (implementable)
+## Current orchestration behavior (implemented)
 
 ### Live inference flow
 
@@ -73,7 +73,7 @@ Source timestamp by flow:
 
 ### Initial deployment / historical back-processing
 
-A preliminary **SageMaker Pipeline ProcessingStep** must:
+A preliminary **SageMaker historical extractor pipeline step** now:
 
 1. enumerate historical batch folders by date range,
 2. parse `project_name` + `mini_batch_id` from path,
@@ -90,14 +90,10 @@ Use existing lock-table conditional write in orchestration to prevent duplicate 
 
 This is required for producer retries and message redelivery handling.
 
-## Verification gate before implementation
-
-Before implementing this plan, run a repository cleanliness check and ensure previous changes not part of this approved plan are reverted.
-
-## Decision summary
+## Operational notes
 
 - Keep the implementation ML-only and orchestration-centric.
 - Derive runtime identity from path + DynamoDB, with minimal payload assumptions.
 - Use cron-based start-time flooring (`08/23/38/53`) and actual timestamp as end-time.
-- Reuse existing Step Functions; add only the preliminary SageMaker extraction/attachment step for non-inference flows.
+- Reuse existing Step Functions; non-inference flow now includes the preliminary SageMaker extraction/attachment step.
 - Skip persistent batch-catalog persistence for now.

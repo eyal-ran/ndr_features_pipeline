@@ -30,8 +30,8 @@ JSONata definitions are stored under `docs/step_functions_jsonata/`:
 - Supports approval/deployment gating patterns.
 
 ### 4) Backfill and reprocessing
-- Generates and iterates over window ranges.
-- Runs feature pipelines per window with bounded parallelism.
+- Starts a preliminary historical-window extractor SageMaker pipeline.
+- Consumes extractor-produced window units and runs feature pipelines per window with bounded parallelism.
 - Emits reconciliation outcomes/events.
 
 ### 5) Prediction publication
@@ -67,9 +67,9 @@ For 15-minute inference triggering from ingestion-bucket writes, the canonical c
 4. Step Functions loads routing metadata from DynamoDB (`project_routing` style item keyed by `org1#org2`) to resolve:
    - `project_name`
    - base `ingestion_prefix`
-5. Step Functions loads `project_parameters#<feature_spec_version>` and resolves runtime defaults.
+5. Step Functions loads `project_parameters#<feature_spec_version>` and resolves runtime defaults (including window policy defaults).
 6. The state machine accepts only batch marker events (for example `.../<hashed_batch_folder>/_SUCCESS`) unless `force_process=true` is provided for controlled replay.
-7. A single execution is launched per `(project_name, batch_folder)`; duplicate file events are suppressed via lock/dedupe semantics.
+7. Runtime windows are derived from source timestamps using floor-minute policy `08/23/38/53` and lock keys are built from `(project_name, feature_spec_version, batch_start_ts_iso, batch_end_ts_iso)` to suppress duplicates.
 
 This pattern supports both regular inference cadence and deterministic back-processing by replaying explicit batch-folder prefixes from ingestion storage.
 
@@ -82,4 +82,4 @@ This pattern supports both regular inference cadence and deterministic back-proc
 - Resolve `feature_spec_version` and policy defaults from DynamoDB (`project_parameters#<feature_spec_version>`).
 - Apply cron-floor policy `8-59/15 * * * ? *` for `batch_start_ts_iso` (minutes `08/23/38/53`) and preserve the source timestamp as `batch_end_ts_iso`.
 - Keep existing lock-table conditional-write behavior to suppress duplicates on retries/redelivery.
-- For non-inference historical runs, add a preliminary SageMaker ProcessingStep that enumerates folders and emits `(project_name, feature_spec_version, mini_batch_id, batch_start_ts_iso, batch_end_ts_iso)` entries consumed by backfill map execution.
+- For non-inference historical runs, the backfill state machine invokes a preliminary SageMaker extractor pipeline step that emits `(project_name, feature_spec_version, mini_batch_id, batch_start_ts_iso, batch_end_ts_iso)` entries consumed by backfill map execution.

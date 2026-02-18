@@ -152,6 +152,14 @@ PIPELINE_RUNTIME_PARAMS = {
         "RunId",
         "ExecutionTsIso",
     ],
+    "pipeline_backfill_historical_extractor": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "StartTsIso",
+        "EndTsIso",
+        "InputS3Prefix",
+        "OutputS3Prefix",
+    ],
 }
 
 REQUIRED_TABLE_CREATE_KEYS = (
@@ -563,6 +571,28 @@ def _build_bootstrap_items(
             "updated_at": now,
             "owner": owner,
         },
+        {
+            "project_name": project_name,
+            "job_name": _versioned_job_name("pipeline_backfill_historical_extractor", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_backfill_historical_extractor"],
+                "scripts": {
+                    "steps": {
+                        "HistoricalWindowsExtractorStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/backfill_historical_extractor/HistoricalWindowsExtractorStep/",
+                            "entry_script": "run_historical_windows_extractor.py",
+                            "data_prefixes": {
+                                "input_raw": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/raw/palo_alto/",
+                                "output_windows": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/backfill/windows/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
     ]
 
     job_items = [
@@ -577,6 +607,16 @@ def _build_bootstrap_items(
                     "s3_prefix": "s3://REPLACE_ME/input/",
                     "format": "json",
                     "compression": "gzip",
+                    "field_mapping": {
+                        "source_ip": "source_ip",
+                        "destination_ip": "destination_ip",
+                        "source_port": "source_port",
+                        "destination_port": "destination_port",
+                        "source_bytes": "source_bytes",
+                        "destination_bytes": "destination_bytes",
+                        "event_start": "event_start",
+                        "event_end": "event_end"
+                    },
                 },
                 "dq": {
                     "drop_malformed_ip": True,
@@ -626,8 +666,23 @@ def _build_bootstrap_items(
             "project_name": project_name,
             "job_name": _versioned_job_name("pair_counts_builder", feature_spec_version),
             "spec": {
-                "traffic_input": {"s3_prefix": "s3://REPLACE_ME/traffic/"},
+                "traffic_input": {
+                    "s3_prefix": "s3://REPLACE_ME/traffic/",
+                    "layout": "batch_folder",
+                    "field_mapping": {
+                        "source_ip": "source_ip",
+                        "destination_ip": "destination_ip",
+                        "destination_port": "destination_port",
+                        "event_start": "event_start",
+                        "event_end": "event_end",
+                    },
+                },
                 "pair_counts_output": {"s3_prefix": "s3://REPLACE_ME/pair_counts/"},
+                "filters": {
+                    "require_nonnull_ips": True,
+                    "require_destination_port": True,
+                },
+                "segment_mapping": {},
             },
             "feature_spec_version": feature_spec_version,
             "updated_at": now,
@@ -750,6 +805,10 @@ def _build_bootstrap_items(
                     "ReferenceMonthIso": "<required:ReferenceMonthIso>",
                     "RunId": "manual-run",
                     "ExecutionTsIso": "<required:ExecutionTsIso>",
+                    "WindowCronExpression": "8-59/15 * * * ? *",
+                    "WindowFloorMinutes": [8, 23, 38, 53],
+                    "HistoricalInputS3Prefix": "s3://REPLACE_ME/raw/",
+                    "HistoricalWindowsOutputS3Prefix": "s3://REPLACE_ME/backfill/windows/",
                 },
                 "validation": {
                     "FeatureSpecVersion": "^[a-zA-Z0-9_.-]+$",

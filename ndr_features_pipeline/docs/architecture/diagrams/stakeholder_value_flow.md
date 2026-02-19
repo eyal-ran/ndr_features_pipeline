@@ -1,19 +1,22 @@
 # Stakeholder Value Flow (Business-Friendly)
 
-A simplified view of how data is transformed into operational outcomes.
+A simplified, current-state view of how operational signals become analyst-ready outcomes and model improvements.
+
+![Stakeholder value flow chart](images/stakeholder_value_flow.svg)
 
 ```mermaid
 flowchart LR
-    A[Network + Asset Signals] --> B[Automated Feature Engineering]
-    B --> C[Risk & Anomaly Scoring]
-    C --> D[Published Security Insights]
-    D --> E[Analyst Triage & Investigation]
-    E --> F[Feedback for Model Retraining]
+    A[Network + Asset Signals] --> B[Automated 15m Feature Engineering]
+    B --> C[Inference Scoring]
+    C --> D[Prediction Publication and Delivery]
+    D --> E[SOC Triage and Investigation]
+    E --> F[Training Feedback + Baseline Refresh]
     F --> B
 
-    B1[15m Refresh Cadence] -. supports .-> B
-    B2[Monthly Baseline Refresh] -. stabilizes .-> B
-    B3[Governed Model Lifecycle] -. improves .-> C
+    A1[Backfill + Replay Workflow] -. restores history .-> B
+    A2[Monthly Inventory + FG-B Baselines] -. stabilizes context .-> B
+    A3[Training Verifier + Controlled Remediation] -. improves model quality .-> F
+    A4[Idempotency Locks + Native Polling] -. increases reliability .-> D
 ```
 
 ## Intended audience

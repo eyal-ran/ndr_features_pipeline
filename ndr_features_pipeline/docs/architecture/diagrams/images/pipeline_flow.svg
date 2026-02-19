@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="780" viewBox="0 0 1400 780">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#334155"/></marker>
+    <style>
+      .t{font:14px sans-serif;fill:#0f172a}.h{font:18px sans-serif;font-weight:700;fill:#0f172a}.box{fill:#e2e8f0;stroke:#475569;stroke-width:1.5}
+      .grp{fill:none;stroke:#94a3b8;stroke-width:1.2;stroke-dasharray:6 4}
+    </style>
+  </defs>
+  <text x="20" y="32" class="h">NDR Pipeline Flow (Current State)</text>
+  <rect x="20" y="50" width="230" height="150" class="grp"/><text x="30" y="72" class="t">Sources</text>
+  <rect x="40" y="90" width="190" height="36" class="box"/><text x="50" y="113" class="t">15m Batch Event</text>
+  <rect x="40" y="140" width="190" height="36" class="box"/><text x="50" y="163" class="t">Monthly Schedule</text>
+
+  <rect x="290" y="50" width="280" height="290" class="grp"/><text x="300" y="72" class="t">Step Functions</text>
+  <rect x="310" y="90" width="240" height="36" class="box"/><text x="320" y="113" class="t">15m Features + Inference</text>
+  <rect x="310" y="140" width="240" height="36" class="box"/><text x="320" y="163" class="t">Prediction Publication</text>
+  <rect x="310" y="190" width="240" height="36" class="box"/><text x="320" y="213" class="t">Monthly FG-B Baselines</text>
+  <rect x="310" y="240" width="240" height="36" class="box"/><text x="320" y="263" class="t">Training Orchestrator</text>
+  <rect x="310" y="290" width="240" height="36" class="box"/><text x="320" y="313" class="t">Backfill + Reprocessing</text>
+
+  <rect x="610" y="50" width="350" height="390" class="grp"/><text x="620" y="72" class="t">SageMaker Pipelines</text>
+  <rect x="630" y="90" width="310" height="36" class="box"/><text x="640" y="113" class="t">15m Streaming (Delta→FG-A→Pair→FG-C)</text>
+  <rect x="630" y="140" width="310" height="36" class="box"/><text x="640" y="163" class="t">Inference Predictions</text>
+  <rect x="630" y="190" width="310" height="36" class="box"/><text x="640" y="213" class="t">Prediction Join + Publish</text>
+  <rect x="630" y="240" width="310" height="36" class="box"/><text x="640" y="263" class="t">Inventory + FG-B + Supplemental</text>
+  <rect x="630" y="290" width="310" height="36" class="box"/><text x="640" y="313" class="t">Verifier + IF Training + Model Lifecycle</text>
+  <rect x="630" y="340" width="310" height="36" class="box"/><text x="640" y="363" class="t">Historical Extractor</text>
+
+  <rect x="1000" y="50" width="360" height="300" class="grp"/><text x="1010" y="72" class="t">S3 Data Products</text>
+  <rect x="1020" y="90" width="320" height="36" class="box"/><text x="1030" y="113" class="t">Delta / FG-A / Pair-Counts / FG-C</text>
+  <rect x="1020" y="140" width="320" height="36" class="box"/><text x="1030" y="163" class="t">Predictions + Joined + Published Outputs</text>
+  <rect x="1020" y="190" width="320" height="36" class="box"/><text x="1030" y="213" class="t">FG-B Baselines + Inventory Snapshot</text>
+  <rect x="1020" y="240" width="320" height="36" class="box"/><text x="1030" y="263" class="t">Training Artifacts + Backfill Windows</text>
+
+  <line x1="230" y1="108" x2="310" y2="108" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="230" y1="158" x2="310" y2="208" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="550" y1="108" x2="630" y2="108" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="550" y1="108" x2="630" y2="158" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="550" y1="158" x2="630" y2="208" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="550" y1="208" x2="630" y2="258" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="550" y1="258" x2="630" y2="308" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="550" y1="308" x2="630" y2="358" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="940" y1="108" x2="1020" y2="108" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="940" y1="158" x2="1020" y2="158" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="940" y1="258" x2="1020" y2="208" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="940" y1="308" x2="1020" y2="258" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+</svg>

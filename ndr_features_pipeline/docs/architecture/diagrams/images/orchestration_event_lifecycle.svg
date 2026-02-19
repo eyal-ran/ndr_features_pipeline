@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="900" viewBox="0 0 1500 900">
+<defs><style>.h{font:18px sans-serif;font-weight:700}.t{font:13px sans-serif}.lane{stroke:#94a3b8;stroke-width:1}.a{stroke:#1e293b;stroke-width:2;marker-end:url(#m)}.n{stroke:#64748b;stroke-dasharray:6 4;stroke-width:1.5;marker-end:url(#m)}.lbl{font:12px sans-serif;fill:#0f172a}</style><marker id="m" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#1e293b"/></marker></defs>
+<text x="20" y="30" class="h">Orchestration and Event Lifecycle (Current)</text>
+<text x="20" y="56" class="t">Callback-free, polling-based Step Functions control flow with lock-based idempotency.</text>
+<g transform="translate(20,80)">
+  <text x="0" y="0" class="t">EventBridge</text><line x1="20" y1="10" x2="20" y2="780" class="lane"/>
+  <text x="180" y="0" class="t">15m SFN</text><line x1="200" y1="10" x2="200" y2="780" class="lane"/>
+  <text x="330" y="0" class="t">DynamoDB</text><line x1="350" y1="10" x2="350" y2="780" class="lane"/>
+  <text x="470" y="0" class="t">SageMaker Pipelines</text><line x1="520" y1="10" x2="520" y2="780" class="lane"/>
+  <text x="700" y="0" class="t">Publication SFN</text><line x1="740" y1="10" x2="740" y2="780" class="lane"/>
+  <text x="900" y="0" class="t">Monthly/Training/Backfill SFNs</text><line x1="1020" y1="10" x2="1020" y2="780" class="lane"/>
+
+  <line x1="20" y1="60" x2="200" y2="60" class="a"/><text x="50" y="52" class="lbl">Trigger 15m batch</text>
+  <line x1="200" y1="100" x2="350" y2="100" class="a"/><text x="210" y="92" class="lbl">PutItem lock</text>
+  <line x1="200" y1="140" x2="520" y2="140" class="a"/><text x="260" y="132" class="lbl">Start 15m streaming</text>
+  <line x1="200" y1="180" x2="520" y2="180" class="n"/><text x="260" y="172" class="lbl">Describe polling loop</text>
+  <line x1="200" y1="220" x2="520" y2="220" class="a"/><text x="260" y="212" class="lbl">Start inference</text>
+  <line x1="200" y1="260" x2="520" y2="260" class="n"/><text x="260" y="252" class="lbl">Describe polling loop</text>
+  <line x1="200" y1="300" x2="740" y2="300" class="a"/><text x="410" y="292" class="lbl">startExecution.sync publication</text>
+  <line x1="740" y1="340" x2="350" y2="340" class="a"/><text x="560" y="332" class="lbl">Conditional publication lock</text>
+  <line x1="740" y1="380" x2="520" y2="380" class="a"/><text x="600" y="372" class="lbl">Prediction join + publish + polling</text>
+  <line x1="740" y1="420" x2="350" y2="420" class="a"/><text x="560" y="412" class="lbl">Update outcome</text>
+  <line x1="200" y1="460" x2="350" y2="460" class="a"/><text x="210" y="452" class="lbl">Delete 15m lock</text>
+
+  <line x1="20" y1="540" x2="1020" y2="540" class="a"/><text x="420" y="532" class="lbl">Trigger monthly, training, and backfill workflows</text>
+  <line x1="1020" y1="580" x2="520" y2="580" class="a"/><text x="760" y="572" class="lbl">Monthly: inventory -> FG-B -> supplemental baseline</text>
+  <line x1="1020" y1="620" x2="520" y2="620" class="a"/><text x="760" y="612" class="lbl">Training: verifier -> IF training -> model lifecycle</text>
+  <line x1="1020" y1="660" x2="520" y2="660" class="n"/><text x="760" y="652" class="lbl">Verifier fail path: missing-feature creation (max 2 retries)</text>
+  <line x1="1020" y1="700" x2="520" y2="700" class="a"/><text x="760" y="692" class="lbl">Backfill: historical extractor + per-window processing</text>
+</g>
+</svg>

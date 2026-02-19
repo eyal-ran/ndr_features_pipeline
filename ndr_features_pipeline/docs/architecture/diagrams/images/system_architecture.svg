@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="820" viewBox="0 0 1400 820">
+<defs><marker id="a" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#1f2937"/></marker><style>.t{font:13px sans-serif;fill:#111827}.h{font:18px sans-serif;font-weight:700}.b{fill:#e5e7eb;stroke:#4b5563;stroke-width:1.3}.g{fill:none;stroke:#9ca3af;stroke-dasharray:5 4}</style></defs>
+<text x="20" y="30" class="h">NDR System Architecture (Current State)</text>
+<rect x="20" y="50" width="220" height="140" class="g"/><text x="30" y="72" class="t">Ingestion</text><rect x="35" y="90" width="190" height="34" class="b"/><text x="45" y="112" class="t">Upstream Producers</text><rect x="35" y="135" width="190" height="34" class="b"/><text x="45" y="157" class="t">EventBridge Rules</text>
+<rect x="270" y="50" width="260" height="260" class="g"/><text x="280" y="72" class="t">Step Functions</text>
+<rect x="285" y="90" width="230" height="30" class="b"/><text x="295" y="110" class="t">15m + Inference</text>
+<rect x="285" y="130" width="230" height="30" class="b"/><text x="295" y="150" class="t">Prediction Publication</text>
+<rect x="285" y="170" width="230" height="30" class="b"/><text x="295" y="190" class="t">Monthly Baselines</text>
+<rect x="285" y="210" width="230" height="30" class="b"/><text x="295" y="230" class="t">Training Orchestrator</text>
+<rect x="285" y="250" width="230" height="30" class="b"/><text x="295" y="270" class="t">Backfill + Reprocessing</text>
+<rect x="560" y="50" width="430" height="360" class="g"/><text x="570" y="72" class="t">SageMaker Pipelines</text>
+<rect x="575" y="90" width="400" height="30" class="b"/><text x="585" y="110" class="t">15m Streaming (Delta→FG-A→Pair-Counts→FG-C)</text>
+<rect x="575" y="130" width="400" height="30" class="b"/><text x="585" y="150" class="t">Inference + Prediction Join + Publish</text>
+<rect x="575" y="170" width="400" height="30" class="b"/><text x="585" y="190" class="t">Inventory + FG-B + Supplemental Baseline</text>
+<rect x="575" y="210" width="400" height="30" class="b"/><text x="585" y="230" class="t">Training Verifier + Missing Feature Creation</text>
+<rect x="575" y="250" width="400" height="30" class="b"/><text x="585" y="270" class="t">IF Training + Model Publish + Attributes + Deploy</text>
+<rect x="575" y="290" width="400" height="30" class="b"/><text x="585" y="310" class="t">Backfill Historical Extractor</text>
+<rect x="1020" y="50" width="360" height="270" class="g"/><text x="1030" y="72" class="t">S3 Data Plane</text>
+<rect x="1035" y="90" width="330" height="30" class="b"/><text x="1045" y="110" class="t">Parsed Inputs / Delta / FG-A / Pair / FG-C</text>
+<rect x="1035" y="130" width="330" height="30" class="b"/><text x="1045" y="150" class="t">FG-B Baselines + Inventory Snapshot</text>
+<rect x="1035" y="170" width="330" height="30" class="b"/><text x="1045" y="190" class="t">Predictions + Joined + Published Outputs</text>
+<rect x="1035" y="210" width="330" height="30" class="b"/><text x="1045" y="230" class="t">Training Artifacts + Backfill Windows</text>
+<rect x="1020" y="360" width="360" height="120" class="g"/><text x="1030" y="382" class="t">Consumers</text><rect x="1035" y="400" width="330" height="30" class="b"/><text x="1045" y="420" class="t">SOC / Security Analytics</text><rect x="1035" y="440" width="330" height="30" class="b"/><text x="1045" y="460" class="t">Model Monitoring + BI</text>
+<line x1="225" y1="152" x2="285" y2="105" stroke="#1f2937" stroke-width="2" marker-end="url(#a)"/><line x1="225" y1="152" x2="285" y2="185" stroke="#1f2937" stroke-width="2" marker-end="url(#a)"/><line x1="225" y1="152" x2="285" y2="225" stroke="#1f2937" stroke-width="2" marker-end="url(#a)"/><line x1="225" y1="152" x2="285" y2="265" stroke="#1f2937" stroke-width="2" marker-end="url(#a)"/>
+<line x1="515" y1="105" x2="575" y2="105" stroke="#1f2937" stroke-width="2" marker-end="url(#a)"/><line x1="515" y1="145" x2="575" y2="145" stroke="#1f2937" stroke-width="2" marker-end="url(#a)"/><line x1="515" y1="185" x2="575" y2="185" stroke="#1f2937" stroke-width="2" marker-end="url(#a)"/><line x1="515" y1="225" x2="575" y2="225" stroke="#1f2937" stroke-width="2" marker-end="url(#a)"/><line x1="515" y1="265" x2="575" y2="305" stroke="#1f2937" stroke-width="2" marker-end="url(#a)"/>
+<line x1="975" y1="105" x2="1035" y2="105" stroke="#1f2937" stroke-width="2" marker-end="url(#a)"/><line x1="975" y1="185" x2="1035" y2="145" stroke="#1f2937" stroke-width="2" marker-end="url(#a)"/><line x1="975" y1="145" x2="1035" y2="185" stroke="#1f2937" stroke-width="2" marker-end="url(#a)"/><line x1="975" y1="265" x2="1035" y2="225" stroke="#1f2937" stroke-width="2" marker-end="url(#a)"/>
+<line x1="1200" y1="240" x2="1200" y2="400" stroke="#1f2937" stroke-width="2" marker-end="url(#a)"/>
+</svg>

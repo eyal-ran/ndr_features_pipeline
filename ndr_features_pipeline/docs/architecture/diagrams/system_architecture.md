@@ -1,91 +1,92 @@
 # NDR System Architecture (Complete View)
 
-This diagram provides a complete architecture view across orchestration, processing, storage, model lifecycle, and eventing integrations.
+This diagram provides a current-state view across orchestration, processing, storage, configuration, and downstream consumption.
+
+![System architecture chart](images/system_architecture.svg)
 
 ```mermaid
 flowchart TB
-    subgraph Ingestion[Ingestion and Triggers]
+    subgraph Ingestion[Ingestion and Triggering]
         I1[Upstream Producers]
-        I2[EventBridge Rules<br/>schedules and domain events]
-        I3[SNS Topics<br/>optional fan-out]
-        I4[SQS Queues<br/>optional buffering]
+        I2[EventBridge Rules\nschedules + batch completion events]
+        I3[S3 Parsed Input Buckets]
     end
 
-    subgraph Orchestration[Workflow Orchestration]
-        O1[Step Functions<br/>15m Features + Inference]
-        O2[Step Functions<br/>Monthly FG-B Baselines]
-        O3[Step Functions<br/>Training Orchestrator]
-        O4[Step Functions<br/>Prediction Publication]
-        O5[Lambda Callbacks / Utility Lambdas]
-        O6[(DynamoDB Lock + Config Tables)]
+    subgraph Orchestration[Step Functions Orchestration]
+        O1[15m Features + Inference]
+        O2[Monthly FG-B Baselines]
+        O3[Training Orchestrator]
+        O4[Prediction Publication]
+        O5[Backfill + Reprocessing]
+        O6[(DynamoDB lock/config tables)]
     end
 
-    subgraph Processing[SageMaker Pipelines and Jobs]
-        P1[15m Streaming Pipeline<br/>Delta -> FG-A -> Pair-Counts -> FG-C]
-        P2[FG-B Baseline Pipeline]
-        P3[Machine Inventory Unload Pipeline]
-        P4[Inference Predictions Pipeline]
-        P5[Prediction Feature Join Pipeline]
-        P6[IF Training Pipeline]
-        P7[SageMaker Processing<br/>PySpark jobs]
+    subgraph Pipelines[SageMaker Pipelines]
+        P1[15m Streaming\nDelta -> FG-A -> Pair-Counts -> FG-C]
+        P2[Inference Predictions]
+        P3[Machine Inventory Unload]
+        P4[FG-B Baseline]
+        P5[Supplemental Baseline]
+        P6[Prediction Feature Join]
+        P7[Prediction Publish]
+        P8[Training Data Verifier]
+        P9[Missing Feature Creation]
+        P10[IF Training]
+        P11[Model Publish]
+        P12[Model Attributes]
+        P13[Model Deploy]
+        P14[Backfill Historical Extractor]
     end
 
-    subgraph DataPlane[S3 and Feature Data]
-        D1[(S3 Raw/Parsed Inputs)]
-        D2[(S3 Delta)]
-        D3[(S3 FG-A)]
-        D4[(S3 Pair-Counts)]
-        D5[(S3 FG-B Baselines)]
-        D6[(S3 FG-C)]
-        D7[(S3 Predictions)]
-        D8[(S3 Joined/Published Outputs)]
-        D9[(S3 Training Artifacts + Reports)]
-        D10[(S3 Machine Inventory Snapshot)]
-    end
-
-    subgraph MLOps[SageMaker MLOps Integrations]
-        M1[SageMaker Feature Store<br/>optional mirror and publish]
-        M2[SageMaker Experiments<br/>run tracking]
-        M3[SageMaker Model Registry<br/>approval and versions]
-        M4[SageMaker Endpoint<br/>optional online inference target]
+    subgraph Storage[S3 Data Plane]
+        D1[(Parsed Inputs)]
+        D2[(Delta)]
+        D3[(FG-A)]
+        D4[(Pair-Counts)]
+        D5[(FG-B Baselines)]
+        D6[(FG-C)]
+        D7[(Predictions)]
+        D8[(Joined Prediction Outputs)]
+        D9[(Published Outputs)]
+        D10[(Training Artifacts)]
+        D11[(Machine Inventory Snapshot)]
+        D12[(Backfill Windows)]
     end
 
     subgraph Consumers[Downstream Consumers]
         C1[Security Analytics / SOC]
         C2[Model Monitoring + BI]
-        C3[External Integration Services]
+        C3[Ops / Reconciliation Event Consumers]
     end
 
     I1 --> I2
-    I2 --> I3
-    I3 --> I4
     I2 --> O1
     I2 --> O2
     I2 --> O3
-    I2 --> O4
-    I4 --> O1
+    I2 --> O5
+    I2 --> C3
+    I3 --> D1
 
-    O1 --> O5
-    O2 --> O5
-    O3 --> O5
-    O4 --> O5
     O1 <--> O6
     O2 <--> O6
     O3 <--> O6
+    O4 <--> O6
 
     O1 --> P1
-    O1 --> P4
+    O1 --> P2
+    O1 --> O4
     O2 --> P3
-    O2 --> P2
-    O3 --> P6
-    O4 --> P5
-
-    P1 --> P7
-    P2 --> P7
-    P3 --> P7
-    P4 --> P7
-    P5 --> P7
-    P6 --> P7
+    O2 --> P4
+    O2 --> P5
+    O3 --> P8
+    O3 --> P10
+    O3 --> P11
+    O3 --> P12
+    O3 --> P13
+    O4 --> P6
+    O4 --> P7
+    O5 --> P14
+    O5 --> O1
 
     D1 --> P1
     P1 --> D2
@@ -93,33 +94,33 @@ flowchart TB
     P1 --> D4
     P1 --> D6
 
-    D10 --> P2
-    D3 --> P2
-    D4 --> P2
-    P2 --> D5
-    P3 --> D10
+    P3 --> D11
+    D11 --> P4
+    D3 --> P4
+    D4 --> P4
+    P4 --> D5
+    D5 --> P5
 
-    D6 --> P4
-    P4 --> D7
-    D7 --> P5
-    P5 --> D8
+    D6 --> P2
+    P2 --> D7
+    D7 --> P6
+    P6 --> D8
+    D8 --> P7
+    P7 --> D9
 
-    D3 --> P6
-    D6 --> P6
-    P6 --> D9
+    P8 -. failure remediation path .-> P9
+    P9 --> P8
+    P10 --> D10
 
-    D3 -. optional publish .-> M1
-    D6 -. optional publish .-> M1
-    P6 --> M2
-    P6 --> M3
-    M3 -. approved deployment .-> M4
+    P14 --> D12
+    D12 --> O5
 
-    D8 --> C1
-    D9 --> C2
-    I2 --> C3
+    D9 --> C1
+    D10 --> C2
 ```
 
 ## Scope notes
 
-- **Implemented core path in repository:** Step Functions + SageMaker pipelines/jobs + S3 datasets + DynamoDB-backed config/locking + EventBridge signaling.
-- **Optional/adjacent integrations shown for target-state completeness:** SNS/SQS fan-out buffering, SageMaker Feature Store publication, Model Registry + Endpoint deployment patterns.
+- Focuses on implemented repository architecture: EventBridge + Step Functions + SageMaker pipelines + DynamoDB lock/config + S3 data products.
+- Reflects pipeline-native replacements in orchestration (supplemental baseline, training verifier/remediation, and model lifecycle stages).
+- Omits speculative optional services to keep this view aligned with active definitions.

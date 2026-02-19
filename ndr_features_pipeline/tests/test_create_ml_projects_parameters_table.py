@@ -50,6 +50,13 @@ def test_bootstrap_items_include_all_runtime_jobs():
         "pipeline_prediction_feature_join",
         "pipeline_if_training",
         "pipeline_backfill_historical_extractor",
+        "pipeline_supplemental_baseline",
+        "pipeline_prediction_publish",
+        "pipeline_training_data_verifier",
+        "pipeline_missing_feature_creation",
+        "pipeline_model_publish",
+        "pipeline_model_attributes",
+        "pipeline_model_deploy",
     }
 
     assert set(by_job.keys()) == expected_jobs
@@ -128,3 +135,31 @@ def test_delta_builder_seed_has_field_mapping_contract():
         "source_ip", "destination_ip", "source_port", "destination_port",
         "source_bytes", "destination_bytes", "event_start", "event_end"
     }
+
+
+
+def test_item19_pipeline_seed_items_present_with_expected_runtime_params():
+    items = _build_bootstrap_items("ndr-prod", "v1", "ndr-team")
+    by_job = _items_by_job(items)
+
+    publish_spec = by_job["pipeline_prediction_publish"]["spec"]
+    assert publish_spec["required_runtime_params"] == [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "MiniBatchId",
+        "BatchStartTsIso",
+        "BatchEndTsIso",
+    ]
+
+    verifier_spec = by_job["pipeline_training_data_verifier"]["spec"]
+    assert verifier_spec["required_runtime_params"] == [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "TrainingStartTs",
+        "TrainingEndTs",
+        "EvalStartTs",
+        "EvalEndTs",
+    ]
+
+    deploy_spec = by_job["pipeline_model_deploy"]["spec"]
+    assert "ModelDeployStep" in deploy_spec["scripts"]["steps"]

@@ -1,192 +1,61 @@
 {
-  "Comment": "NDR training orchestrator with model publication and approval gate (JSONata)",
+  "Comment": "NDR training orchestrator with verifier/remediation loop and pipeline-native publication",
   "QueryLanguage": "JSONata",
   "StartAt": "NormalizeIncomingMessage",
   "States": {
-    "NormalizeIncomingMessage": {
-      "Type": "Pass",
-      "Assign": {
-        "raw_message": "{% $type($states.input)='string' ? $states.input : ($exists($states.input.message_body) ? $states.input.message_body : ($exists($states.input.Records[0].body) ? $states.input.Records[0].body : ($exists($states.input.Records[0].Sns.Message) ? $states.input.Records[0].Sns.Message : ''))) %}"
-      },
-      "Next": "ParseIncomingProjectContext"
-    },
-    "ParseIncomingProjectContext": {
-      "Type": "Pass",
-      "Assign": {
-        "parsed_project_name": "{% $contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : '' %}",
-        "parsed_feature_spec_version": "{% $contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : '' %}"
-      },
-      "Next": "LoadProjectParametersFromDynamo"
-    },
-    "LoadProjectParametersFromDynamo": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
-      "Arguments": {
-        "TableName": "${ProjectParametersTableName}",
-        "Key": {
-          "project_name": {
-            "S": "{% $exists($states.input.project_name) ? $states.input.project_name : $parsed_project_name %}"
-          },
-          "job_name": {
-            "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
-          }
-        },
-        "ConsistentRead": true
-      },
-      "Assign": {
-        "project_parameters_spec": "{% $exists($states.result.Item.spec.M) ? $states.result.Item.spec.M : {} %}",
-        "project_defaults": "{% $exists($states.result.Item.spec.M.defaults.M) ? $states.result.Item.spec.M.defaults.M : {} %}"
-      },
-      "Next": "ResolvePipelineRuntimeParams"
-    },
+    "NormalizeIncomingMessage": {"Type": "Pass", "Assign": {"raw_message": "{% $type($states.input)='string' ? $states.input : ($exists($states.input.message_body) ? $states.input.message_body : ($exists($states.input.Records[0].body) ? $states.input.Records[0].body : ($exists($states.input.Records[0].Sns.Message) ? $states.input.Records[0].Sns.Message : ''))) %}"}, "Next": "ParseIncomingProjectContext"},
+    "ParseIncomingProjectContext": {"Type": "Pass", "Assign": {"parsed_project_name": "{% $contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : '' %}", "parsed_feature_spec_version": "{% $contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : '' %}"}, "Next": "LoadProjectParametersFromDynamo"},
+    "LoadProjectParametersFromDynamo": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem", "Arguments": {"TableName": "${ProjectParametersTableName}", "Key": {"project_name": {"S": "{% $exists($states.input.project_name) ? $states.input.project_name : $parsed_project_name %}"}, "job_name": {"S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"}}, "ConsistentRead": true}, "Assign": {"project_defaults": "{% $exists($states.result.Item.spec.M.defaults.M) ? $states.result.Item.spec.M.defaults.M : {} %}"}, "Next": "ResolvePipelineRuntimeParams"},
     "ResolvePipelineRuntimeParams": {
       "Type": "Pass",
       "Assign": {
         "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : ($exists($project_defaults.ProjectName.S) ? $project_defaults.ProjectName.S : '')) %}",
         "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : ($exists($project_defaults.FeatureSpecVersion.S) ? $project_defaults.FeatureSpecVersion.S : '${DefaultFeatureSpecVersion}')) %}",
         "run_id": "{% $exists($states.input.run_id) ? $states.input.run_id : ($contains($raw_message,'run_id=') ? $split($split($raw_message,'run_id=')[1],';')[0] : ($exists($project_defaults.RunId.S) ? $project_defaults.RunId.S : '')) %}",
-        "execution_ts_iso": "{% $exists($states.input.execution_ts_iso) ? $states.input.execution_ts_iso : ($contains($raw_message,'execution_ts_iso=') ? $split($split($raw_message,'execution_ts_iso=')[1],';')[0] : ($exists($project_defaults.ExecutionTsIso.S) ? $project_defaults.ExecutionTsIso.S : $now())) %}"
+        "execution_ts_iso": "{% $exists($states.input.execution_ts_iso) ? $states.input.execution_ts_iso : ($exists($project_defaults.ExecutionTsIso.S) ? $project_defaults.ExecutionTsIso.S : $now()) %}",
+        "training_start_ts": "{% $exists($states.input.training_start_ts) ? $states.input.training_start_ts : ($exists($project_defaults.TrainingStartTs.S) ? $project_defaults.TrainingStartTs.S : '') %}",
+        "training_end_ts": "{% $exists($states.input.training_end_ts) ? $states.input.training_end_ts : ($exists($project_defaults.TrainingEndTs.S) ? $project_defaults.TrainingEndTs.S : '') %}",
+        "eval_start_ts": "{% $exists($states.input.eval_start_ts) ? $states.input.eval_start_ts : ($exists($project_defaults.EvalStartTs.S) ? $project_defaults.EvalStartTs.S : '') %}",
+        "eval_end_ts": "{% $exists($states.input.eval_end_ts) ? $states.input.eval_end_ts : ($exists($project_defaults.EvalEndTs.S) ? $project_defaults.EvalEndTs.S : '') %}",
+        "missing_windows_override": "{% $exists($states.input.missing_windows_override) ? $states.input.missing_windows_override : [] %}",
+        "remediation_attempt": 0
       },
-      "Next": "StartTrainingPipeline"
+      "Next": "StartTrainingDataVerifier"
     },
-    "StartTrainingPipeline": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
-      "Arguments": {
-        "PipelineName": "${PipelineNameTraining}",
-        "PipelineParameters": [
-          {
-            "Name": "ProjectName",
-            "Value": "{% $project_name %}"
-          },
-          {
-            "Name": "FeatureSpecVersion",
-            "Value": "{% $feature_spec_version %}"
-          },
-          {
-            "Name": "RunId",
-            "Value": "{% $run_id %}"
-          },
-          {
-            "Name": "ExecutionTsIso",
-            "Value": "{% $execution_ts_iso %}"
-          }
-        ]
-      },
-      "Assign": {
-        "training_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}"
-      },
-      "Next": "WaitForTrainingCompletionEvent"
-    },
-    "WaitForTrainingCompletionEvent": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
-      "Arguments": {
-        "FunctionName": "${PipelineCompletionCallbackLambdaArn}",
-        "Payload": {
-          "taskToken": "{% $states.context.Task.Token %}",
-          "expected_pipeline_execution_arn": "{% $training_pipeline_execution_arn %}",
-          "success_statuses": [
-            "Succeeded"
-          ],
-          "failure_statuses": [
-            "Failed",
-            "Stopped"
-          ]
-        }
-      },
-      "Next": "PublishApprovedModelArtifacts"
-    },
-    "PublishApprovedModelArtifacts": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Arguments": {
-        "FunctionName": "${ModelPublishLambdaArn}",
-        "Payload": {
-          "project_name": "{% $project_name %}",
-          "feature_spec_version": "{% $feature_spec_version %}",
-          "run_id": "{% $run_id %}",
-          "training_pipeline_execution_arn": "{% $training_pipeline_execution_arn %}",
-          "approved_model_prefix": "${ApprovedModelS3Prefix}"
-        }
-      },
-      "Assign": {
-        "model_registry_record": "{% $states.result.Payload.model_registry_record %}",
-        "deployment_required": "{% $states.result.Payload.deployment_required %}"
-      },
-      "Next": "RegisterModelAttributesMap"
-    },
-    "RegisterModelAttributesMap": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Arguments": {
-        "FunctionName": "${ModelAttributesRegistryLambdaArn}",
-        "Payload": {
-          "model_registry_record": "{% $model_registry_record %}",
-          "attribute_schema_version": "v1"
-        }
-      },
-      "Assign": {
-        "attributes_registration_result": "{% $states.result.Payload %}"
-      },
-      "Next": "DeploymentRequiredChoice"
-    },
-    "DeploymentRequiredChoice": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Condition": "{% $deployment_required = true %}",
-          "Next": "RequireHumanApproval"
-        }
-      ],
-      "Default": "NoDeploymentNeeded"
-    },
-    "RequireHumanApproval": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
-      "Arguments": {
-        "FunctionName": "${HumanApprovalLambdaArn}",
-        "Payload": {
-          "taskToken": "{% $states.context.Task.Token %}",
-          "candidate_model": "{% $model_registry_record.model_id %}",
-          "currently_deployed_model": "{% $model_registry_record.current_model_id %}"
-        }
-      },
-      "Assign": {
-        "approval_status": "{% $states.result.Payload.approval_status %}"
-      },
-      "Next": "ApprovalDecision"
-    },
-    "ApprovalDecision": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Condition": "{% $approval_status = 'APPROVED' %}",
-          "Next": "DeployApprovedModel"
-        }
-      ],
-      "Default": "HoldApprovedModel"
-    },
-    "DeployApprovedModel": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Arguments": {
-        "FunctionName": "${ModelDeployLambdaArn}",
-        "Payload": {
-          "model_registry_record": "{% $model_registry_record %}",
-          "attributes_registration_result": "{% $attributes_registration_result %}"
-        }
-      },
-      "Next": "Success"
-    },
-    "NoDeploymentNeeded": {
-      "Type": "Succeed"
-    },
-    "HoldApprovedModel": {
-      "Type": "Succeed"
-    },
-    "Success": {
-      "Type": "Succeed"
-    }
+    "StartTrainingDataVerifier": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution", "Arguments": {"PipelineName": "${PipelineNameTrainingDataVerifier}", "PipelineParameters": [{"Name": "ProjectName", "Value": "{% $project_name %}"}, {"Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}"}, {"Name": "TrainingStartTs", "Value": "{% $training_start_ts %}"}, {"Name": "TrainingEndTs", "Value": "{% $training_end_ts %}"}, {"Name": "EvalStartTs", "Value": "{% $eval_start_ts %}"}, {"Name": "EvalEndTs", "Value": "{% $eval_end_ts %}"}]}, "Assign": {"verifier_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}", "verifier_poll_attempt": 0}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 4, "BackoffRate": 2.0}], "Next": "DescribeTrainingDataVerifier"},
+    "DescribeTrainingDataVerifier": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution", "Arguments": {"PipelineExecutionArn": "{% $verifier_pipeline_execution_arn %}"}, "Assign": {"verifier_status": "{% $states.result.PipelineExecutionStatus %}"}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 6, "BackoffRate": 2.0}], "Next": "TrainingDataVerifierChoice"},
+    "TrainingDataVerifierChoice": {"Type": "Choice", "Choices": [{"Condition": "{% $verifier_status = 'Succeeded' %}", "Next": "StartTrainingPipeline"}, {"Condition": "{% ($verifier_status = 'Executing' or $verifier_status = 'Stopping') and $verifier_poll_attempt < 120 %}", "Next": "WaitBeforeVerifierDescribe"}], "Default": "VerifierFailedRetryGate"},
+    "WaitBeforeVerifierDescribe": {"Type": "Wait", "Seconds": 30, "Next": "IncrementVerifierPollAttempt"},
+    "IncrementVerifierPollAttempt": {"Type": "Pass", "Assign": {"verifier_poll_attempt": "{% $verifier_poll_attempt + 1 %}"}, "Next": "DescribeTrainingDataVerifier"},
+    "VerifierFailedRetryGate": {"Type": "Choice", "Choices": [{"Condition": "{% $remediation_attempt < 2 %}", "Next": "StartMissingFeatureCreationPipeline"}], "Default": "TrainingVerifierRetryExhausted"},
+    "StartMissingFeatureCreationPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution", "Arguments": {"PipelineName": "${PipelineNameMissingFeatureCreation}", "PipelineParameters": [{"Name": "ProjectName", "Value": "{% $project_name %}"}, {"Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}"}, {"Name": "TrainingStartTs", "Value": "{% $training_start_ts %}"}, {"Name": "TrainingEndTs", "Value": "{% $training_end_ts %}"}, {"Name": "EvalStartTs", "Value": "{% $eval_start_ts %}"}, {"Name": "EvalEndTs", "Value": "{% $eval_end_ts %}"}, {"Name": "MissingWindowsOverride", "Value": "{% $string($missing_windows_override) %}"}]}, "Assign": {"missing_feature_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}", "missing_feature_poll_attempt": 0}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 4, "BackoffRate": 2.0}], "Next": "DescribeMissingFeatureCreationPipeline"},
+    "DescribeMissingFeatureCreationPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution", "Arguments": {"PipelineExecutionArn": "{% $missing_feature_pipeline_execution_arn %}"}, "Assign": {"missing_feature_status": "{% $states.result.PipelineExecutionStatus %}"}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 6, "BackoffRate": 2.0}], "Next": "MissingFeatureCreationChoice"},
+    "MissingFeatureCreationChoice": {"Type": "Choice", "Choices": [{"Condition": "{% $missing_feature_status = 'Succeeded' %}", "Next": "IncrementRemediationAttempt"}, {"Condition": "{% ($missing_feature_status = 'Executing' or $missing_feature_status = 'Stopping') and $missing_feature_poll_attempt < 120 %}", "Next": "WaitBeforeMissingFeatureDescribe"}], "Default": "TrainingVerifierRetryExhausted"},
+    "WaitBeforeMissingFeatureDescribe": {"Type": "Wait", "Seconds": 30, "Next": "IncrementMissingFeaturePollAttempt"},
+    "IncrementMissingFeaturePollAttempt": {"Type": "Pass", "Assign": {"missing_feature_poll_attempt": "{% $missing_feature_poll_attempt + 1 %}"}, "Next": "DescribeMissingFeatureCreationPipeline"},
+    "IncrementRemediationAttempt": {"Type": "Pass", "Assign": {"remediation_attempt": "{% $remediation_attempt + 1 %}"}, "Next": "StartTrainingDataVerifier"},
+    "StartTrainingPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution", "Arguments": {"PipelineName": "${PipelineNameTraining}", "PipelineParameters": [{"Name": "ProjectName", "Value": "{% $project_name %}"}, {"Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}"}, {"Name": "RunId", "Value": "{% $run_id %}"}, {"Name": "ExecutionTsIso", "Value": "{% $execution_ts_iso %}"}]}, "Assign": {"training_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}", "training_poll_attempt": 0}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 4, "BackoffRate": 2.0}], "Next": "DescribeTrainingPipeline"},
+    "DescribeTrainingPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution", "Arguments": {"PipelineExecutionArn": "{% $training_pipeline_execution_arn %}"}, "Assign": {"training_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 6, "BackoffRate": 2.0}], "Next": "TrainingPipelineChoice"},
+    "TrainingPipelineChoice": {"Type": "Choice", "Choices": [{"Condition": "{% $training_pipeline_status = 'Succeeded' %}", "Next": "StartModelPublishPipeline"}, {"Condition": "{% ($training_pipeline_status = 'Executing' or $training_pipeline_status = 'Stopping') and $training_poll_attempt < 120 %}", "Next": "WaitBeforeTrainingDescribe"}], "Default": "WorkflowFailed"},
+    "WaitBeforeTrainingDescribe": {"Type": "Wait", "Seconds": 30, "Next": "IncrementTrainingPollAttempt"},
+    "IncrementTrainingPollAttempt": {"Type": "Pass", "Assign": {"training_poll_attempt": "{% $training_poll_attempt + 1 %}"}, "Next": "DescribeTrainingPipeline"},
+    "StartModelPublishPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution", "Arguments": {"PipelineName": "${PipelineNameModelPublish}", "PipelineParameters": [{"Name": "ProjectName", "Value": "{% $project_name %}"}, {"Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}"}, {"Name": "RunId", "Value": "{% $run_id %}"}]}, "Assign": {"model_publish_execution_arn": "{% $states.result.PipelineExecutionArn %}", "model_publish_poll_attempt": 0}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 4, "BackoffRate": 2.0}], "Next": "DescribeModelPublishPipeline"},
+    "DescribeModelPublishPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution", "Arguments": {"PipelineExecutionArn": "{% $model_publish_execution_arn %}"}, "Assign": {"model_publish_status": "{% $states.result.PipelineExecutionStatus %}"}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 6, "BackoffRate": 2.0}], "Next": "ModelPublishChoice"},
+    "ModelPublishChoice": {"Type": "Choice", "Choices": [{"Condition": "{% $model_publish_status = 'Succeeded' %}", "Next": "StartModelAttributesPipeline"}, {"Condition": "{% ($model_publish_status = 'Executing' or $model_publish_status = 'Stopping') and $model_publish_poll_attempt < 120 %}", "Next": "WaitBeforeModelPublishDescribe"}], "Default": "WorkflowFailed"},
+    "WaitBeforeModelPublishDescribe": {"Type": "Wait", "Seconds": 30, "Next": "IncrementModelPublishPollAttempt"},
+    "IncrementModelPublishPollAttempt": {"Type": "Pass", "Assign": {"model_publish_poll_attempt": "{% $model_publish_poll_attempt + 1 %}"}, "Next": "DescribeModelPublishPipeline"},
+    "StartModelAttributesPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution", "Arguments": {"PipelineName": "${PipelineNameModelAttributes}", "PipelineParameters": [{"Name": "ProjectName", "Value": "{% $project_name %}"}, {"Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}"}, {"Name": "RunId", "Value": "{% $run_id %}"}]}, "Assign": {"model_attributes_execution_arn": "{% $states.result.PipelineExecutionArn %}", "model_attributes_poll_attempt": 0}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 4, "BackoffRate": 2.0}], "Next": "DescribeModelAttributesPipeline"},
+    "DescribeModelAttributesPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution", "Arguments": {"PipelineExecutionArn": "{% $model_attributes_execution_arn %}"}, "Assign": {"model_attributes_status": "{% $states.result.PipelineExecutionStatus %}"}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 6, "BackoffRate": 2.0}], "Next": "ModelAttributesChoice"},
+    "ModelAttributesChoice": {"Type": "Choice", "Choices": [{"Condition": "{% $model_attributes_status = 'Succeeded' %}", "Next": "StartModelDeployPipeline"}, {"Condition": "{% ($model_attributes_status = 'Executing' or $model_attributes_status = 'Stopping') and $model_attributes_poll_attempt < 120 %}", "Next": "WaitBeforeModelAttributesDescribe"}], "Default": "WorkflowFailed"},
+    "WaitBeforeModelAttributesDescribe": {"Type": "Wait", "Seconds": 30, "Next": "IncrementModelAttributesPollAttempt"},
+    "IncrementModelAttributesPollAttempt": {"Type": "Pass", "Assign": {"model_attributes_poll_attempt": "{% $model_attributes_poll_attempt + 1 %}"}, "Next": "DescribeModelAttributesPipeline"},
+    "StartModelDeployPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution", "Arguments": {"PipelineName": "${PipelineNameModelDeploy}", "PipelineParameters": [{"Name": "ProjectName", "Value": "{% $project_name %}"}, {"Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}"}, {"Name": "RunId", "Value": "{% $run_id %}"}]}, "Assign": {"model_deploy_execution_arn": "{% $states.result.PipelineExecutionArn %}", "model_deploy_poll_attempt": 0}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 4, "BackoffRate": 2.0}], "Next": "DescribeModelDeployPipeline"},
+    "DescribeModelDeployPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution", "Arguments": {"PipelineExecutionArn": "{% $model_deploy_execution_arn %}"}, "Assign": {"model_deploy_status": "{% $states.result.PipelineExecutionStatus %}"}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 6, "BackoffRate": 2.0}], "Next": "ModelDeployChoice"},
+    "ModelDeployChoice": {"Type": "Choice", "Choices": [{"Condition": "{% $model_deploy_status = 'Succeeded' %}", "Next": "Success"}, {"Condition": "{% ($model_deploy_status = 'Executing' or $model_deploy_status = 'Stopping') and $model_deploy_poll_attempt < 120 %}", "Next": "WaitBeforeModelDeployDescribe"}], "Default": "WorkflowFailed"},
+    "WaitBeforeModelDeployDescribe": {"Type": "Wait", "Seconds": 30, "Next": "IncrementModelDeployPollAttempt"},
+    "IncrementModelDeployPollAttempt": {"Type": "Pass", "Assign": {"model_deploy_poll_attempt": "{% $model_deploy_poll_attempt + 1 %}"}, "Next": "DescribeModelDeployPipeline"},
+    "TrainingVerifierRetryExhausted": {"Type": "Fail", "Error": "TrainingDataVerifierRetryExhausted", "Cause": "Feature coverage verification/remediation exceeded maximum retry budget of 2"},
+    "WorkflowFailed": {"Type": "Fail", "Error": "NdrTrainingOrchestrationFailed", "Cause": "Training orchestration failed"},
+    "Success": {"Type": "Succeed"}
   }
 }

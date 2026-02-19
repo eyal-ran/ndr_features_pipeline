@@ -1,44 +1,11 @@
 {
-  "Comment": "NDR prediction join/publication orchestrator (JSONata)",
+  "Comment": "NDR prediction publication orchestrator (idempotent, pipeline-native)",
   "QueryLanguage": "JSONata",
   "StartAt": "NormalizeIncomingMessage",
   "States": {
-    "NormalizeIncomingMessage": {
-      "Type": "Pass",
-      "Assign": {
-        "raw_message": "{% $type($states.input)='string' ? $states.input : ($exists($states.input.message_body) ? $states.input.message_body : ($exists($states.input.Records[0].body) ? $states.input.Records[0].body : ($exists($states.input.Records[0].Sns.Message) ? $states.input.Records[0].Sns.Message : ''))) %}"
-      },
-      "Next": "ParseIncomingProjectContext"
-    },
-    "ParseIncomingProjectContext": {
-      "Type": "Pass",
-      "Assign": {
-        "parsed_project_name": "{% $contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : '' %}",
-        "parsed_feature_spec_version": "{% $contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : '' %}"
-      },
-      "Next": "LoadProjectParametersFromDynamo"
-    },
-    "LoadProjectParametersFromDynamo": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
-      "Arguments": {
-        "TableName": "${ProjectParametersTableName}",
-        "Key": {
-          "project_name": {
-            "S": "{% $exists($states.input.project_name) ? $states.input.project_name : $parsed_project_name %}"
-          },
-          "job_name": {
-            "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
-          }
-        },
-        "ConsistentRead": true
-      },
-      "Assign": {
-        "project_parameters_spec": "{% $exists($states.result.Item.spec.M) ? $states.result.Item.spec.M : {} %}",
-        "project_defaults": "{% $exists($states.result.Item.spec.M.defaults.M) ? $states.result.Item.spec.M.defaults.M : {} %}"
-      },
-      "Next": "ResolvePipelineRuntimeParams"
-    },
+    "NormalizeIncomingMessage": {"Type": "Pass", "Assign": {"raw_message": "{% $type($states.input)='string' ? $states.input : ($exists($states.input.message_body) ? $states.input.message_body : ($exists($states.input.Records[0].body) ? $states.input.Records[0].body : ($exists($states.input.Records[0].Sns.Message) ? $states.input.Records[0].Sns.Message : ''))) %}"}, "Next": "ParseIncomingProjectContext"},
+    "ParseIncomingProjectContext": {"Type": "Pass", "Assign": {"parsed_project_name": "{% $contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : '' %}", "parsed_feature_spec_version": "{% $contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : '' %}"}, "Next": "LoadProjectParametersFromDynamo"},
+    "LoadProjectParametersFromDynamo": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem", "Arguments": {"TableName": "${ProjectParametersTableName}", "Key": {"project_name": {"S": "{% $exists($states.input.project_name) ? $states.input.project_name : $parsed_project_name %}"}, "job_name": {"S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"}}, "ConsistentRead": true}, "Assign": {"project_defaults": "{% $exists($states.result.Item.spec.M.defaults.M) ? $states.result.Item.spec.M.defaults.M : {} %}"}, "Next": "ResolvePipelineRuntimeParams"},
     "ResolvePipelineRuntimeParams": {
       "Type": "Pass",
       "Assign": {
@@ -47,93 +14,41 @@
         "mini_batch_id": "{% $exists($states.input.mini_batch_id) ? $states.input.mini_batch_id : ($contains($raw_message,'mini_batch_id=') ? $split($split($raw_message,'mini_batch_id=')[1],';')[0] : ($exists($project_defaults.MiniBatchId.S) ? $project_defaults.MiniBatchId.S : '')) %}",
         "batch_start_ts_iso": "{% $exists($states.input.batch_start_ts_iso) ? $states.input.batch_start_ts_iso : ($contains($raw_message,'batch_start_ts_iso=') ? $split($split($raw_message,'batch_start_ts_iso=')[1],';')[0] : ($exists($project_defaults.BatchStartTsIso.S) ? $project_defaults.BatchStartTsIso.S : '')) %}",
         "batch_end_ts_iso": "{% $exists($states.input.batch_end_ts_iso) ? $states.input.batch_end_ts_iso : ($contains($raw_message,'batch_end_ts_iso=') ? $split($split($raw_message,'batch_end_ts_iso=')[1],';')[0] : ($exists($project_defaults.BatchEndTsIso.S) ? $project_defaults.BatchEndTsIso.S : '')) %}",
-        "targets": "{% $exists($states.input.targets) ? $states.input.targets : ['redshift','iceberg'] %}"
+        "lock_ttl_epoch": "{% $exists($states.input.lock_ttl_epoch) ? $states.input.lock_ttl_epoch : ($exists($project_defaults.LockTtlEpoch.N) ? $number($project_defaults.LockTtlEpoch.N) : 1893456000) %}",
+        "publication_identity": "{% $project_name & '#' & $feature_spec_version & '#' & $mini_batch_id & '#' & $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"
       },
+      "Next": "AcquirePublicationLock"
+    },
+    "AcquirePublicationLock": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${PublicationLockTableName}",
+        "Item": {
+          "pk": {"S": "{% $publication_identity %}"},
+          "sk": {"S": "PUBLICATION"},
+          "state": {"S": "IN_PROGRESS"},
+          "ttl_epoch": {"N": "{% $string($lock_ttl_epoch) %}"}
+        },
+        "ConditionExpression": "attribute_not_exists(pk)"
+      },
+      "Catch": [{"ErrorEquals": ["DynamoDB.ConditionalCheckFailedException"], "Next": "DuplicatePublicationSuppressed"}],
       "Next": "StartPredictionJoinPipeline"
     },
-    "StartPredictionJoinPipeline": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
-      "Arguments": {
-        "PipelineName": "${PipelineNamePredictionJoin}",
-        "PipelineParameters": [
-          {
-            "Name": "ProjectName",
-            "Value": "{% $project_name %}"
-          },
-          {
-            "Name": "FeatureSpecVersion",
-            "Value": "{% $feature_spec_version %}"
-          },
-          {
-            "Name": "MiniBatchId",
-            "Value": "{% $mini_batch_id %}"
-          },
-          {
-            "Name": "BatchStartTsIso",
-            "Value": "{% $batch_start_ts_iso %}"
-          },
-          {
-            "Name": "BatchEndTsIso",
-            "Value": "{% $batch_end_ts_iso %}"
-          }
-        ]
-      },
-      "Assign": {
-        "prediction_join_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}"
-      },
-      "Next": "WaitForJoinCompletionEvent"
-    },
-    "WaitForJoinCompletionEvent": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
-      "Arguments": {
-        "FunctionName": "${PipelineCompletionCallbackLambdaArn}",
-        "Payload": {
-          "taskToken": "{% $states.context.Task.Token %}",
-          "expected_pipeline_execution_arn": "{% $prediction_join_pipeline_execution_arn %}",
-          "success_statuses": [
-            "Succeeded"
-          ],
-          "failure_statuses": [
-            "Failed",
-            "Stopped"
-          ]
-        }
-      },
-      "Next": "PublishToTargets"
-    },
-    "PublishToTargets": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Arguments": {
-        "FunctionName": "${PublishJoinedPredictionsLambdaArn}",
-        "Payload": {
-          "project_name": "{% $project_name %}",
-          "feature_spec_version": "{% $feature_spec_version %}",
-          "mini_batch_id": "{% $mini_batch_id %}",
-          "targets": "{% $targets %}"
-        }
-      },
-      "Assign": {
-        "publication_result": "{% $states.result.Payload %}"
-      },
-      "Next": "EmitPublicationEvent"
-    },
-    "EmitPublicationEvent": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::events:putEvents",
-      "Arguments": {
-        "Entries": [
-          {
-            "Source": "ndr.orchestration",
-            "DetailType": "NdrPredictionPublicationCompleted",
-            "EventBusName": "${EventBusName}",
-            "Detail": "{% $string($publication_result) %}"
-          }
-        ]
-      },
-      "End": true
-    }
+    "StartPredictionJoinPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution", "Arguments": {"PipelineName": "${PipelineNamePredictionJoin}", "PipelineParameters": [{"Name": "ProjectName", "Value": "{% $project_name %}"}, {"Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}"}, {"Name": "MiniBatchId", "Value": "{% $mini_batch_id %}"}, {"Name": "BatchStartTsIso", "Value": "{% $batch_start_ts_iso %}"}, {"Name": "BatchEndTsIso", "Value": "{% $batch_end_ts_iso %}"}]}, "Assign": {"prediction_join_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}", "join_poll_attempt": 0}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 4, "BackoffRate": 2.0}], "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "MarkPublicationFailed"}], "Next": "DescribeJoinPipeline"},
+    "DescribeJoinPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution", "Arguments": {"PipelineExecutionArn": "{% $prediction_join_pipeline_execution_arn %}"}, "Assign": {"prediction_join_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 6, "BackoffRate": 2.0}], "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "MarkPublicationFailed"}], "Next": "JoinPipelineStatusChoice"},
+    "JoinPipelineStatusChoice": {"Type": "Choice", "Choices": [{"Condition": "{% $prediction_join_pipeline_status = 'Succeeded' %}", "Next": "StartPublicationPipeline"}, {"Condition": "{% ($prediction_join_pipeline_status = 'Executing' or $prediction_join_pipeline_status = 'Stopping') and $join_poll_attempt < 120 %}", "Next": "WaitBeforeJoinDescribe"}], "Default": "MarkPublicationFailed"},
+    "WaitBeforeJoinDescribe": {"Type": "Wait", "Seconds": 30, "Next": "IncrementJoinPollAttempt"},
+    "IncrementJoinPollAttempt": {"Type": "Pass", "Assign": {"join_poll_attempt": "{% $join_poll_attempt + 1 %}"}, "Next": "DescribeJoinPipeline"},
+    "StartPublicationPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution", "Arguments": {"PipelineName": "${PipelineNamePredictionPublish}", "PipelineParameters": [{"Name": "ProjectName", "Value": "{% $project_name %}"}, {"Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}"}, {"Name": "MiniBatchId", "Value": "{% $mini_batch_id %}"}, {"Name": "BatchStartTsIso", "Value": "{% $batch_start_ts_iso %}"}, {"Name": "BatchEndTsIso", "Value": "{% $batch_end_ts_iso %}"}]}, "Assign": {"prediction_publish_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}", "publish_poll_attempt": 0}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 4, "BackoffRate": 2.0}], "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "MarkPublicationFailed"}], "Next": "DescribePublicationPipeline"},
+    "DescribePublicationPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution", "Arguments": {"PipelineExecutionArn": "{% $prediction_publish_pipeline_execution_arn %}"}, "Assign": {"prediction_publish_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 6, "BackoffRate": 2.0}], "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "MarkPublicationFailed"}], "Next": "PublishPipelineStatusChoice"},
+    "PublishPipelineStatusChoice": {"Type": "Choice", "Choices": [{"Condition": "{% $prediction_publish_pipeline_status = 'Succeeded' %}", "Next": "MarkPublicationSucceeded"}, {"Condition": "{% ($prediction_publish_pipeline_status = 'Executing' or $prediction_publish_pipeline_status = 'Stopping') and $publish_poll_attempt < 120 %}", "Next": "WaitBeforePublishDescribe"}], "Default": "MarkPublicationFailed"},
+    "WaitBeforePublishDescribe": {"Type": "Wait", "Seconds": 30, "Next": "IncrementPublishPollAttempt"},
+    "IncrementPublishPollAttempt": {"Type": "Pass", "Assign": {"publish_poll_attempt": "{% $publish_poll_attempt + 1 %}"}, "Next": "DescribePublicationPipeline"},
+    "MarkPublicationSucceeded": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem", "Arguments": {"TableName": "${PublicationLockTableName}", "Key": {"pk": {"S": "{% $publication_identity %}"}, "sk": {"S": "PUBLICATION"}}, "UpdateExpression": "SET #s = :s", "ExpressionAttributeNames": {"#s": "state"}, "ExpressionAttributeValues": {":s": {"S": "SUCCEEDED"}}}, "Next": "EmitPublicationEvent"},
+    "MarkPublicationFailed": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem", "Arguments": {"TableName": "${PublicationLockTableName}", "Key": {"pk": {"S": "{% $publication_identity %}"}, "sk": {"S": "PUBLICATION"}}, "UpdateExpression": "SET #s = :s", "ExpressionAttributeNames": {"#s": "state"}, "ExpressionAttributeValues": {":s": {"S": "FAILED"}}}, "Next": "WorkflowFailed"},
+    "DuplicatePublicationSuppressed": {"Type": "Succeed"},
+    "EmitPublicationEvent": {"Type": "Task", "Resource": "arn:aws:states:::events:putEvents", "Arguments": {"Entries": [{"Source": "ndr.orchestration", "DetailType": "NdrPredictionPublicationCompleted", "EventBusName": "${EventBusName}", "Detail": "{% $string({'project_name': $project_name, 'feature_spec_version': $feature_spec_version, 'mini_batch_id': $mini_batch_id, 'batch_start_ts_iso': $batch_start_ts_iso, 'batch_end_ts_iso': $batch_end_ts_iso, 'publication_identity': $publication_identity}) %}"}]}, "End": true},
+    "WorkflowFailed": {"Type": "Fail", "Error": "NdrPredictionPublicationFailed", "Cause": "Prediction publication workflow failed"}
   }
 }

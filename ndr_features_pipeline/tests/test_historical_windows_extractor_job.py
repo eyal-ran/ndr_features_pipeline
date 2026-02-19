@@ -4,7 +4,12 @@ from datetime import datetime, timezone
 
 boto3_stub = types.ModuleType("boto3")
 boto3_stub.client = lambda *_args, **_kwargs: None
+dynamodb_module = types.ModuleType("boto3.dynamodb")
+conditions_module = types.ModuleType("boto3.dynamodb.conditions")
+conditions_module.Key = object
 sys.modules.setdefault("boto3", boto3_stub)
+sys.modules.setdefault("boto3.dynamodb", dynamodb_module)
+sys.modules.setdefault("boto3.dynamodb.conditions", conditions_module)
 
 from ndr.processing.historical_windows_extractor_job import (
     HistoricalWindowsExtractorRuntimeConfig,

@@ -12,7 +12,7 @@ import boto3
 from ndr.config.project_parameters_loader import resolve_feature_spec_version
 from ndr.orchestration.palo_alto_batch_utils import (
     parse_batch_path_from_s3_key,
-    floor_to_window_minute,
+    derive_window_bounds,
     to_iso_z,
 )
 
@@ -73,7 +73,7 @@ class HistoricalWindowsExtractorJob:
         for item in grouped.values():
             project_name = str(item["project_name"])
             source_ts = item["last_modified"]
-            batch_start = floor_to_window_minute(source_ts, self.runtime_config.window_floor_minutes)
+            batch_start_ts_iso, batch_end_ts_iso = derive_window_bounds(source_ts, self.runtime_config.window_floor_minutes)
             feature_spec_version = resolve_feature_spec_version(
                 project_name=project_name,
                 preferred_feature_spec_version=self.runtime_config.preferred_feature_spec_version,
@@ -85,8 +85,8 @@ class HistoricalWindowsExtractorJob:
                     "feature_spec_version": feature_spec_version,
                     "mini_batch_id": str(item["mini_batch_id"]),
                     "mini_batch_s3_prefix": str(item["mini_batch_s3_prefix"]),
-                    "batch_start_ts_iso": to_iso_z(batch_start),
-                    "batch_end_ts_iso": to_iso_z(source_ts),
+                    "batch_start_ts_iso": batch_start_ts_iso,
+                    "batch_end_ts_iso": batch_end_ts_iso,
                     "source_last_modified_ts_iso": to_iso_z(source_ts),
                 }
             )

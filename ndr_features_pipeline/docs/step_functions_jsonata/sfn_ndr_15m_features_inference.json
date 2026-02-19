@@ -1,5 +1,5 @@
 {
-  "Comment": "NDR 15m features + inference orchestrator (JSONata)",
+  "Comment": "NDR 15m features + inference orchestrator (JSONata, polling + direct publication)",
   "QueryLanguage": "JSONata",
   "StartAt": "NormalizeIncomingMessage",
   "States": {
@@ -15,7 +15,7 @@
       "Assign": {
         "parsed_project_name": "{% $contains($raw_message,'project_name=') ? $split($split($raw_message,'project_name=')[1],';')[0] : '' %}",
         "parsed_feature_spec_version": "{% $contains($raw_message,'feature_spec_version=') ? $split($split($raw_message,'feature_spec_version=')[1],';')[0] : '' %}",
-        "parsed_s3_key": "{% $exists($states.input.s3_key) ? $states.input.s3_key : ($contains($raw_message,'s3_key=') ? $split($split($raw_message,'s3_key=')[1],';')[0] : '') %}",
+        "parsed_s3_key": "{% $exists($states.input.s3_key) ? $states.input.s3_key : ($exists($states.input.batch_s3_path) ? $states.input.batch_s3_path : ($contains($raw_message,'s3_key=') ? $split($split($raw_message,'s3_key=')[1],';')[0] : ($contains($raw_message,'batch_s3_path=') ? $split($split($raw_message,'batch_s3_path=')[1],';')[0] : ''))) %}",
         "parsed_org1": "{% $count($split($parsed_s3_key,'/')) >= 1 ? $split($parsed_s3_key,'/')[0] : '' %}",
         "parsed_org2": "{% $count($split($parsed_s3_key,'/')) >= 2 ? $split($parsed_s3_key,'/')[1] : '' %}",
         "parsed_date_prefix": "{% $count($split($parsed_s3_key,'/')) >= 7 ? $join([$split($parsed_s3_key,'/')[3],$split($parsed_s3_key,'/')[4],$split($parsed_s3_key,'/')[5]],'/') : '' %}",
@@ -23,9 +23,9 @@
         "parsed_project_name_from_path": "{% $count($split($parsed_s3_key,'/')) >= 3 ? $split($parsed_s3_key,'/')[2] : '' %}",
         "parsed_source_ts_iso": "{% $exists($states.input.timestamp) ? $states.input.timestamp : ($exists($states.input.event_ts) ? $states.input.event_ts : ($contains($raw_message,'timestamp=') ? $split($split($raw_message,'timestamp=')[1],';')[0] : $now())) %}"
       },
-      "Next": "BatchMarkerEventChoice"
+      "Next": "BatchCompletionEventChoice"
     },
-    "BatchMarkerEventChoice": {
+    "BatchCompletionEventChoice": {
       "Type": "Choice",
       "Choices": [
         {
@@ -33,39 +33,26 @@
           "Next": "LoadProjectRoutingFromDynamo"
         },
         {
-          "Condition": "{% $parsed_s3_key != '' and $exists($match($parsed_s3_key, /\\/_SUCCESS$/)) %}",
+          "Condition": "{% $parsed_s3_key != '' and $parsed_batch_folder != '' %}",
           "Next": "LoadProjectRoutingFromDynamo"
         }
       ],
-      "Default": "IgnoreNonBatchMarkerEvent"
+      "Default": "IgnoreNonBatchCompletionEvent"
     },
-    "IgnoreNonBatchMarkerEvent": {
-      "Type": "Succeed"
-    },
+    "IgnoreNonBatchCompletionEvent": {"Type": "Succeed"},
     "LoadProjectRoutingFromDynamo": {
       "Type": "Task",
       "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
       "Arguments": {
         "TableName": "${ProjectRoutingTableName}",
-        "Key": {
-          "org_key": {
-            "S": "{% $parsed_org1 & '#' & $parsed_org2 %}"
-          }
-        },
+        "Key": {"org_key": {"S": "{% $parsed_org1 & '#' & $parsed_org2 %}"}},
         "ConsistentRead": true
       },
       "Assign": {
         "routed_project_name": "{% $exists($states.result.Item.project_name.S) ? $states.result.Item.project_name.S : '' %}",
         "routed_ingestion_prefix": "{% $exists($states.result.Item.ingestion_prefix.S) ? $states.result.Item.ingestion_prefix.S : '' %}"
       },
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "LoadProjectParametersFromDynamo"
-        }
-      ],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "LoadProjectParametersFromDynamo"}],
       "Next": "LoadProjectParametersFromDynamo"
     },
     "LoadProjectParametersFromDynamo": {
@@ -74,12 +61,8 @@
       "Arguments": {
         "TableName": "${ProjectParametersTableName}",
         "Key": {
-          "project_name": {
-            "S": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : $routed_project_name) %}"
-          },
-          "job_name": {
-            "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
-          }
+          "project_name": {"S": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : $routed_project_name) %}"},
+          "job_name": {"S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"}
         },
         "ConsistentRead": true
       },
@@ -95,12 +78,12 @@
         "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : ($parsed_project_name_from_path != '' ? $parsed_project_name_from_path : ($routed_project_name != '' ? $routed_project_name : ($exists($project_defaults.ProjectName.S) ? $project_defaults.ProjectName.S : '')))) %}",
         "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : ($exists($project_defaults.FeatureSpecVersion.S) ? $project_defaults.FeatureSpecVersion.S : '${DefaultFeatureSpecVersion}')) %}",
         "mini_batch_id": "{% $exists($states.input.mini_batch_id) ? $states.input.mini_batch_id : ($parsed_batch_folder != '' ? $parsed_batch_folder : ($contains($raw_message,'mini_batch_id=') ? $split($split($raw_message,'mini_batch_id=')[1],';')[0] : ($exists($project_defaults.MiniBatchId.S) ? $project_defaults.MiniBatchId.S : ''))) %}",
+        "source_timestamp_iso": "{% $exists($states.input.batch_end_ts_iso) ? $states.input.batch_end_ts_iso : $parsed_source_ts_iso %}",
         "batch_start_ts_iso": "{% $exists($states.input.batch_start_ts_iso) ? $states.input.batch_start_ts_iso : ($exists($source_timestamp_iso) and $source_timestamp_iso != '' ? $fromMillis($toMillis($source_timestamp_iso) - (($number($substring($source_timestamp_iso,14,2)) >= 53 ? $number($substring($source_timestamp_iso,14,2)) - 53 : ($number($substring($source_timestamp_iso,14,2)) >= 38 ? $number($substring($source_timestamp_iso,14,2)) - 38 : ($number($substring($source_timestamp_iso,14,2)) >= 23 ? $number($substring($source_timestamp_iso,14,2)) - 23 : ($number($substring($source_timestamp_iso,14,2)) >= 8 ? $number($substring($source_timestamp_iso,14,2)) - 8 : $number($substring($source_timestamp_iso,14,2)) + 7)))) * 60000)) : ($exists($project_defaults.BatchStartTsIso.S) ? $project_defaults.BatchStartTsIso.S : '')) %}",
         "batch_end_ts_iso": "{% $source_timestamp_iso %}",
-        "execution_ts_iso": "{% $exists($states.input.execution_ts_iso) ? $states.input.execution_ts_iso : ($contains($raw_message,'execution_ts_iso=') ? $split($split($raw_message,'execution_ts_iso=')[1],';')[0] : ($exists($project_defaults.ExecutionTsIso.S) ? $project_defaults.ExecutionTsIso.S : $now())) %}",
+        "execution_ts_iso": "{% $exists($states.input.execution_ts_iso) ? $states.input.execution_ts_iso : ($exists($project_defaults.ExecutionTsIso.S) ? $project_defaults.ExecutionTsIso.S : $now()) %}",
         "lock_ttl_epoch": "{% $exists($states.input.lock_ttl_epoch) ? $states.input.lock_ttl_epoch : ($exists($project_defaults.LockTtlEpoch.N) ? $number($project_defaults.LockTtlEpoch.N) : 1893456000) %}",
-        "mini_batch_s3_prefix": "{% $exists($states.input.mini_batch_s3_prefix) ? $states.input.mini_batch_s3_prefix : ($routed_ingestion_prefix != '' and $parsed_date_prefix != '' and $parsed_batch_folder != '' ? $routed_ingestion_prefix & '/' & $parsed_date_prefix & '/' & $parsed_batch_folder & '/' : ($exists($project_defaults.MiniBatchS3Prefix.S) ? $project_defaults.MiniBatchS3Prefix.S : '')) %}",
-        "source_timestamp_iso": "{% $exists($states.input.batch_end_ts_iso) ? $states.input.batch_end_ts_iso : $parsed_source_ts_iso %}"
+        "mini_batch_s3_prefix": "{% $exists($states.input.mini_batch_s3_prefix) ? $states.input.mini_batch_s3_prefix : ($routed_ingestion_prefix != '' and $parsed_date_prefix != '' and $parsed_batch_folder != '' ? $routed_ingestion_prefix & '/' & $parsed_date_prefix & '/' & $parsed_batch_folder & '/' : ($exists($project_defaults.MiniBatchS3Prefix.S) ? $project_defaults.MiniBatchS3Prefix.S : '')) %}"
       },
       "Next": "AcquireMiniBatchLock"
     },
@@ -110,193 +93,106 @@
       "Arguments": {
         "TableName": "${LockTableName}",
         "Item": {
-          "pk": {
-            "S": "{% $project_name & '#' & $feature_spec_version %}"
-          },
-          "sk": {
-            "S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"
-          },
-          "ttl_epoch": {
-            "N": "{% $string($lock_ttl_epoch) %}"
-          },
-          "created_at": {
-            "S": "{% $execution_ts_iso %}"
-          }
+          "pk": {"S": "{% $project_name & '#' & $feature_spec_version %}"},
+          "sk": {"S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"},
+          "ttl_epoch": {"N": "{% $string($lock_ttl_epoch) %}"},
+          "created_at": {"S": "{% $execution_ts_iso %}"}
         },
         "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"
       },
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "DynamoDB.ConditionalCheckFailedException"
-          ],
-          "Next": "DuplicateMiniBatch"
-        }
-      ],
+      "Catch": [{"ErrorEquals": ["DynamoDB.ConditionalCheckFailedException"], "Next": "DuplicateMiniBatch"}],
       "Next": "Start15mFeaturesPipeline"
     },
-    "DuplicateMiniBatch": {
-      "Type": "Fail",
-      "Error": "DuplicateMiniBatch",
-      "Cause": "Execution lock already exists for this 15m window"
-    },
+    "DuplicateMiniBatch": {"Type": "Fail", "Error": "DuplicateMiniBatch", "Cause": "Execution lock already exists for this 15m window"},
     "Start15mFeaturesPipeline": {
       "Type": "Task",
       "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
       "Arguments": {
         "PipelineName": "${PipelineName15m}",
         "PipelineParameters": [
-          {
-            "Name": "ProjectName",
-            "Value": "{% $project_name %}"
-          },
-          {
-            "Name": "FeatureSpecVersion",
-            "Value": "{% $feature_spec_version %}"
-          },
-          {
-            "Name": "MiniBatchId",
-            "Value": "{% $mini_batch_id %}"
-          },
-          {
-            "Name": "BatchStartTsIso",
-            "Value": "{% $batch_start_ts_iso %}"
-          },
-          {
-            "Name": "BatchEndTsIso",
-            "Value": "{% $batch_end_ts_iso %}"
-          }
+          {"Name": "ProjectName", "Value": "{% $project_name %}"},
+          {"Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}"},
+          {"Name": "MiniBatchId", "Value": "{% $mini_batch_id %}"},
+          {"Name": "BatchStartTsIso", "Value": "{% $batch_start_ts_iso %}"},
+          {"Name": "BatchEndTsIso", "Value": "{% $batch_end_ts_iso %}"}
         ]
       },
-      "Assign": {
-        "features_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}"
-      },
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "ReleaseMiniBatchLockOnFailure"
-        }
-      ],
-      "Next": "WaitForFeaturesCompletionEvent"
+      "Assign": {"features_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}", "features_poll_attempt": 0},
+      "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 4, "BackoffRate": 2.0}],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "ReleaseMiniBatchLockOnFailure"}],
+      "Next": "Describe15mFeaturesPipeline"
     },
-    "WaitForFeaturesCompletionEvent": {
+    "Describe15mFeaturesPipeline": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
-      "Arguments": {
-        "FunctionName": "${PipelineCompletionCallbackLambdaArn}",
-        "Payload": {
-          "taskToken": "{% $states.context.Task.Token %}",
-          "expected_pipeline_execution_arn": "{% $features_pipeline_execution_arn %}",
-          "success_statuses": [
-            "Succeeded"
-          ],
-          "failure_statuses": [
-            "Failed",
-            "Stopped"
-          ]
-        }
-      },
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "ReleaseMiniBatchLockOnFailure"
-        }
-      ],
-      "Next": "StartInferencePipeline"
+      "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
+      "Arguments": {"PipelineExecutionArn": "{% $features_pipeline_execution_arn %}"},
+      "Assign": {"features_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"},
+      "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 6, "BackoffRate": 2.0}],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "ReleaseMiniBatchLockOnFailure"}],
+      "Next": "FeaturesPipelineStatusChoice"
     },
+    "FeaturesPipelineStatusChoice": {
+      "Type": "Choice",
+      "Choices": [
+        {"Condition": "{% $features_pipeline_status = 'Succeeded' %}", "Next": "StartInferencePipeline"},
+        {"Condition": "{% ($features_pipeline_status = 'Executing' or $features_pipeline_status = 'Stopping') and $features_poll_attempt < 120 %}", "Next": "WaitBeforeDescribe15mFeatures"}
+      ],
+      "Default": "ReleaseMiniBatchLockOnFailure"
+    },
+    "WaitBeforeDescribe15mFeatures": {"Type": "Wait", "Seconds": 30, "Next": "IncrementFeaturesPollAttempt"},
+    "IncrementFeaturesPollAttempt": {"Type": "Pass", "Assign": {"features_poll_attempt": "{% $features_poll_attempt + 1 %}"}, "Next": "Describe15mFeaturesPipeline"},
     "StartInferencePipeline": {
       "Type": "Task",
       "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
       "Arguments": {
         "PipelineName": "${PipelineNameInference}",
         "PipelineParameters": [
-          {
-            "Name": "ProjectName",
-            "Value": "{% $project_name %}"
-          },
-          {
-            "Name": "FeatureSpecVersion",
-            "Value": "{% $feature_spec_version %}"
-          },
-          {
-            "Name": "MiniBatchId",
-            "Value": "{% $mini_batch_id %}"
-          },
-          {
-            "Name": "BatchStartTsIso",
-            "Value": "{% $batch_start_ts_iso %}"
-          },
-          {
-            "Name": "BatchEndTsIso",
-            "Value": "{% $batch_end_ts_iso %}"
-          }
+          {"Name": "ProjectName", "Value": "{% $project_name %}"},
+          {"Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}"},
+          {"Name": "MiniBatchId", "Value": "{% $mini_batch_id %}"},
+          {"Name": "BatchStartTsIso", "Value": "{% $batch_start_ts_iso %}"},
+          {"Name": "BatchEndTsIso", "Value": "{% $batch_end_ts_iso %}"}
         ]
       },
-      "Assign": {
-        "inference_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}"
-      },
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "ReleaseMiniBatchLockOnFailure"
-        }
-      ],
-      "Next": "WaitForInferenceCompletionEvent"
+      "Assign": {"inference_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}", "inference_poll_attempt": 0},
+      "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 4, "BackoffRate": 2.0}],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "ReleaseMiniBatchLockOnFailure"}],
+      "Next": "DescribeInferencePipeline"
     },
-    "WaitForInferenceCompletionEvent": {
+    "DescribeInferencePipeline": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
-      "Arguments": {
-        "FunctionName": "${PipelineCompletionCallbackLambdaArn}",
-        "Payload": {
-          "taskToken": "{% $states.context.Task.Token %}",
-          "expected_pipeline_execution_arn": "{% $inference_pipeline_execution_arn %}",
-          "success_statuses": [
-            "Succeeded"
-          ],
-          "failure_statuses": [
-            "Failed",
-            "Stopped"
-          ]
-        }
-      },
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "ReleaseMiniBatchLockOnFailure"
-        }
-      ],
-      "Next": "EmitInferenceCompleteEvent"
+      "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
+      "Arguments": {"PipelineExecutionArn": "{% $inference_pipeline_execution_arn %}"},
+      "Assign": {"inference_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"},
+      "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 6, "BackoffRate": 2.0}],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "ReleaseMiniBatchLockOnFailure"}],
+      "Next": "InferencePipelineStatusChoice"
     },
-    "EmitInferenceCompleteEvent": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::events:putEvents",
-      "Arguments": {
-        "Entries": [
-          {
-            "Source": "ndr.orchestration",
-            "DetailType": "NdrInferencePipelineCompleted",
-            "EventBusName": "${EventBusName}",
-            "Detail": "{% $string({'project_name': $project_name, 'feature_spec_version': $feature_spec_version, 'mini_batch_id': $mini_batch_id, 'batch_start_ts_iso': $batch_start_ts_iso, 'batch_end_ts_iso': $batch_end_ts_iso, 'inference_pipeline_execution_arn': $inference_pipeline_execution_arn}) %}"
-          }
-        ]
-      },
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "ReleaseMiniBatchLockOnFailure"
-        }
+    "InferencePipelineStatusChoice": {
+      "Type": "Choice",
+      "Choices": [
+        {"Condition": "{% $inference_pipeline_status = 'Succeeded' %}", "Next": "StartPredictionPublicationWorkflow"},
+        {"Condition": "{% ($inference_pipeline_status = 'Executing' or $inference_pipeline_status = 'Stopping') and $inference_poll_attempt < 120 %}", "Next": "WaitBeforeDescribeInference"}
       ],
+      "Default": "ReleaseMiniBatchLockOnFailure"
+    },
+    "WaitBeforeDescribeInference": {"Type": "Wait", "Seconds": 30, "Next": "IncrementInferencePollAttempt"},
+    "IncrementInferencePollAttempt": {"Type": "Pass", "Assign": {"inference_poll_attempt": "{% $inference_poll_attempt + 1 %}"}, "Next": "DescribeInferencePipeline"},
+    "StartPredictionPublicationWorkflow": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::states:startExecution.sync:2",
+      "Arguments": {
+        "StateMachineArn": "${PredictionPublicationStateMachineArn}",
+        "Input": {
+          "project_name": "{% $project_name %}",
+          "feature_spec_version": "{% $feature_spec_version %}",
+          "mini_batch_id": "{% $mini_batch_id %}",
+          "batch_start_ts_iso": "{% $batch_start_ts_iso %}",
+          "batch_end_ts_iso": "{% $batch_end_ts_iso %}"
+        }
+      },
+      "Retry": [{"ErrorEquals": ["StepFunctions.ExecutionLimitExceeded", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 3, "BackoffRate": 2.0}],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "ReleaseMiniBatchLockOnFailure"}],
       "Next": "ReleaseMiniBatchLockOnSuccess"
     },
     "ReleaseMiniBatchLockOnSuccess": {
@@ -305,12 +201,8 @@
       "Arguments": {
         "TableName": "${LockTableName}",
         "Key": {
-          "pk": {
-            "S": "{% $project_name & '#' & $feature_spec_version %}"
-          },
-          "sk": {
-            "S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"
-          }
+          "pk": {"S": "{% $project_name & '#' & $feature_spec_version %}"},
+          "sk": {"S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"}
         }
       },
       "Next": "Success"
@@ -321,31 +213,14 @@
       "Arguments": {
         "TableName": "${LockTableName}",
         "Key": {
-          "pk": {
-            "S": "{% $project_name & '#' & $feature_spec_version %}"
-          },
-          "sk": {
-            "S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"
-          }
+          "pk": {"S": "{% $project_name & '#' & $feature_spec_version %}"},
+          "sk": {"S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"}
         }
       },
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "WorkflowFailed"
-        }
-      ],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "WorkflowFailed"}],
       "Next": "WorkflowFailed"
     },
-    "WorkflowFailed": {
-      "Type": "Fail",
-      "Error": "Ndr15mFeaturesInferenceFailed",
-      "Cause": "15m features/inference orchestration failed"
-    },
-    "Success": {
-      "Type": "Succeed"
-    }
+    "WorkflowFailed": {"Type": "Fail", "Error": "Ndr15mFeaturesInferenceFailed", "Cause": "15m features/inference/publication orchestration failed"},
+    "Success": {"Type": "Succeed"}
   }
 }

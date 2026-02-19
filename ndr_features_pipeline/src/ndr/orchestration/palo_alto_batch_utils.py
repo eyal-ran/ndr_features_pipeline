@@ -18,10 +18,22 @@ class ParsedBatchPath:
 
 
 def parse_batch_path_from_s3_key(s3_key: str) -> ParsedBatchPath:
-    """Parse canonical Palo Alto S3 key into batch identity fields."""
-    parts = [p for p in s3_key.strip('/').split('/') if p]
-    if len(parts) < 8:
-        raise ValueError(f"Invalid Palo Alto batch key (expected >=8 segments): {s3_key}")
+    """Parse canonical Palo Alto batch path/key into batch identity fields.
+
+    Accepted input forms include:
+    - object paths: ``org1/org2/project/2025/01/31/<batch-id>/<file>``
+    - batch-folder paths: ``org1/org2/project/2025/01/31/<batch-id>/``
+    - S3 URIs for either form.
+    """
+    normalized = s3_key.strip()
+    if normalized.startswith("s3://"):
+        uri_without_scheme = normalized[len("s3://") :]
+        bucket_sep = uri_without_scheme.find("/")
+        normalized = "" if bucket_sep < 0 else uri_without_scheme[bucket_sep + 1 :]
+
+    parts = [p for p in normalized.strip('/').split('/') if p]
+    if len(parts) < 7:
+        raise ValueError(f"Invalid Palo Alto batch key (expected >=7 segments): {s3_key}")
 
     return ParsedBatchPath(
         org1=parts[0],
@@ -58,3 +70,9 @@ def to_iso_z(ts: datetime) -> str:
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     return ts.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+
+
+def derive_window_bounds(source_ts: datetime, floor_minutes: list[int]) -> tuple[str, str]:
+    """Derive (`batch_start_ts_iso`, `batch_end_ts_iso`) from source timestamp."""
+    floored = floor_to_window_minute(source_ts, floor_minutes)
+    return to_iso_z(floored), to_iso_z(source_ts)

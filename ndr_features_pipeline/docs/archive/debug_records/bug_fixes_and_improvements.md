@@ -765,4 +765,4 @@
 - Operational dashboards/alerts include polling failures, retry-exhaustion events, lock conflicts, and duplicate-suppression counts.
 - Docs and deployment templates are fully synchronized with the implemented architecture.
 
-**Status:** Planned (not implemented).
+**Status:** Implemented. Step Functions now use native SageMaker polling instead of callback lambdas, lambda-owned control steps were replaced with pipeline-native stages, the 15m producer payload contract and direct publication trigger were updated, training verifier/remediation with max-2 retries was added, and docs/tests were synchronized for the new orchestration model.

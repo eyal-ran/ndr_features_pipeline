@@ -160,6 +160,50 @@ PIPELINE_RUNTIME_PARAMS = {
         "InputS3Prefix",
         "OutputS3Prefix",
     ],
+    "pipeline_supplemental_baseline": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "ReferenceMonthIso",
+    ],
+    "pipeline_prediction_publish": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "MiniBatchId",
+        "BatchStartTsIso",
+        "BatchEndTsIso",
+    ],
+    "pipeline_training_data_verifier": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "TrainingStartTs",
+        "TrainingEndTs",
+        "EvalStartTs",
+        "EvalEndTs",
+    ],
+    "pipeline_missing_feature_creation": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "TrainingStartTs",
+        "TrainingEndTs",
+        "EvalStartTs",
+        "EvalEndTs",
+        "MissingWindowsOverride",
+    ],
+    "pipeline_model_publish": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "RunId",
+    ],
+    "pipeline_model_attributes": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "RunId",
+    ],
+    "pipeline_model_deploy": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "RunId",
+    ],
 }
 
 REQUIRED_TABLE_CREATE_KEYS = (
@@ -584,6 +628,160 @@ def _build_bootstrap_items(
                             "data_prefixes": {
                                 "input_raw": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/raw/palo_alto/",
                                 "output_windows": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/backfill/windows/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name": _versioned_job_name("pipeline_supplemental_baseline", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_supplemental_baseline"],
+                "scripts": {
+                    "steps": {
+                        "SupplementalBaselineStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/supplemental_baseline/SupplementalBaselineStep/",
+                            "entry_script": "run_fg_b_builder.py",
+                            "data_prefixes": {
+                                "input_fg_b": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_b/",
+                                "output_supplemental_baseline": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_b/supplemental/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name": _versioned_job_name("pipeline_prediction_publish", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_prediction_publish"],
+                "scripts": {
+                    "steps": {
+                        "PredictionPublishStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/prediction_publish/PredictionPublishStep/",
+                            "entry_script": "run_prediction_feature_join.py",
+                            "data_prefixes": {
+                                "input_prediction_feature_join": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/publication/prediction_feature_join/",
+                                "output_publication": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/publication/published_predictions/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name": _versioned_job_name("pipeline_training_data_verifier", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_training_data_verifier"],
+                "scripts": {
+                    "steps": {
+                        "TrainingDataVerifierStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/training_data_verifier/TrainingDataVerifierStep/",
+                            "entry_script": "run_if_training.py",
+                            "data_prefixes": {
+                                "input_features": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/",
+                                "output_verification": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/training/verifier/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name": _versioned_job_name("pipeline_missing_feature_creation", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_missing_feature_creation"],
+                "scripts": {
+                    "steps": {
+                        "MissingFeatureCreationStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/missing_feature_creation/MissingFeatureCreationStep/",
+                            "entry_script": "run_delta_builder.py",
+                            "data_prefixes": {
+                                "input_raw": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/raw/traffic/",
+                                "output_features": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name": _versioned_job_name("pipeline_model_publish", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_model_publish"],
+                "scripts": {
+                    "steps": {
+                        "ModelPublishStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/model_publish/ModelPublishStep/",
+                            "entry_script": "run_if_training.py",
+                            "data_prefixes": {
+                                "input_training_output": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/training/if_training/",
+                                "output_registry": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/model_registry/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name": _versioned_job_name("pipeline_model_attributes", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_model_attributes"],
+                "scripts": {
+                    "steps": {
+                        "ModelAttributesStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/model_attributes/ModelAttributesStep/",
+                            "entry_script": "run_if_training.py",
+                            "data_prefixes": {
+                                "input_registry": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/model_registry/",
+                                "output_attributes": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/model_attributes/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name": _versioned_job_name("pipeline_model_deploy", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_model_deploy"],
+                "scripts": {
+                    "steps": {
+                        "ModelDeployStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/model_deploy/ModelDeployStep/",
+                            "entry_script": "run_if_training.py",
+                            "data_prefixes": {
+                                "input_registry": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/model_registry/",
+                                "output_deploy": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/model_deploy/",
                             },
                         }
                     }

@@ -1,5 +1,5 @@
 {
-  "Comment": "NDR monthly FG-B baseline orchestration with machine refresh (JSONata)",
+  "Comment": "NDR monthly FG-B baseline orchestration (pipeline-native, polling)",
   "QueryLanguage": "JSONata",
   "StartAt": "NormalizeIncomingMessage",
   "States": {
@@ -18,27 +18,7 @@
       },
       "Next": "LoadProjectParametersFromDynamo"
     },
-    "LoadProjectParametersFromDynamo": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
-      "Arguments": {
-        "TableName": "${ProjectParametersTableName}",
-        "Key": {
-          "project_name": {
-            "S": "{% $exists($states.input.project_name) ? $states.input.project_name : $parsed_project_name %}"
-          },
-          "job_name": {
-            "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
-          }
-        },
-        "ConsistentRead": true
-      },
-      "Assign": {
-        "project_parameters_spec": "{% $exists($states.result.Item.spec.M) ? $states.result.Item.spec.M : {} %}",
-        "project_defaults": "{% $exists($states.result.Item.spec.M.defaults.M) ? $states.result.Item.spec.M.defaults.M : {} %}"
-      },
-      "Next": "ResolvePipelineRuntimeParams"
-    },
+    "LoadProjectParametersFromDynamo": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem", "Arguments": {"TableName": "${ProjectParametersTableName}", "Key": {"project_name": {"S": "{% $exists($states.input.project_name) ? $states.input.project_name : $parsed_project_name %}"}, "job_name": {"S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"}}, "ConsistentRead": true}, "Assign": {"project_defaults": "{% $exists($states.result.Item.spec.M.defaults.M) ? $states.result.Item.spec.M.defaults.M : {} %}"}, "Next": "ResolvePipelineRuntimeParams"},
     "ResolvePipelineRuntimeParams": {
       "Type": "Pass",
       "Assign": {
@@ -50,152 +30,22 @@
       },
       "Next": "StartMachineInventoryRefresh"
     },
-    "StartMachineInventoryRefresh": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
-      "Arguments": {
-        "PipelineName": "${PipelineNameMachineInventory}",
-        "PipelineParameters": [
-          {
-            "Name": "ProjectName",
-            "Value": "{% $project_name %}"
-          },
-          {
-            "Name": "FeatureSpecVersion",
-            "Value": "{% $feature_spec_version %}"
-          },
-          {
-            "Name": "ReferenceMonthIso",
-            "Value": "{% $reference_month_iso %}"
-          }
-        ]
-      },
-      "Assign": {
-        "inventory_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}"
-      },
-      "Next": "WaitForInventoryCompletionEvent"
-    },
-    "WaitForInventoryCompletionEvent": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
-      "Arguments": {
-        "FunctionName": "${PipelineCompletionCallbackLambdaArn}",
-        "Payload": {
-          "taskToken": "{% $states.context.Task.Token %}",
-          "expected_pipeline_execution_arn": "{% $inventory_pipeline_execution_arn %}",
-          "success_statuses": [
-            "Succeeded"
-          ],
-          "failure_statuses": [
-            "Failed",
-            "Stopped"
-          ]
-        }
-      },
-      "Next": "StartFGBBaselinePipeline"
-    },
-    "StartFGBBaselinePipeline": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
-      "Arguments": {
-        "PipelineName": "${PipelineNameFGB}",
-        "PipelineParameters": [
-          {
-            "Name": "ProjectName",
-            "Value": "{% $project_name %}"
-          },
-          {
-            "Name": "FeatureSpecVersion",
-            "Value": "{% $feature_spec_version %}"
-          },
-          {
-            "Name": "ReferenceTimeIso",
-            "Value": "{% $reference_time_iso %}"
-          },
-          {
-            "Name": "Mode",
-            "Value": "{% $mode %}"
-          }
-        ]
-      },
-      "Assign": {
-        "fgb_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}"
-      },
-      "Next": "WaitForFGBCompletionEvent"
-    },
-    "WaitForFGBCompletionEvent": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
-      "Arguments": {
-        "FunctionName": "${PipelineCompletionCallbackLambdaArn}",
-        "Payload": {
-          "taskToken": "{% $states.context.Task.Token %}",
-          "expected_pipeline_execution_arn": "{% $fgb_pipeline_execution_arn %}",
-          "success_statuses": [
-            "Succeeded"
-          ],
-          "failure_statuses": [
-            "Failed",
-            "Stopped"
-          ]
-        }
-      },
-      "Next": "BuildSupplementalBaselines"
-    },
-    "BuildSupplementalBaselines": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Arguments": {
-        "FunctionName": "${SupplementalBaselineLambdaArn}",
-        "Payload": {
-          "project_name": "{% $project_name %}",
-          "feature_spec_version": "{% $feature_spec_version %}",
-          "reference_month_iso": "{% $reference_month_iso %}",
-          "components": [
-            "segment_baselines",
-            "cold_start_defaults",
-            "population_global_fallback"
-          ]
-        }
-      },
-      "Assign": {
-        "supplemental_baseline_result": "{% $states.result.Payload %}"
-      },
-      "Next": "BuildBaselineManifest"
-    },
-    "BuildBaselineManifest": {
-      "Type": "Pass",
-      "Assign": {
-        "baseline_manifest": {
-          "project_name": "{% $project_name %}",
-          "feature_spec_version": "{% $feature_spec_version %}",
-          "reference_month_iso": "{% $reference_month_iso %}",
-          "components": [
-            "host_baselines",
-            "segment_baselines",
-            "pair_baselines",
-            "cold_start_defaults",
-            "optional_population_baseline"
-          ],
-          "supplemental": "{% $supplemental_baseline_result %}"
-        }
-      },
-      "Next": "EmitBaselineReadyEvent"
-    },
-    "EmitBaselineReadyEvent": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::events:putEvents",
-      "Arguments": {
-        "Entries": [
-          {
-            "Source": "ndr.orchestration",
-            "DetailType": "NdrMonthlyBaselinesCompleted",
-            "EventBusName": "${EventBusName}",
-            "Detail": "{% $string($baseline_manifest) %}"
-          }
-        ]
-      },
-      "End": true
-    }
+    "StartMachineInventoryRefresh": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution", "Arguments": {"PipelineName": "${PipelineNameMachineInventory}", "PipelineParameters": [{"Name": "ProjectName", "Value": "{% $project_name %}"}, {"Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}"}, {"Name": "ReferenceMonthIso", "Value": "{% $reference_month_iso %}"}]}, "Assign": {"inventory_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}", "inventory_poll_attempt": 0}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 4, "BackoffRate": 2.0}], "Next": "DescribeInventoryPipeline"},
+    "DescribeInventoryPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution", "Arguments": {"PipelineExecutionArn": "{% $inventory_pipeline_execution_arn %}"}, "Assign": {"inventory_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 6, "BackoffRate": 2.0}], "Next": "InventoryPipelineStatusChoice"},
+    "InventoryPipelineStatusChoice": {"Type": "Choice", "Choices": [{"Condition": "{% $inventory_pipeline_status = 'Succeeded' %}", "Next": "StartFGBBaselinePipeline"}, {"Condition": "{% ($inventory_pipeline_status = 'Executing' or $inventory_pipeline_status = 'Stopping') and $inventory_poll_attempt < 120 %}", "Next": "WaitBeforeInventoryDescribe"}], "Default": "WorkflowFailed"},
+    "WaitBeforeInventoryDescribe": {"Type": "Wait", "Seconds": 30, "Next": "IncrementInventoryPollAttempt"},
+    "IncrementInventoryPollAttempt": {"Type": "Pass", "Assign": {"inventory_poll_attempt": "{% $inventory_poll_attempt + 1 %}"}, "Next": "DescribeInventoryPipeline"},
+    "StartFGBBaselinePipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution", "Arguments": {"PipelineName": "${PipelineNameFGB}", "PipelineParameters": [{"Name": "ProjectName", "Value": "{% $project_name %}"}, {"Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}"}, {"Name": "ReferenceTimeIso", "Value": "{% $reference_time_iso %}"}, {"Name": "Mode", "Value": "{% $mode %}"}]}, "Assign": {"fgb_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}", "fgb_poll_attempt": 0}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 4, "BackoffRate": 2.0}], "Next": "DescribeFGBPipeline"},
+    "DescribeFGBPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution", "Arguments": {"PipelineExecutionArn": "{% $fgb_pipeline_execution_arn %}"}, "Assign": {"fgb_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 6, "BackoffRate": 2.0}], "Next": "FGBPipelineStatusChoice"},
+    "FGBPipelineStatusChoice": {"Type": "Choice", "Choices": [{"Condition": "{% $fgb_pipeline_status = 'Succeeded' %}", "Next": "StartSupplementalBaselinePipeline"}, {"Condition": "{% ($fgb_pipeline_status = 'Executing' or $fgb_pipeline_status = 'Stopping') and $fgb_poll_attempt < 120 %}", "Next": "WaitBeforeFGBDescribe"}], "Default": "WorkflowFailed"},
+    "WaitBeforeFGBDescribe": {"Type": "Wait", "Seconds": 30, "Next": "IncrementFGBPollAttempt"},
+    "IncrementFGBPollAttempt": {"Type": "Pass", "Assign": {"fgb_poll_attempt": "{% $fgb_poll_attempt + 1 %}"}, "Next": "DescribeFGBPipeline"},
+    "StartSupplementalBaselinePipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution", "Arguments": {"PipelineName": "${PipelineNameSupplementalBaseline}", "PipelineParameters": [{"Name": "ProjectName", "Value": "{% $project_name %}"}, {"Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}"}, {"Name": "ReferenceMonthIso", "Value": "{% $reference_month_iso %}"}]}, "Assign": {"supplemental_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}", "supplemental_poll_attempt": 0}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 4, "BackoffRate": 2.0}], "Next": "DescribeSupplementalPipeline"},
+    "DescribeSupplementalPipeline": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution", "Arguments": {"PipelineExecutionArn": "{% $supplemental_pipeline_execution_arn %}"}, "Assign": {"supplemental_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"}, "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 6, "BackoffRate": 2.0}], "Next": "SupplementalPipelineStatusChoice"},
+    "SupplementalPipelineStatusChoice": {"Type": "Choice", "Choices": [{"Condition": "{% $supplemental_pipeline_status = 'Succeeded' %}", "Next": "EmitBaselineReadyEvent"}, {"Condition": "{% ($supplemental_pipeline_status = 'Executing' or $supplemental_pipeline_status = 'Stopping') and $supplemental_poll_attempt < 120 %}", "Next": "WaitBeforeSupplementalDescribe"}], "Default": "WorkflowFailed"},
+    "WaitBeforeSupplementalDescribe": {"Type": "Wait", "Seconds": 30, "Next": "IncrementSupplementalPollAttempt"},
+    "IncrementSupplementalPollAttempt": {"Type": "Pass", "Assign": {"supplemental_poll_attempt": "{% $supplemental_poll_attempt + 1 %}"}, "Next": "DescribeSupplementalPipeline"},
+    "EmitBaselineReadyEvent": {"Type": "Task", "Resource": "arn:aws:states:::events:putEvents", "Arguments": {"Entries": [{"Source": "ndr.orchestration", "DetailType": "NdrMonthlyBaselinesCompleted", "EventBusName": "${EventBusName}", "Detail": "{% $string({'project_name': $project_name, 'feature_spec_version': $feature_spec_version, 'reference_month_iso': $reference_month_iso}) %}"}]}, "End": true},
+    "WorkflowFailed": {"Type": "Fail", "Error": "NdrMonthlyBaselinesFailed", "Cause": "Monthly baseline pipeline orchestration failed"}
   }
 }

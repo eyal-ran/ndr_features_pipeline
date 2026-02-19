@@ -657,3 +657,112 @@
 - Documentation, Dynamo defaults, and orchestration definitions are consistent.
 
 **Status:** Implemented. Inference/backfill orchestration contracts now derive runtime windows from source timestamps (08/23/38/53 floor policy), backfill includes a preliminary historical extractor pipeline step whose output feeds map execution, and both Pair-Counts/Delta raw reads are specification-driven via Dynamo field mappings, with docs/defaults/tests synchronized.
+
+## 19) Orchestration simplification plan: producer-completion payload contract, callback/lambda removal, and training data verifier
+**Issue:** Current orchestration/docs still include patterns that are now out of alignment with the agreed target model (single producer completion event contract, reduced orchestration indirection, and no human-approval/lambda-based control gates).
+
+**Plan (ToDo):**
+1. **Ingestion contract and 15m Step Function parsing update**
+   - Update all docs that still describe marker-file-only ingestion (`_SUCCESS`) to the agreed producer completion event contract:
+     - event contains only the full S3 batch-folder path (up to and including hashed folder) and event timestamp.
+   - Update `sfn_ndr_15m_features_inference.json` parsing logic to use the event payload + timestamp directly for runtime derivation (`project_name`, `feature_spec_version`, `mini_batch_id`, `batch_start_ts_iso`, `batch_end_ts_iso`) without requiring `_SUCCESS` suffix filtering.
+
+2. **Remove callback orchestration dependence across Step Functions**
+   - Replace `lambda:invoke.waitForTaskToken` callback waits with direct orchestration control returned from SageMaker pipeline execution completion.
+   - If completion tokening is truly required, use a pipeline-native final step to emit a deterministic completed signal/token (no external callback lambda dependency), and consume that in orchestration.
+
+3. **Replace `SupplementalBaselineLambda`**
+   - Move supplemental baseline logic into a SageMaker Pipeline (or native Pipeline step) so monthly baseline flow remains fully pipeline-driven.
+
+4. **Replace `PublishJoinedPredictionsLambda`**
+   - Move joined-prediction publication to a SageMaker Pipeline (or native Pipeline step) with explicit destination routing and status outputs.
+
+5. **Replace `ModelPublishLambda`**
+   - Move model artifact publication/registration preparation to a SageMaker Pipeline (or native Pipeline step).
+
+6. **Replace `ModelAttributesRegistryLambda`**
+   - Move model attributes registration logic to a SageMaker Pipeline (or native Pipeline step), with idempotent writes and deterministic keys.
+
+7. **Replace duplicate lambda-dependent publication/deployment references**
+   - Consolidate duplicated model-publish lambda replacement requirements and ensure there is one authoritative pipeline-driven implementation path.
+
+8. **Remove all human-approval waits/branches**
+   - Remove wait-for-human-approval orchestration branches and associated state transitions from all workflows.
+
+9. **Replace `ModelDeployLambdaArn`**
+   - Move deployment logic to a SageMaker Pipeline (or native Pipeline step), preserving rollback and status-reporting semantics.
+
+10. **Documentation synchronization for lambda/approval removal**
+    - Update all docs to reflect the final architecture with no callback lambdas, no auxiliary lambdas for publication/deployment, and no human-approval states.
+
+11. **Add training data verifier and auto-remediation trigger path**
+    - Extend `sfn_ndr_training_orchestrator` with a pre-training verifier stage that validates feature availability/coverage for:
+      - training period,
+      - required historical lookback slices,
+      - evaluation periods.
+    - On verifier failure, trigger existing feature-creation process bounded to missing-window timestamps only, then re-run training.
+    - Apply a bounded remediation loop with **maximum 2 retries** total for: (a) feature-availability verification, (b) missing-feature creation, and (c) retraining attempt; fail closed with diagnostics after retry budget is exhausted.
+    - Define runtime inputs for explicit window boundaries (e.g., `training_start_ts`, `training_end_ts`, `eval_start_ts`, `eval_end_ts`, and optional `missing_windows_override`).
+
+12. **Trigger prediction publication directly from 15m workflow**
+    - Trigger `sfn_ndr_prediction_publication` directly from the 15m workflow path after inference completion, removing EventBridge dependency for this handoff.
+
+13. **Feasibility/risk gate (mandatory before implementation approval)**
+    - Produce an explicit implementation-feasibility report before execution, and flag any sub-item that is:
+      - not implementable as specified,
+      - operationally unsafe/undesired,
+      - blocked by AWS integration limits,
+      - incompatible with existing deployment/runtime contracts.
+    - For each flagged item, include recommended alternative and migration/rollback approach.
+
+
+14. **Concrete integration changes required to remove WaitCallback across asynchronous pipeline starts**
+    - For every state machine using `arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution`, replace callback waits with a polling completion pattern:
+      - add `DescribePipelineExecution` polling states (`arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution`),
+      - add status choice branching (`Executing`/`Stopping` => wait+poll loop, `Succeeded` => continue, `Failed|Stopped` => fail path),
+      - add bounded wait interval + max poll attempts/time-budget to avoid unbounded execution.
+    - Apply this change in all affected orchestrators:
+      - `sfn_ndr_15m_features_inference.json` (features pipeline completion and inference pipeline completion),
+      - `sfn_ndr_monthly_fg_b_baselines.json` (machine inventory completion and FG-B completion),
+      - `sfn_ndr_training_orchestrator.json` (training completion),
+      - `sfn_ndr_backfill_reprocessing.json` (historical extractor completion and per-window backfill completion),
+      - `sfn_ndr_prediction_publication.json` (prediction join completion).
+    - Remove `PipelineCompletionCallbackLambdaArn` references from state-machine definitions and deployment templates once polling paths are validated.
+    - Add Step Functions retry/backoff policies for transient SageMaker API failures on both `startPipelineExecution` and `describePipelineExecution` calls.
+    - Update IAM policies for state-machine roles to include `sagemaker:DescribePipelineExecution` where missing.
+
+15. **Concrete changes required for direct 15m -> prediction-publication idempotency and duplicate suppression**
+    - Add deterministic execution identity fields to the publication input contract and persist them end-to-end:
+      - `project_name`, `feature_spec_version`, `mini_batch_id`, `batch_start_ts_iso`, `batch_end_ts_iso`.
+    - Introduce an orchestration-level publication lock (DynamoDB conditional write) keyed by the deterministic identity above.
+      - On duplicate lock conflict, short-circuit publication as already-processed.
+      - On failure paths, release or transition lock state according to terminal outcome policy.
+    - Add sink-level dedupe keys/constraints to publication outputs (S3 manifest key and/or table primary key/merge key).
+    - Ensure publication pipeline writes are idempotent (`upsert/merge` semantics, deterministic output partitioning, and no append-only duplicates for retries).
+    - Add contract tests covering:
+      - first-run publish success,
+      - replay with same identity (suppressed),
+      - partial-failure then retry (single final published record set).
+    - Add operational metrics/alerts for duplicate-suppression events and lock-conflict counts.
+
+
+### Item 19 implementation sequencing (for smooth delivery)
+1. Update ingestion contract docs + 15m parsing contract first (item 1).
+2. Implement callback-removal mechanics and IAM/polling topology updates (item 14), then remove callback lambda references (item 2).
+3. Replace lambda-owned business/control steps with pipeline-native steps in this order: baseline supplements, publication, model publish/attributes/deploy (items 3–7, 9).
+4. Remove human-approval branches after deployment path parity is validated (item 8).
+5. Add training verifier + bounded remediation loop (item 11), then execute feasibility/risk review and rollback playbooks (item 13).
+6. Enable direct 15m -> prediction-publication trigger only after idempotency/duplicate-suppression controls and tests are passing (items 12 + 15).
+7. Finish with full documentation synchronization across architecture/orchestration/runtime docs (item 10).
+
+### Item 19 definition-of-done / acceptance checklist
+- All targeted Step Functions no longer depend on `lambda:invoke.waitForTaskToken` for SageMaker pipeline completion.
+- No state machine references to `PipelineCompletionCallbackLambdaArn`, `SupplementalBaselineLambdaArn`, `PublishJoinedPredictionsLambdaArn`, `ModelPublishLambdaArn`, `ModelAttributesRegistryLambdaArn`, or `ModelDeployLambdaArn` remain.
+- No human-approval wait states remain in any orchestration JSON.
+- 15m ingestion accepts the agreed producer completion event schema (hashed-folder path + timestamp) without `_SUCCESS` marker dependency.
+- Training verifier path enforces max 2 retries and emits terminal diagnostics on retry exhaustion.
+- Direct 15m -> publication chain passes idempotency/dedupe contract tests and produces no duplicate published records under replay/retry scenarios.
+- Operational dashboards/alerts include polling failures, retry-exhaustion events, lock conflicts, and duplicate-suppression counts.
+- Docs and deployment templates are fully synchronized with the implemented architecture.
+
+**Status:** Planned (not implemented).

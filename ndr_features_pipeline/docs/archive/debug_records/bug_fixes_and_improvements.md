@@ -766,3 +766,80 @@
 - Docs and deployment templates are fully synchronized with the implemented architecture.
 
 **Status:** Implemented. Step Functions now use native SageMaker polling instead of callback lambdas, lambda-owned control steps were replaced with pipeline-native stages, the 15m producer payload contract and direct publication trigger were updated, training verifier/remediation with max-2 retries was added, and docs/tests were synchronized for the new orchestration model.
+
+## 20) Consolidate prediction publication into a single join+publish pipeline (S3 and Redshift)
+**Issue:** `sfn_ndr_prediction_publication` still models a second placeholder pipeline stage (`StartPublicationPipeline`) even though the implemented join pipeline already supports writing the joined output to S3 or Redshift. The current split introduces orchestration overhead and leaves an unimplemented placeholder path.
+
+**Decision:** Use a single SageMaker pipeline (`PipelineNamePredictionJoin`) to execute both operations end-to-end:
+- perform the prediction/feature join,
+- publish joined outputs to S3 **or** Redshift (including required S3 staging for Redshift loads),
+- preserve publication idempotency and duplicate suppression at orchestration level.
+
+### Implementation plan (authoritative)
+
+1. **Step Functions simplification (`sfn_ndr_prediction_publication`)**
+   - Remove the placeholder publish pipeline branch:
+     - `StartPublicationPipeline`
+     - `DescribePublicationPipeline`
+     - `PublishPipelineStatusChoice`
+     - `WaitBeforePublishDescribe`
+     - `IncrementPublishPollAttempt`
+   - Route join success directly from `JoinPipelineStatusChoice` to `MarkPublicationSucceeded`.
+   - Keep existing lock semantics unchanged:
+     - `AcquirePublicationLock` conditional write,
+     - `DuplicatePublicationSuppressed` short-circuit,
+     - `MarkPublicationFailed` on terminal failure,
+     - `EmitPublicationEvent` after success.
+
+2. **Single-pipeline publication behavior (`prediction_feature_join`)**
+   - Keep `prediction_feature_join` as the only publication executor.
+   - Ensure spec-driven destination routing remains explicit:
+     - `destination.type = s3` => write joined dataset to publication S3 prefix,
+     - `destination.type = redshift` => stage joined dataset to S3 and load into Redshift with deterministic/idempotent semantics.
+   - Add strict schema/contract validation for required publication keys and sink-specific required fields before write/copy.
+
+3. **DynamoDB JobSpec contract cleanup**
+   - Remove `pipeline_prediction_publish` from bootstrap items and runtime-parameter maps.
+   - Keep and document `pipeline_prediction_feature_join` as the sole pipeline-level publication contract.
+   - Ensure seeded/default specs contain both S3 and Redshift publication examples for `prediction_feature_join` destination routing.
+
+4. **Pipeline registration / deployment cleanup**
+   - Remove deployment-time dependency on `PipelineNamePredictionPublish`.
+   - Keep `PipelineNamePredictionJoin` as the only publication pipeline placeholder required by `sfn_ndr_prediction_publication`.
+   - Update IAM/templates only where needed due to removed placeholder references.
+
+5. **Documentation synchronization (required in same change set)**
+   - Update flow docs to reflect one-stage publication execution:
+     - `docs/pipelines/pipelines_flow_description.md`
+     - `docs/architecture/orchestration/step_functions.md`
+     - `docs/architecture/orchestration/dynamodb_io_contract.md`
+   - Remove references that imply an implemented second publish pipeline.
+   - Clarify that publication occurs within the join pipeline and is destination-driven (`s3` or `redshift`).
+
+6. **Test plan / quality gates**
+   - Update Step Functions contract tests to verify:
+     - publication flow has no `StartPublicationPipeline` state,
+     - join success transitions directly to success lock update,
+     - lock duplicate-suppression behavior remains intact.
+   - Add/extend processing tests to verify single-pipeline publication behavior:
+     - S3 publication path writes expected partitioned output,
+     - Redshift path performs staged-copy flow with required parameters,
+     - retries/replays do not create duplicate published records.
+   - Add regression assertions for docs/contracts consistency (pipeline names/placeholders and JobSpec expectations).
+
+### Rollout, migration, and rollback
+- **Rollout order:**
+  1) ship join-pipeline publication validations/tests,
+  2) deploy simplified `sfn_ndr_prediction_publication`,
+  3) remove `PipelineNamePredictionPublish` wiring from IaC/config,
+  4) clean up Dynamo seed templates.
+- **Rollback:** restore prior Step Functions definition and placeholder wiring if any production dependency still expects the second pipeline state.
+
+### Definition of done
+- Publication executes fully via `PipelineNamePredictionJoin` (join + publish), with support for both S3 and Redshift destinations.
+- `sfn_ndr_prediction_publication` has no `StartPublicationPipeline` branch.
+- No required runtime/deployment contract depends on `PipelineNamePredictionPublish` or `pipeline_prediction_publish`.
+- Lock-based idempotency and duplicate suppression behavior is preserved and tested.
+- All relevant docs are synchronized and describe the single-pipeline publication architecture.
+
+**Status:** Planned.

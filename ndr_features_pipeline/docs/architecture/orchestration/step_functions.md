@@ -39,7 +39,7 @@ JSONata definitions are stored under `docs/step_functions_jsonata/`:
 
 ### 5) Prediction publication
 - Enforces publication idempotency via deterministic identity + DynamoDB conditional lock.
-- Runs prediction join pipeline and publication pipeline with native polling.
+- Runs a single prediction join+publish pipeline with native polling.
 - Marks lock outcome (`SUCCEEDED`/`FAILED`) and suppresses duplicates on lock conflicts.
 
 ## Common orchestration pattern
@@ -78,8 +78,8 @@ Definitions contain deploy-time placeholders (for names/ARNs/resources). Replace
 - Add `sagemaker:DescribePipelineExecution` to all state-machine roles that call SageMaker pipelines.
 - Ensure lock tables exist and state-machine roles include `dynamodb:PutItem`, `dynamodb:UpdateItem`, and `dynamodb:DeleteItem` as applicable.
 - Ensure pipeline name placeholders are wired for the replacement pipeline-native stages:
+  - `PipelineNamePredictionJoin`
   - `PipelineNameSupplementalBaseline`
-  - `PipelineNamePredictionPublish`
   - `PipelineNameTrainingDataVerifier`
   - `PipelineNameMissingFeatureCreation`
   - `PipelineNameModelPublish`

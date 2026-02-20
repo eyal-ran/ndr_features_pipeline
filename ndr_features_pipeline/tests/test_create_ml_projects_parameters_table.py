@@ -51,7 +51,6 @@ def test_bootstrap_items_include_all_runtime_jobs():
         "pipeline_if_training",
         "pipeline_backfill_historical_extractor",
         "pipeline_supplemental_baseline",
-        "pipeline_prediction_publish",
         "pipeline_training_data_verifier",
         "pipeline_missing_feature_creation",
         "pipeline_model_publish",
@@ -142,15 +141,6 @@ def test_item19_pipeline_seed_items_present_with_expected_runtime_params():
     items = _build_bootstrap_items("ndr-prod", "v1", "ndr-team")
     by_job = _items_by_job(items)
 
-    publish_spec = by_job["pipeline_prediction_publish"]["spec"]
-    assert publish_spec["required_runtime_params"] == [
-        "ProjectName",
-        "FeatureSpecVersion",
-        "MiniBatchId",
-        "BatchStartTsIso",
-        "BatchEndTsIso",
-    ]
-
     verifier_spec = by_job["pipeline_training_data_verifier"]["spec"]
     assert verifier_spec["required_runtime_params"] == [
         "ProjectName",
@@ -161,5 +151,7 @@ def test_item19_pipeline_seed_items_present_with_expected_runtime_params():
         "EvalEndTs",
     ]
 
+
+    assert "pipeline_prediction_publish" not in by_job
     deploy_spec = by_job["pipeline_model_deploy"]["spec"]
     assert "ModelDeployStep" in deploy_spec["scripts"]["steps"]

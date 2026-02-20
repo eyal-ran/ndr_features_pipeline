@@ -31,6 +31,34 @@ from ndr.processing.prediction_feature_join_spec import (
 logger = logging.getLogger(__name__)
 
 
+def _validate_required_columns(columns: List[str], required: List[str], context: str) -> None:
+    """Validate required publication columns are present before sink writes."""
+    missing = sorted(set(required).difference(columns))
+    if missing:
+        raise ValueError(f"{context} missing required columns: {missing}")
+
+
+def _validate_publication_output_contract(
+    columns: List[str],
+    join_keys: List[str],
+    output_spec: InferenceOutputSpec,
+    destination_type: str,
+) -> None:
+    """Validate publication output contract and sink-specific requirements."""
+    required_publication_keys = join_keys + ["feature_spec_version", "prediction_score", "dt"]
+    _validate_required_columns(columns, required_publication_keys, "prediction_feature_join output")
+
+    _validate_required_columns(columns, list(output_spec.partition_keys), "prediction_feature_join partition")
+    if output_spec.write_mode.lower() != "overwrite":
+        raise ValueError(
+            "prediction_feature_join publication requires write_mode='overwrite' for idempotent retries/replays"
+        )
+
+    if destination_type == "redshift":
+        redshift_required = join_keys + ["feature_spec_version", "prediction_score"]
+        _validate_required_columns(columns, redshift_required, "prediction_feature_join redshift")
+
+
 @dataclass
 class PredictionFeatureJoinRuntimeConfig:
     """Data container for PredictionFeatureJoinRuntimeConfig."""
@@ -121,12 +149,18 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
         if self.join_spec.destination_type == "s3":
             if not self.join_spec.s3_output:
                 raise ValueError("prediction_feature_join requires s3_output for S3 destination")
+            _validate_publication_output_contract(
+                df.columns, self.inference_spec.join_keys, self.join_spec.s3_output, "s3"
+            )
             self._write_joined_to_s3(df, self.join_spec.s3_output)
             return
 
         if self.join_spec.destination_type == "redshift":
             if not self.join_spec.s3_output or not self.join_spec.redshift_output:
                 raise ValueError("prediction_feature_join requires staging s3_output and redshift_output")
+            _validate_publication_output_contract(
+                df.columns, self.inference_spec.join_keys, self.join_spec.s3_output, "redshift"
+            )
             output_prefix = self._write_joined_to_s3(df, self.join_spec.s3_output)
             self._copy_to_redshift(output_prefix, self.join_spec.redshift_output)
             return
@@ -159,6 +193,8 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
         redshift_spec: PredictionFeatureJoinDestinationRedshift,
     ) -> None:
         """Execute the copy to redshift stage of the workflow."""
+        if not s3_prefix.startswith("s3://"):
+            raise ValueError("prediction_feature_join redshift staging prefix must be an s3:// URI")
         data_api = boto3.client("redshift-data", region_name=redshift_spec.region)
         for sql in redshift_spec.pre_sql:
             self._execute_statement(data_api, redshift_spec, sql)

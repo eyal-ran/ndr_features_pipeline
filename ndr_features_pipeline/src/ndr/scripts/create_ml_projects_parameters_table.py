@@ -165,13 +165,6 @@ PIPELINE_RUNTIME_PARAMS = {
         "FeatureSpecVersion",
         "ReferenceMonthIso",
     ],
-    "pipeline_prediction_publish": [
-        "ProjectName",
-        "FeatureSpecVersion",
-        "MiniBatchId",
-        "BatchStartTsIso",
-        "BatchEndTsIso",
-    ],
     "pipeline_training_data_verifier": [
         "ProjectName",
         "FeatureSpecVersion",
@@ -650,28 +643,6 @@ def _build_bootstrap_items(
                             "data_prefixes": {
                                 "input_fg_b": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_b/",
                                 "output_supplemental_baseline": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_b/supplemental/",
-                            },
-                        }
-                    }
-                },
-            },
-            "feature_spec_version": feature_spec_version,
-            "updated_at": now,
-            "owner": owner,
-        },
-        {
-            "project_name": project_name,
-            "job_name": _versioned_job_name("pipeline_prediction_publish", feature_spec_version),
-            "spec": {
-                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_prediction_publish"],
-                "scripts": {
-                    "steps": {
-                        "PredictionPublishStep": {
-                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/prediction_publish/PredictionPublishStep/",
-                            "entry_script": "run_prediction_feature_join.py",
-                            "data_prefixes": {
-                                "input_prediction_feature_join": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/publication/prediction_feature_join/",
-                                "output_publication": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/publication/published_predictions/",
                             },
                         }
                     }

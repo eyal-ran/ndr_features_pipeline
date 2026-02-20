@@ -842,4 +842,4 @@
 - Lock-based idempotency and duplicate suppression behavior is preserved and tested.
 - All relevant docs are synchronized and describe the single-pipeline publication architecture.
 
-**Status:** Planned.
+**Status:** Implemented. `sfn_ndr_prediction_publication` now completes publication after `PipelineNamePredictionJoin` succeeds (no secondary publish pipeline states), bootstrap/runtime contracts no longer seed `pipeline_prediction_publish`, and publication validation for destination routing/idempotent writes is enforced in `prediction_feature_join`.

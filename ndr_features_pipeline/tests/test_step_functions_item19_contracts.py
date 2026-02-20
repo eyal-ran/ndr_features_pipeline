@@ -60,6 +60,18 @@ def test_prediction_publication_has_identity_lock_and_duplicate_suppression():
     assert "attribute_not_exists(pk)" in lock["Arguments"]["ConditionExpression"]
     assert states["DuplicatePublicationSuppressed"]["Type"] == "Succeed"
 
+    assert "StartPublicationPipeline" not in states
+    assert "DescribePublicationPipeline" not in states
+    assert "PublishPipelineStatusChoice" not in states
+    assert "WaitBeforePublishDescribe" not in states
+    assert "IncrementPublishPollAttempt" not in states
+    join_success = next(
+        choice
+        for choice in states["JoinPipelineStatusChoice"]["Choices"]
+        if choice["Condition"] == "{% $prediction_join_pipeline_status = 'Succeeded' %}"
+    )
+    assert join_success["Next"] == "MarkPublicationSucceeded"
+
 
 def test_training_orchestrator_has_verifier_remediation_with_retry_budget_two():
     doc = _load("sfn_ndr_training_orchestrator.json")

@@ -112,22 +112,17 @@ It includes:
 8. `JoinPipelineStatusChoice` — branch on join pipeline status.
 9. `WaitBeforeJoinDescribe` — wait between join polls.
 10. `IncrementJoinPollAttempt` — increment join poll counter.
-11. `StartPublicationPipeline` — **⚠️ PIPELINE TRIGGER — NOT IMPLEMENTED (PLACEHOLDER NAME ONLY)**; starts `${PipelineNamePredictionPublish}` placeholder.
-12. `DescribePublicationPipeline` — poll publication pipeline status.
-13. `PublishPipelineStatusChoice` — branch on publication status.
-14. `WaitBeforePublishDescribe` — wait between publish polls.
-15. `IncrementPublishPollAttempt` — increment publish poll counter.
-16. `MarkPublicationSucceeded` — mark publication lock as succeeded.
-17. `MarkPublicationFailed` — mark publication lock as failed.
-18. `DuplicatePublicationSuppressed` — suppress duplicate publication request.
-19. `EmitPublicationEvent` — emit completion event.
-20. `WorkflowFailed` — terminal failure state.
+11. `MarkPublicationSucceeded` — mark publication lock as succeeded.
+12. `MarkPublicationFailed` — mark publication lock as failed.
+13. `DuplicatePublicationSuppressed` — suppress duplicate publication request.
+14. `EmitPublicationEvent` — emit completion event.
+15. `WorkflowFailed` — terminal failure state.
 
 ### Pipeline triggered at `StartPredictionJoinPipeline`: `${PipelineNamePredictionJoin}`
 - **Implementation state:** Implemented.
 - **Implemented pipeline function:** `build_prediction_feature_join_pipeline`.
 - **Pipeline code location:** `src/ndr/pipeline/sagemaker_pipeline_definitions_prediction_feature_join.py`.
-- **Purpose:** join prediction outputs with feature datasets for publication-ready outputs.
+- **Purpose:** join prediction outputs with feature datasets and publish to destination (`s3` or staged `redshift`) within the same pipeline.
 
 #### Pipeline steps and run chain
 1. `PredictionFeatureJoinStep`
@@ -136,12 +131,6 @@ It includes:
    - Second-hand processing entrypoint: `run_prediction_feature_join_from_runtime_config`
    - Processing module: `src/ndr/processing/prediction_feature_join_job.py`
    - Processing purpose: combine inference predictions with relevant features.
-
-### Pipeline triggered at `StartPublicationPipeline`: `${PipelineNamePredictionPublish}`
-- **Implementation state:** **Placeholder in orchestrator; pipeline definition not found in current `src/ndr/pipeline/sagemaker_pipeline_definitions_*.py` inventory.**
-- **Placeholder reference location:** `docs/step_functions_jsonata/sfn_ndr_prediction_publication.json`.
-- **Expected purpose (from flow context):** publish joined prediction outputs downstream after join step succeeds.
-- **Scripts/processing chain:** not resolvable from current repository pipeline definitions (missing concrete implementation).
 
 ---
 

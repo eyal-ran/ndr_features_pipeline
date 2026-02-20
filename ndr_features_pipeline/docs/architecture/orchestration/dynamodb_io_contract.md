@@ -14,7 +14,7 @@ Examples:
 - `project_parameters#v1`
 - `pipeline_15m_streaming#v1`
 - `pipeline_inference_predictions#v1`
-- `pipeline_prediction_publish#v1`
+- `pipeline_prediction_feature_join#v1`
 - `pipeline_training_data_verifier#v1`
 - `pipeline_model_deploy#v1`
 - `delta_builder#v1`

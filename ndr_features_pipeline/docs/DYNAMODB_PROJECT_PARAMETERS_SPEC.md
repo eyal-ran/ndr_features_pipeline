@@ -83,7 +83,7 @@ These fields are read from the `spec` payload itself by the JobSpec loader.
 - `project_parameters` (project-level parameters consumed across orchestration flows)
 - `pipeline_backfill_historical_extractor` (pipeline-level script/runtime contract for preliminary historical window extraction)
 - `pipeline_supplemental_baseline`
-- `pipeline_prediction_publish`
+- `pipeline_prediction_feature_join`
 - `pipeline_training_data_verifier`
 - `pipeline_missing_feature_creation`
 - `pipeline_model_publish`

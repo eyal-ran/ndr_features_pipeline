@@ -19,12 +19,7 @@ sequenceDiagram
     participant SMB as SM Pipeline: FG-B Baseline
     participant SMS as SM Pipeline: Supplemental Baseline
     participant SFT as SFN: Training Orchestrator
-    participant SMV as SM Pipeline: Training Verifier
-    participant SMM as SM Pipeline: Missing Feature Creation
-    participant SMT as SM Pipeline: IF Training
-    participant SMP as SM Pipeline: Model Publish
-    participant SMA as SM Pipeline: Model Attributes
-    participant SMD as SM Pipeline: Model Deploy
+    participant SMT as SM Pipeline: Unified IF Training
     participant SFB as SFN: Backfill + Reprocessing
     participant SMH as SM Pipeline: Historical Extractor
 
@@ -66,24 +61,10 @@ sequenceDiagram
     end
 
     EB->>SFT: Trigger training workflow
-    SFT->>SMV: startPipelineExecution
-    loop native polling
-      SFT->>SMV: describePipelineExecution
-    end
-    alt verifier failed and retries remaining
-      SFT->>SMM: startPipelineExecution
-      loop native polling
-        SFT->>SMM: describePipelineExecution
-      end
-      SFT->>SMV: retry verifier (max 2 attempts)
-    end
-    SFT->>SMT: startPipelineExecution
+    SFT->>SMT: startPipelineExecution (unified lifecycle)
     loop native polling
       SFT->>SMT: describePipelineExecution
     end
-    SFT->>SMP: startPipelineExecution
-    SFT->>SMA: startPipelineExecution
-    SFT->>SMD: startPipelineExecution
 
     EB->>SFB: Trigger backfill request
     SFB->>SMH: startPipelineExecution
@@ -97,4 +78,4 @@ sequenceDiagram
 
 - Clarifies that all orchestrators rely on direct SageMaker API polling, not callback lambdas.
 - Makes lock-based idempotency boundaries explicit for 15-minute processing and prediction publication.
-- Shows the bounded remediation loop in training and extractor-driven fan-out in backfill.
+- Shows coarse-grained training orchestration where verifier/remediation/training/publish/attributes/deploy execute inside one unified training pipeline.

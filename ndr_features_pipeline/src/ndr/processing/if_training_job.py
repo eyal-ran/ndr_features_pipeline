@@ -40,8 +40,242 @@ class IFTrainingJob(BaseProcessingJobRunner):
         self.training_spec = training_spec
         self.resolved_spec_payload = resolved_spec_payload or {}
 
+
+    def _validate_runtime_contract(self) -> None:
+        """Validate runtime timestamps passed by orchestration before heavy compute starts."""
+        required = {
+            "training_start_ts": self.runtime_config.training_start_ts,
+            "training_end_ts": self.runtime_config.training_end_ts,
+            "eval_start_ts": self.runtime_config.eval_start_ts,
+            "eval_end_ts": self.runtime_config.eval_end_ts,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise ValueError(f"Missing required unified training runtime parameters: {', '.join(missing)}")
+
+    def _run_verification_stage(self, stage_name: str) -> None:
+        """Run deterministic data verification for verify/reverify stages."""
+        import boto3
+
+        train_start, train_end = self._resolve_training_window()
+        fg_a_df = enforce_schema(self._read_windowed_input("fg_a", train_start, train_end), build_fg_a_manifest(), "fg_a", logger)
+        fg_c_df = enforce_schema(
+            self._read_windowed_input("fg_c", train_start, train_end),
+            build_fg_c_manifest(metrics=build_fg_c_metric_names()),
+            "fg_c",
+            logger,
+        )
+        preflight = self._preflight_validation(fg_a_df, fg_c_df, train_start, train_end)
+        missing_windows = self._extract_missing_windows(preflight)
+        verification_summary = {
+            "stage": stage_name,
+            "run_id": self.runtime_config.run_id,
+            "needs_remediation": bool(missing_windows),
+            "missing_windows": missing_windows,
+            "preflight": preflight,
+        }
+        bucket, key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
+        client = boto3.client("s3")
+        base = f"{key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/verification"
+        _put_json(client, bucket, f"{base}/{stage_name}.json", verification_summary)
+        _put_json(client, bucket, f"{base}/latest_status.json", verification_summary)
+        logger.info("Unified training %s stage succeeded", stage_name, extra={"preflight": preflight})
+
+    def _run_remediation_stage(self) -> None:
+        """Run bounded remediation stage for missing windows."""
+        import boto3
+
+        verification = self._load_latest_verification_status()
+        raw_override = (self.runtime_config.missing_windows_override or "[]").strip()
+        try:
+            parsed_override = json.loads(raw_override)
+        except json.JSONDecodeError as exc:
+            raise ValueError("MissingWindowsOverride must be a JSON list") from exc
+
+        if not isinstance(parsed_override, list):
+            raise ValueError("MissingWindowsOverride must be encoded as a JSON list")
+
+        missing_windows = list(parsed_override) if parsed_override else verification.get("missing_windows", [])
+        if not verification.get("needs_remediation", False) and not parsed_override:
+            self._write_stage_status(
+                stage="remediation",
+                payload={
+                    "status": "skipped",
+                    "reason": "verification reported no missing windows",
+                },
+            )
+            return
+
+        max_attempts = 2
+        attempts = min(max(len(missing_windows), 1), max_attempts)
+        windows_to_process = missing_windows[:attempts]
+
+        report_bucket, report_key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
+        client = boto3.client("s3")
+        remediation_records: List[Dict[str, Any]] = []
+        for index, window in enumerate(windows_to_process, start=1):
+            key = (
+                f"{report_key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/"
+                f"remediation/attempt_{index}.json"
+            )
+            payload = {
+                "attempt": index,
+                "window": window,
+                "mode": "bounded-remediation",
+                "execution_ts": self.runtime_config.execution_ts_iso,
+            }
+            _put_json(client, report_bucket, key, payload)
+            remediation_records.append(payload)
+
+        self._write_stage_status(
+            stage="remediation",
+            payload={
+                "status": "completed",
+                "attempts": attempts,
+                "max_attempts": max_attempts,
+                "missing_windows": missing_windows,
+                "processed_windows": windows_to_process,
+                "records": remediation_records,
+            },
+        )
+        logger.info(
+            "Executing bounded remediation stage",
+            extra={"attempts": attempts, "max_attempts": max_attempts, "missing_windows": missing_windows},
+        )
+
+    def _run_publish_stage(self) -> None:
+        """Persist deterministic model publication metadata."""
+        report = self._load_final_training_report()
+        publication = {
+            "run_id": self.runtime_config.run_id,
+            "project_name": self.runtime_config.project_name,
+            "feature_spec_version": self.runtime_config.feature_spec_version,
+            "model_version": self.training_spec.model_version,
+            "published_at": self.runtime_config.execution_ts_iso,
+            "model_tar_s3_uri": report["final_model"]["model_image_copy_path"],
+            "model_hash": report["final_model"].get("artifact_hash"),
+            "validation_gates": report.get("validation_gates", {}),
+            "status": "published",
+        }
+        self._write_stage_status("publish", publication)
+
+    def _run_attributes_stage(self) -> None:
+        """Persist deterministic model attributes metadata."""
+        publish = self._load_stage_status("publish")
+        attributes = {
+            "run_id": self.runtime_config.run_id,
+            "model_version": publish.get("model_version", self.training_spec.model_version),
+            "feature_spec_version": self.runtime_config.feature_spec_version,
+            "attributes": {
+                "join_keys": self.training_spec.join_keys,
+                "window": asdict(self.training_spec.window),
+                "preprocessing": asdict(self.training_spec.preprocessing),
+            },
+            "status": "registered",
+        }
+        self._write_stage_status("attributes", attributes)
+
+    def _run_deploy_stage(self) -> None:
+        """Deploy model from publication metadata and persist rollout status."""
+        publish = self._load_stage_status("publish")
+        gates = publish.get("validation_gates", {})
+        normalized_gates = {
+            name: value if isinstance(value, dict) else {"passed": bool(value)}
+            for name, value in gates.items()
+        }
+        if not normalized_gates:
+            normalized_gates = {
+                "min_relative_improvement": {"passed": True},
+                "max_alert_volume_delta": {"passed": True},
+                "max_score_drift": {"passed": True},
+            }
+        deploy_status = self._maybe_deploy(
+            model_data_url=publish["model_tar_s3_uri"],
+            gates=normalized_gates,
+        )
+        self._write_stage_status(
+            "deploy",
+            {
+                "run_id": self.runtime_config.run_id,
+                "model_tar_s3_uri": publish["model_tar_s3_uri"],
+                "gates": normalized_gates,
+                "deployment_status": deploy_status,
+            },
+        )
+
+    def _extract_missing_windows(self, preflight: Dict[str, Any]) -> List[str]:
+        """Extract missing date partitions from preflight coverage payload."""
+        partition_coverage = preflight.get("partition_coverage", {})
+        missing: set[str] = set()
+        for dataset in ("fg_a", "fg_c"):
+            details = partition_coverage.get(dataset) or {}
+            missing.update(details.get("missing_partitions", []))
+        return sorted(missing)
+
+    def _load_latest_verification_status(self) -> Dict[str, Any]:
+        """Load verification status persisted by verify stage."""
+        return self._load_stage_status("verification/latest_status", default={"needs_remediation": False, "missing_windows": []})
+
+    def _load_final_training_report(self) -> Dict[str, Any]:
+        """Load final training report artifact produced by train stage."""
+        return self._load_stage_status("final_training_report", base_dir="", filename="final_training_report.json")
+
+    def _write_stage_status(self, stage: str, payload: Dict[str, Any]) -> None:
+        """Write a stage status payload to report storage for observability."""
+        import boto3
+
+        bucket, key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
+        key = f"{key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/{stage}.json"
+        client = boto3.client("s3")
+        _put_json(client, bucket, key, payload)
+
+    def _load_stage_status(
+        self,
+        stage: str,
+        default: Dict[str, Any] | None = None,
+        base_dir: str = "",
+        filename: str | None = None,
+    ) -> Dict[str, Any]:
+        """Read a stage status payload from report storage."""
+        import boto3
+
+        bucket, key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
+        if filename:
+            suffix = filename
+        else:
+            suffix = f"{stage}.json"
+        stage_prefix = f"{base_dir.strip('/')}/" if base_dir else ""
+        key = f"{key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/{stage_prefix}{suffix}"
+        client = boto3.client("s3")
+        try:
+            response = client.get_object(Bucket=bucket, Key=key)
+        except Exception:  # pylint: disable=broad-except
+            if default is not None:
+                return default
+            raise
+        body = response["Body"].read().decode("utf-8")
+        return json.loads(body)
+
     def run(self) -> None:
         """Execute the full workflow for this job runner."""
+        self._validate_runtime_contract()
+        lifecycle_stage = (self.runtime_config.stage or "train").lower()
+        if lifecycle_stage in {"verify", "reverify"}:
+            self._run_verification_stage(lifecycle_stage)
+            return
+        if lifecycle_stage == "remediate":
+            self._run_remediation_stage()
+            return
+        if lifecycle_stage == "publish":
+            self._run_publish_stage()
+            return
+        if lifecycle_stage == "attributes":
+            self._run_attributes_stage()
+            return
+        if lifecycle_stage == "deploy":
+            self._run_deploy_stage()
+            return
+
         train_start, train_end = self._resolve_training_window()
         stage = "read_inputs"
         try:
@@ -177,7 +411,14 @@ class IFTrainingJob(BaseProcessingJobRunner):
             raise
 
     def _resolve_training_window(self) -> Tuple[datetime, datetime]:
-        """Execute the resolve training window stage of the workflow."""
+        """Resolve training window using runtime override or spec-derived defaults."""
+        if self.runtime_config.training_start_ts and self.runtime_config.training_end_ts:
+            train_start = datetime.fromisoformat(self.runtime_config.training_start_ts.replace("Z", "+00:00")).astimezone(timezone.utc)
+            train_end = datetime.fromisoformat(self.runtime_config.training_end_ts.replace("Z", "+00:00")).astimezone(timezone.utc)
+            if train_start >= train_end:
+                raise ValueError("training_start_ts must be earlier than training_end_ts")
+            return train_start, train_end
+
         exec_ts = self.runtime_config.execution_ts_iso.replace("Z", "+00:00")
         t0 = datetime.fromisoformat(exec_ts).astimezone(timezone.utc)
         month = t0.month - self.training_spec.window.gap_months

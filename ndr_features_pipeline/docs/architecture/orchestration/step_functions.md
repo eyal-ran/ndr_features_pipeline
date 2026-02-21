@@ -65,7 +65,7 @@ For 15-minute inference triggering from ingestion-bucket writes, the canonical c
 ## Feasibility/risk review summary (item 19 gate)
 
 - **Polling replacement feasibility:** fully feasible with existing Step Functions AWS SDK integrations; no extra callback lambdas required.
-- **Training verifier loop safety:** bounded to max 2 retries to avoid runaway retraining/remediation loops.
+- **Training lifecycle ownership:** Step Functions now starts one unified IF training pipeline and delegates verifier/remediation/training/publish/attributes/deploy to pipeline-native steps.
 - **Direct 15m -> publication handoff:** implemented via synchronous nested Step Function start to remove EventBridge handoff race/duplication risk.
 - **Idempotency controls:** publication lock + deterministic identity suppress duplicate publication attempts and support replay safety.
 - **Migration/rollback approach:** deploy updated definitions behind versioned state machines; rollback by repointing aliases to prior definitions if pipeline-native replacements are not yet available.
@@ -77,11 +77,7 @@ Definitions contain deploy-time placeholders (for names/ARNs/resources). Replace
 ### Required runtime/IAM alignment
 - Add `sagemaker:DescribePipelineExecution` to all state-machine roles that call SageMaker pipelines.
 - Ensure lock tables exist and state-machine roles include `dynamodb:PutItem`, `dynamodb:UpdateItem`, and `dynamodb:DeleteItem` as applicable.
-- Ensure pipeline name placeholders are wired for the replacement pipeline-native stages:
+- Ensure pipeline name placeholders are wired for current orchestrator contracts:
   - `PipelineNamePredictionJoin`
-  - `PipelineNameTrainingDataVerifier`
-  - `PipelineNameMissingFeatureCreation`
-  - `PipelineNameModelPublish`
-  - `PipelineNameModelAttributes`
-  - `PipelineNameModelDeploy`
+  - `PipelineNameIFTraining`
   - `PredictionPublicationStateMachineArn`

@@ -160,11 +160,6 @@ PIPELINE_RUNTIME_PARAMS = {
         "InputS3Prefix",
         "OutputS3Prefix",
     ],
-    "pipeline_supplemental_baseline": [
-        "ProjectName",
-        "FeatureSpecVersion",
-        "ReferenceMonthIso",
-    ],
     "pipeline_training_data_verifier": [
         "ProjectName",
         "FeatureSpecVersion",
@@ -621,28 +616,6 @@ def _build_bootstrap_items(
                             "data_prefixes": {
                                 "input_raw": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/raw/palo_alto/",
                                 "output_windows": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/backfill/windows/",
-                            },
-                        }
-                    }
-                },
-            },
-            "feature_spec_version": feature_spec_version,
-            "updated_at": now,
-            "owner": owner,
-        },
-        {
-            "project_name": project_name,
-            "job_name": _versioned_job_name("pipeline_supplemental_baseline", feature_spec_version),
-            "spec": {
-                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_supplemental_baseline"],
-                "scripts": {
-                    "steps": {
-                        "SupplementalBaselineStep": {
-                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/supplemental_baseline/SupplementalBaselineStep/",
-                            "entry_script": "run_fg_b_builder.py",
-                            "data_prefixes": {
-                                "input_fg_b": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_b/",
-                                "output_supplemental_baseline": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_b/supplemental/",
                             },
                         }
                     }

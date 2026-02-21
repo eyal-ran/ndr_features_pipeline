@@ -40,6 +40,8 @@ The system is orchestrated through Step Functions and SageMaker Pipelines. Pipel
 - Entrypoint: `ndr.scripts.run_fg_b_builder`
 - Job: `src/ndr/processing/fg_b_builder_job.py`
 - Purpose: computes baseline outputs (host/segment/pair-oriented baseline datasets) for configured horizons.
+- Publication semantics: publishes canonical FG-B artifacts directly under `fg_b_output.s3_prefix` (`/host`, `/segment`, `/ip_metadata`, `/pair/host`, `/pair/segment`) with deterministic overwrite by (`feature_spec_version`, `baseline_horizon`).
+- Publication observability: emits `publication_metadata` records with baseline bounds plus deterministic `created_at`/`created_date` derived from the monthly reference time.
 - Runtime args include:
   - `--project-name`
   - `--feature-spec-version`

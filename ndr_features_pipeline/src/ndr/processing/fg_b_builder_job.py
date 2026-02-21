@@ -29,8 +29,8 @@ from ndr.config.project_parameters_loader import load_project_parameters
 from ndr.processing.base_runner import BaseRunner
 from ndr.io.s3_reader import S3Reader
 from ndr.io.s3_writer import S3Writer
-from ndr.processing.output_paths import build_batch_output_prefix
 from ndr.processing.segment_utils import add_segment_id
+from ndr.processing.output_paths import build_fg_b_publication_metadata
 from ndr.catalog.schema_manifest import (
     build_fg_b_host_manifest,
     build_fg_b_segment_manifest,
@@ -186,6 +186,7 @@ class FGBaselineBuilderJob(BaseRunner):
         spark = (
             SparkSession.builder.appName("fg_b_baseline_builder")
             .config("spark.sql.session.timeZone", "UTC")
+            .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
             .getOrCreate()
         )
         return spark
@@ -285,6 +286,7 @@ class FGBaselineBuilderJob(BaseRunner):
             pair_host_baselines=pair_host_baselines,
             pair_segment_baselines=pair_segment_baselines,
             horizon=horizon,
+            bounds=bounds,
         )
 
     # ------------------------------------------------------------------ #
@@ -728,24 +730,24 @@ class FGBaselineBuilderJob(BaseRunner):
         pair_host_baselines: Optional[DataFrame],
         pair_segment_baselines: Optional[DataFrame],
         horizon: str,
+        bounds: Dict[str, Any],
     ) -> None:
         """Write FG-B outputs (host, segment, pair baselines) to S3."""
         fg_b_cfg = self.job_spec.get("fg_b_output", {})
         s3_prefix = fg_b_cfg.get("s3_prefix")
         if not s3_prefix:
             raise ValueError("fg_b_output.s3_prefix must be configured in JobSpec for FG-B.")
-        base_prefix = build_batch_output_prefix(
-            base_prefix=s3_prefix,
-            dataset="fg_b",
-            batch_start_ts_iso=self.runtime_config.reference_time_iso,
-            batch_id=self.runtime_config.batch_id,
-        )
+        base_prefix = s3_prefix.rstrip("/")
 
         feature_spec_version = self.runtime_config.feature_spec_version
 
         LOGGER.info(
             "Writing FG-B host-level baselines.",
-            extra={"prefix": base_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
+            extra={
+                "prefix": f"{base_prefix}/host/",
+                "horizon": horizon,
+                "feature_spec_version": feature_spec_version,
+            },
         )
 
         metrics = self._extract_baseline_metrics(host_baselines)
@@ -761,7 +763,11 @@ class FGBaselineBuilderJob(BaseRunner):
 
         LOGGER.info(
             "Writing FG-B segment-level baselines.",
-            extra={"prefix": base_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
+            extra={
+                "prefix": f"{base_prefix}/segment/",
+                "horizon": horizon,
+                "feature_spec_version": feature_spec_version,
+            },
         )
 
         segment_manifest = build_fg_b_segment_manifest(metrics)
@@ -776,7 +782,11 @@ class FGBaselineBuilderJob(BaseRunner):
 
         LOGGER.info(
             "Writing FG-B IP metadata flags.",
-            extra={"prefix": base_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
+            extra={
+                "prefix": f"{base_prefix}/ip_metadata/",
+                "horizon": horizon,
+                "feature_spec_version": feature_spec_version,
+            },
         )
 
         ip_manifest = build_fg_b_ip_metadata_manifest()
@@ -818,6 +828,26 @@ class FGBaselineBuilderJob(BaseRunner):
                 partition_cols=["feature_spec_version", "baseline_horizon"],
                 mode="overwrite",
             )
+
+        publish_metadata = self.spark.createDataFrame(
+            [
+                build_fg_b_publication_metadata(
+                    feature_spec_version=feature_spec_version,
+                    baseline_horizon=horizon,
+                    reference_time_iso=self.runtime_config.reference_time_iso,
+                    run_mode=self.runtime_config.mode,
+                    run_batch_id=self.runtime_config.batch_id,
+                    baseline_start_ts=bounds["baseline_start_ts"],
+                    baseline_end_ts=bounds["baseline_end_ts"],
+                )
+            ]
+        )
+        self.s3_writer.write_parquet(
+            df=publish_metadata,
+            base_path=f"{base_prefix}/publication_metadata/",
+            partition_cols=["feature_spec_version", "baseline_horizon"],
+            mode="overwrite",
+        )
 
     @staticmethod
     def _extract_baseline_metrics(df: DataFrame) -> List[str]:

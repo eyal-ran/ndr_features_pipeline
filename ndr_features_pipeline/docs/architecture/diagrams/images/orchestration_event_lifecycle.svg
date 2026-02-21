@@ -23,7 +23,7 @@
   <line x1="200" y1="460" x2="350" y2="460" class="a"/><text x="210" y="452" class="lbl">Delete 15m lock</text>
 
   <line x1="20" y1="540" x2="1020" y2="540" class="a"/><text x="420" y="532" class="lbl">Trigger monthly, training, and backfill workflows</text>
-  <line x1="1020" y1="580" x2="520" y2="580" class="a"/><text x="760" y="572" class="lbl">Monthly: inventory -> FG-B -> supplemental baseline</text>
+  <line x1="1020" y1="580" x2="520" y2="580" class="a"/><text x="760" y="572" class="lbl">Monthly: inventory -> FG-B -> baseline ready event</text>
   <line x1="1020" y1="620" x2="520" y2="620" class="a"/><text x="760" y="612" class="lbl">Training: verifier -> IF training -> model lifecycle</text>
   <line x1="1020" y1="660" x2="520" y2="660" class="n"/><text x="760" y="652" class="lbl">Verifier fail path: missing-feature creation (max 2 retries)</text>
   <line x1="1020" y1="700" x2="520" y2="700" class="a"/><text x="760" y="692" class="lbl">Backfill: historical extractor + per-window processing</text>

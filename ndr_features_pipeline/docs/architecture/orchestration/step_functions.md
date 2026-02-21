@@ -23,7 +23,7 @@ JSONata definitions are stored under `docs/step_functions_jsonata/`:
 ### 2) Monthly FG-B baseline orchestration
 - Runs machine inventory refresh pipeline.
 - Runs FG-B baseline pipeline.
-- Runs supplemental baseline pipeline (replacing supplemental lambda logic).
+- Emits `NdrMonthlyBaselinesCompleted` immediately after FG-B succeeds; no supplemental placeholder stage remains.
 - Uses native SageMaker start + describe polling for all async stages.
 
 ### 3) Training orchestrator
@@ -79,7 +79,6 @@ Definitions contain deploy-time placeholders (for names/ARNs/resources). Replace
 - Ensure lock tables exist and state-machine roles include `dynamodb:PutItem`, `dynamodb:UpdateItem`, and `dynamodb:DeleteItem` as applicable.
 - Ensure pipeline name placeholders are wired for the replacement pipeline-native stages:
   - `PipelineNamePredictionJoin`
-  - `PipelineNameSupplementalBaseline`
   - `PipelineNameTrainingDataVerifier`
   - `PipelineNameMissingFeatureCreation`
   - `PipelineNameModelPublish`

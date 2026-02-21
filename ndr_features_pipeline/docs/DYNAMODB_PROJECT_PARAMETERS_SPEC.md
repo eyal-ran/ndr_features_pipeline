@@ -82,7 +82,6 @@ These fields are read from the `spec` payload itself by the JobSpec loader.
 - `if_training` (dedicated Isolation Forest training pipeline parameters)
 - `project_parameters` (project-level parameters consumed across orchestration flows)
 - `pipeline_backfill_historical_extractor` (pipeline-level script/runtime contract for preliminary historical window extraction)
-- `pipeline_supplemental_baseline`
 - `pipeline_prediction_feature_join`
 - `pipeline_training_data_verifier`
 - `pipeline_missing_feature_creation`

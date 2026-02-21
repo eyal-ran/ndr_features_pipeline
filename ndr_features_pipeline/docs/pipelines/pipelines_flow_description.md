@@ -155,13 +155,8 @@ It includes:
 12. `FGBPipelineStatusChoice` — branch on FG-B status.
 13. `WaitBeforeFGBDescribe` — wait between FG-B polls.
 14. `IncrementFGBPollAttempt` — increment FG-B poll counter.
-15. `StartSupplementalBaselinePipeline` — **⚠️ PIPELINE TRIGGER — NOT IMPLEMENTED (PLACEHOLDER NAME ONLY)**; starts `${PipelineNameSupplementalBaseline}` placeholder.
-16. `DescribeSupplementalPipeline` — poll supplemental pipeline status.
-17. `SupplementalPipelineStatusChoice` — branch on supplemental status.
-18. `WaitBeforeSupplementalDescribe` — wait between supplemental polls.
-19. `IncrementSupplementalPollAttempt` — increment supplemental poll counter.
-20. `EmitBaselineReadyEvent` — emit monthly-baseline completion event.
-21. `WorkflowFailed` — terminal failure state.
+15. `EmitBaselineReadyEvent` — emit monthly-baseline completion event.
+16. `WorkflowFailed` — terminal failure state.
 
 ### Pipeline triggered at `StartMachineInventoryRefresh`: `${PipelineNameMachineInventory}`
 - **Implementation state:** Implemented.
@@ -182,6 +177,7 @@ It includes:
 - **Implemented pipeline function:** `build_fg_b_baseline_pipeline`.
 - **Pipeline code location:** `src/ndr/pipeline/sagemaker_pipeline_definitions_unified_with_fgc.py`.
 - **Purpose:** compute FG-B host/segment/pair baselines over configured windows/horizons.
+- **Publication contract:** FG-B pipeline now acts as the canonical monthly publisher for FG-C consumers by writing deterministic overwrite snapshots directly under canonical prefixes (`/host`, `/segment`, `/ip_metadata`, `/pair/host`, `/pair/segment`) partitioned by `feature_spec_version` + `baseline_horizon`.
 
 #### Pipeline steps and run chain
 1. `FGBaselineBuilderStep`
@@ -190,12 +186,6 @@ It includes:
    - Second-hand processing entrypoint: `run_fg_b_builder_from_runtime_config`
    - Processing module: `src/ndr/processing/fg_b_builder_job.py`
    - Processing purpose: FG-B baseline build for regular/backfill modes.
-
-### Pipeline triggered at `StartSupplementalBaselinePipeline`: `${PipelineNameSupplementalBaseline}`
-- **Implementation state:** **Placeholder in orchestrator; pipeline definition not found in current `src/ndr/pipeline/sagemaker_pipeline_definitions_*.py` inventory.**
-- **Placeholder reference location:** `docs/step_functions_jsonata/sfn_ndr_monthly_fg_b_baselines.json`.
-- **Expected purpose (from flow context):** supplemental monthly baseline stage after FG-B baseline completion.
-- **Scripts/processing chain:** not resolvable from current repository pipeline definitions (missing concrete implementation).
 
 ---
 

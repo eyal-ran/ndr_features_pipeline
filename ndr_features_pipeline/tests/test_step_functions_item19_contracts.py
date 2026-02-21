@@ -81,3 +81,21 @@ def test_training_orchestrator_has_verifier_remediation_with_retry_budget_two():
     choice = states["VerifierFailedRetryGate"]["Choices"][0]["Condition"]
     assert "$remediation_attempt < 2" in choice
     assert "TrainingVerifierRetryExhausted" in states
+
+
+def test_monthly_fg_b_baseline_has_no_supplemental_pipeline_states():
+    doc = _load("sfn_ndr_monthly_fg_b_baselines.json")
+    states = doc["States"]
+
+    assert "StartSupplementalBaselinePipeline" not in states
+    assert "DescribeSupplementalPipeline" not in states
+    assert "SupplementalPipelineStatusChoice" not in states
+    assert "WaitBeforeSupplementalDescribe" not in states
+    assert "IncrementSupplementalPollAttempt" not in states
+
+    fgb_success = next(
+        choice
+        for choice in states["FGBPipelineStatusChoice"]["Choices"]
+        if choice["Condition"] == "{% $fgb_pipeline_status = 'Succeeded' %}"
+    )
+    assert fgb_success["Next"] == "EmitBaselineReadyEvent"

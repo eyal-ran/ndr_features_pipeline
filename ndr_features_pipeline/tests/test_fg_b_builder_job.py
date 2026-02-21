@@ -179,5 +179,78 @@ class TestFGBaselineBuilderJob(unittest.TestCase):
         self.assertEqual(by_host["10.0.0.2"].is_cold_start, 1)
 
 
+    def test_write_fg_b_outputs_uses_canonical_paths_and_overwrite_mode(self):
+        cfg = FGBaselineJobRuntimeConfig(
+            project_name="ndr_project",
+            feature_spec_version="v1",
+            reference_time_iso="2025-12-31T00:00:00Z",
+            batch_id="monthly-001",
+        )
+        job = FGBaselineBuilderJob(runtime_config=cfg)
+        job.spark = self.spark
+        job.job_spec = {"fg_b_output": {"s3_prefix": "s3://dummy/features/fg_b/"}}
+
+        schema = T.StructType(
+            [
+                T.StructField("host_ip", T.StringType(), True),
+                T.StructField("window_label", T.StringType(), True),
+                T.StructField("baseline_horizon", T.StringType(), True),
+                T.StructField("sessions_cnt_median", T.DoubleType(), True),
+                T.StructField("sessions_cnt_p25", T.DoubleType(), True),
+                T.StructField("sessions_cnt_p75", T.DoubleType(), True),
+                T.StructField("sessions_cnt_p95", T.DoubleType(), True),
+                T.StructField("sessions_cnt_p99", T.DoubleType(), True),
+                T.StructField("sessions_cnt_mad", T.DoubleType(), True),
+                T.StructField("sessions_cnt_iqr", T.DoubleType(), True),
+                T.StructField("sessions_cnt_support_count", T.IntegerType(), True),
+                T.StructField("sessions_cnt_cold_start_flag", T.IntegerType(), True),
+            ]
+        )
+        host_df = self.spark.createDataFrame([
+            ("10.0.0.1", "w_15m", "7d", 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 10, 0)
+        ], schema=schema)
+        segment_schema = schema.add(T.StructField("segment_id", T.StringType(), True))
+        segment_df = self.spark.createDataFrame([
+            ("10.0.0.1", "w_15m", "7d", 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 10, 0, "10.0.0")
+        ], schema=segment_schema)
+        ip_df = self.spark.createDataFrame([
+            ("10.0.0.1", "w_15m", "7d", 1, 0, 0)
+        ], schema=T.StructType([
+            T.StructField("host_ip", T.StringType(), True),
+            T.StructField("window_label", T.StringType(), True),
+            T.StructField("baseline_horizon", T.StringType(), True),
+            T.StructField("is_full_history", T.IntegerType(), True),
+            T.StructField("is_non_persistent_machine", T.IntegerType(), True),
+            T.StructField("is_cold_start", T.IntegerType(), True),
+        ]))
+
+        with patch("ndr.processing.fg_b_builder_job.enforce_schema", side_effect=lambda df, *_args: df):
+            with patch.object(job.s3_writer, "write_parquet") as write_mock:
+                job._write_fg_b_outputs(
+                    host_baselines=host_df,
+                    segment_baselines=segment_df,
+                    ip_metadata=ip_df,
+                    pair_host_baselines=None,
+                    pair_segment_baselines=None,
+                    horizon="7d",
+                    bounds={"baseline_start_ts": "2025-12-22T00:00:00Z", "baseline_end_ts": "2025-12-29T00:00:00Z"},
+                )
+
+        written_paths = [kwargs["base_path"] for _, kwargs in write_mock.call_args_list]
+        assert "s3://dummy/features/fg_b/host/" in written_paths
+        assert "s3://dummy/features/fg_b/segment/" in written_paths
+        assert "s3://dummy/features/fg_b/ip_metadata/" in written_paths
+        assert "s3://dummy/features/fg_b/publication_metadata/" in written_paths
+        assert all("ts=" not in path for path in written_paths)
+        assert all(kwargs["mode"] == "overwrite" for _, kwargs in write_mock.call_args_list)
+        publication_call = next(kwargs for _, kwargs in write_mock.call_args_list if kwargs["base_path"].endswith("/publication_metadata/"))
+        publish_df = publication_call["df"]
+        publish_row = publish_df.collect()[0].asDict()
+        assert publish_row["created_at"] == "2025-12-31T00:00:00Z"
+        assert publish_row["created_date"] == "2025-12-31"
+        assert publish_row["baseline_start_ts"] == "2025-12-22T00:00:00Z"
+        assert publish_row["baseline_end_ts"] == "2025-12-29T00:00:00Z"
+
+
 if __name__ == "__main__":
     unittest.main()

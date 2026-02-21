@@ -122,5 +122,5 @@ flowchart TB
 ## Scope notes
 
 - Focuses on implemented repository architecture: EventBridge + Step Functions + SageMaker pipelines + DynamoDB lock/config + S3 data products.
-- Reflects pipeline-native replacements in orchestration (supplemental baseline, training verifier/remediation, and model lifecycle stages).
+- Reflects pipeline-native orchestration stages for monthly baselines, training verifier/remediation, and model lifecycle stages.
 - Omits speculative optional services to keep this view aligned with active definitions.

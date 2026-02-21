@@ -50,7 +50,6 @@ def test_bootstrap_items_include_all_runtime_jobs():
         "pipeline_prediction_feature_join",
         "pipeline_if_training",
         "pipeline_backfill_historical_extractor",
-        "pipeline_supplemental_baseline",
         "pipeline_training_data_verifier",
         "pipeline_missing_feature_creation",
         "pipeline_model_publish",
@@ -153,5 +152,6 @@ def test_item19_pipeline_seed_items_present_with_expected_runtime_params():
 
 
     assert "pipeline_prediction_publish" not in by_job
+    assert "pipeline_supplemental_baseline" not in by_job
     deploy_spec = by_job["pipeline_model_deploy"]["spec"]
     assert "ModelDeployStep" in deploy_spec["scripts"]["steps"]

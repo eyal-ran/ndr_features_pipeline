@@ -843,3 +843,146 @@
 - All relevant docs are synchronized and describe the single-pipeline publication architecture.
 
 **Status:** Implemented. `sfn_ndr_prediction_publication` now completes publication after `PipelineNamePredictionJoin` succeeds (no secondary publish pipeline states), bootstrap/runtime contracts no longer seed `pipeline_prediction_publish`, and publication validation for destination routing/idempotent writes is enforced in `prediction_feature_join`.
+
+## 21) Remove monthly supplemental baseline placeholder by hardening FG-B canonical publication and snapshot contracts
+**Issue:** `sfn_ndr_monthly_fg_b_baselines` still contains `StartSupplementalBaselinePipeline` as an unimplemented placeholder. Current FG-B outputs are written under timestamped batch prefixes, while FG-C reads canonical FG-B paths (`/host`, `/segment`, `/ip_metadata`, `/pair/*`), creating integration/contract gaps and leaving unnecessary orchestration overhead.
+
+**Goal:** Eliminate the supplemental placeholder path by making FG-B the authoritative publisher of FG-C-consumable canonical baseline artifacts with deterministic monthly overwrite semantics and exactly one active snapshot per horizon.
+
+### Implementation plan (authoritative)
+
+1. **Refactor FG-B write contract to canonical publish mode**
+   - Update `fg_b_builder_job` output writing so canonical FG-B paths become first-class outputs:
+     - `<fg_b_output_prefix>/host/`
+     - `<fg_b_output_prefix>/segment/`
+     - `<fg_b_output_prefix>/ip_metadata/`
+     - `<fg_b_output_prefix>/pair/host/`
+     - `<fg_b_output_prefix>/pair/segment/`
+   - Remove reliance on timestamped-only final output locations for the monthly baseline publication path.
+   - Keep optional archival/history behavior only if needed for audit/backfill, but decouple it from FG-C online baseline-read contract.
+
+2. **Enforce deterministic overwrite semantics and “one active snapshot per horizon”**
+   - For each horizon (`7d`, `30d`), publish exactly one active baseline snapshot per `feature_spec_version` in canonical paths.
+   - Implement safe publish mechanics (stage/verify/promote or equivalent) so readers never observe partial canonical writes.
+   - Ensure all canonical writes are idempotent under retry/re-execution and do not accumulate duplicate active partitions.
+   - Emit/record publish metadata (e.g., reference time, baseline bounds, run id) to support observability and rollback.
+
+3. **Preserve and validate FG-C compatibility contracts**
+   - Verify canonical FG-B outputs preserve columns required by FG-C:
+     - host/segment baseline stat families (`*_median`, `*_p25`, `*_p75`, `*_p95`, `*_p99`, `*_mad`, `*_iqr`, `*_support_count`),
+     - `baseline_horizon`,
+     - `ip_metadata` cold-start fields,
+     - optional pair rarity schema if enabled.
+   - Confirm FG-C joins continue to work for warm/cold routing and pair rarity fallback behavior.
+   - If any schema/key drift is introduced, update FG-C joins/validation and corresponding docs/tests in the same change set.
+
+4. **Step Functions simplification (`sfn_ndr_monthly_fg_b_baselines`)**
+   - Remove supplemental placeholder branch states:
+     - `StartSupplementalBaselinePipeline`
+     - `DescribeSupplementalPipeline`
+     - `SupplementalPipelineStatusChoice`
+     - `WaitBeforeSupplementalDescribe`
+     - `IncrementSupplementalPollAttempt`
+   - Route FG-B success directly to `EmitBaselineReadyEvent`.
+   - Keep machine-inventory -> FG-B ordering unchanged.
+   - Retain bounded polling/retry/backoff patterns and explicit terminal failure behavior.
+
+5. **Pipeline/runtime contract cleanup**
+   - Remove `pipeline_supplemental_baseline` bootstrap/runtime parameter contract entries.
+   - Remove deployment/IaC placeholder dependency on `PipelineNameSupplementalBaseline`.
+   - Ensure project parameter seed payloads and validation logic are updated to reflect the simplified monthly orchestration.
+
+6. **Data migration/backward compatibility and rollback planning**
+   - Provide one-time migration guidance for environments currently containing FG-B outputs only under timestamped paths.
+   - Define a cutover procedure:
+     1) deploy FG-B canonical publish,
+     2) run one monthly baseline cycle,
+     3) verify canonical artifacts,
+     4) deploy simplified Step Function.
+   - Define rollback plan:
+     - restore prior state machine definition,
+     - re-enable placeholder wiring if emergency fallback is required,
+     - preserve previous artifact locations for rapid reversion.
+
+7. **Documentation synchronization (required in same delivery wave)**
+   - Update all relevant docs to describe the post-change architecture and contracts:
+     - `docs/pipelines/pipelines_flow_description.md`
+     - `docs/step_functions_jsonata/sfn_ndr_monthly_fg_b_baselines.json` (if tracked as source-of-truth artifact)
+     - `docs/architecture/orchestration/step_functions.md`
+     - `docs/architecture/diagrams/pipeline_flow.md` (+ generated diagram artifact if applicable)
+     - `docs/feature_builders/current_state.md`
+     - `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md`
+     - any runbook/deployment docs that still mention supplemental monthly baseline pipeline placeholder wiring.
+   - Explicitly document canonical FG-B publication semantics, monthly overwrite policy, and active-snapshot guarantees.
+
+8. **Testing, checks, and verification gates (must pass before completion)**
+   - **Unit/integration processing checks**
+     - Add/extend FG-B tests to verify canonical-path writes and deterministic overwrite behavior.
+     - Add/extend FG-C tests to verify successful reads from canonical FG-B paths and no regression in warm/cold baseline routing.
+     - Add pair rarity path tests for enabled/disabled modes and fallback behavior.
+   - **Orchestration contract checks**
+     - Update Step Functions contract tests to assert no supplemental states remain in monthly baseline workflow.
+     - Verify monthly flow still emits `NdrMonthlyBaselinesCompleted` only after FG-B success.
+   - **Bootstrap/contract checks**
+     - Update/create tests ensuring `pipeline_supplemental_baseline` is removed from seeded runtime contracts.
+     - Verify required runtime params and code-prefix contracts remain valid for retained pipelines.
+   - **End-to-end dry-run verification**
+     - Validate one monthly execution end-to-end in a non-prod environment:
+       - machine inventory completes,
+       - FG-B publishes canonical artifacts,
+       - Step Function reaches completion event,
+       - FG-C batch reads canonical baselines without ambiguity.
+   - **Operational readiness checks**
+     - Validate logs/metrics for publish success, overwrite idempotency, and baseline availability.
+     - Add/verify alerts for failed canonical publish, missing horizon artifacts, and monthly orchestration failure.
+
+9. **Completeness matrix (required file-level coverage, including omissions)**
+   - **Processing code**
+     - `src/ndr/processing/fg_b_builder_job.py`: implement canonical publish paths, deterministic overwrite mechanics, snapshot metadata emission, and idempotent retry behavior.
+     - `src/ndr/processing/output_paths.py`: update/extend helpers only if needed so FG-B canonical publication semantics are explicit and not coupled to timestamped batch-only paths.
+     - `src/ndr/processing/fg_c_builder_job.py`: confirm read-contract compatibility remains stable (or update with explicit snapshot selectors if the final design introduces them).
+   - **Pipeline definitions and registration contracts**
+     - `src/ndr/pipeline/sagemaker_pipeline_definitions_unified_with_fgc.py`: ensure FG-B pipeline runtime contract remains aligned with revised output/publication semantics.
+     - `src/ndr/scripts/create_ml_projects_parameters_table.py`: remove `pipeline_supplemental_baseline` seeds/runtime params and keep retained pipeline contracts valid.
+     - Any IaC/deployment template wiring pipeline placeholders: remove `PipelineNameSupplementalBaseline` references.
+   - **Orchestration definitions and tests**
+     - `docs/step_functions_jsonata/sfn_ndr_monthly_fg_b_baselines.json`: remove supplemental states and route FG-B success directly to baseline-ready event.
+     - `tests/test_step_functions_item19_contracts.py` and any monthly-orchestration tests: assert supplemental states are absent and success routing is correct.
+   - **Builder/contract tests**
+     - `tests/test_fg_b_builder_job.py`: add canonical write + overwrite-idempotency assertions.
+     - `tests/test_fg_c_builder_job.py`: verify warm/cold baseline routing and pair rarity behavior using canonical FG-B outputs.
+     - `tests/test_create_ml_projects_parameters_table.py`: verify `pipeline_supplemental_baseline` removal and seed consistency.
+   - **Documentation updates (must all be synchronized)**
+     - `docs/pipelines/pipelines_flow_description.md`
+     - `docs/architecture/orchestration/step_functions.md`
+     - `docs/architecture/diagrams/pipeline_flow.md` (+ rendered diagram artifact)
+     - `docs/feature_builders/current_state.md`
+     - `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md`
+     - Any deployment/runbook doc that still lists supplemental placeholder wiring.
+   - **Explicit omissions to avoid (must be checked before merge)**
+     - Leaving stale placeholder names (`PipelineNameSupplementalBaseline`, `pipeline_supplemental_baseline`) in docs/tests/IaC.
+     - Implementing canonical FG-B writes without partial-write safety/atomic publish checks.
+     - Removing orchestration states without preserving equivalent failure signaling/observability.
+     - Updating code without matching docs/tests and migration guidance.
+
+10. **Execution/verification checklist (authoritative go-live gate)**
+   - Run full relevant automated tests (Step Functions contract tests, FG-B/FG-C unit tests, seed/contract tests).
+   - Perform non-prod monthly dry-run and collect evidence for:
+     - machine inventory success,
+     - FG-B canonical publish success,
+     - no supplemental orchestration dependency,
+     - baseline-ready event emission,
+     - FG-C successfully reading canonical baselines for both horizons.
+   - Validate monitoring/alerts and runbook updates are complete.
+   - Record rollback drill outcome (or documented simulation) before production rollout.
+
+### Definition of done
+- Monthly state machine contains no supplemental placeholder pipeline states.
+- No deployment/runtime contract requires `PipelineNameSupplementalBaseline` or `pipeline_supplemental_baseline`.
+- FG-B is the single authoritative canonical publisher for FG-C-consumable baselines.
+- Canonical FG-B paths expose exactly one active snapshot per horizon and are idempotent under retries.
+- FG-C and pair-rarity integrations are verified to function against canonical FG-B outputs without schema/join regressions.
+- All architecture/orchestration/contract documentation is synchronized with the implemented post-change state.
+- End-to-end monthly baseline workflow validation passes in pre-production with explicit evidence captured.
+
+**Status:** Planned.

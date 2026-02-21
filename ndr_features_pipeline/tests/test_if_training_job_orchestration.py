@@ -76,6 +76,10 @@ def test_run_orchestrates_artifact_before_deploy(monkeypatch):
         feature_spec_version="v1",
         run_id="run-1",
         execution_ts_iso="2025-01-01T00:00:00Z",
+        training_start_ts="2024-01-01T00:00:00Z",
+        training_end_ts="2024-04-01T00:00:00Z",
+        eval_start_ts="2024-04-01T00:00:00Z",
+        eval_end_ts="2024-05-01T00:00:00Z",
     )
     job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
 
@@ -128,6 +132,10 @@ def test_run_failure_writes_failure_artifacts(monkeypatch):
         feature_spec_version="v1",
         run_id="run-2",
         execution_ts_iso="2025-01-01T00:00:00Z",
+        training_start_ts="2024-01-01T00:00:00Z",
+        training_end_ts="2024-04-01T00:00:00Z",
+        eval_start_ts="2024-04-01T00:00:00Z",
+        eval_end_ts="2024-05-01T00:00:00Z",
     )
     job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
 
@@ -159,6 +167,10 @@ def test_write_preflight_failure_artifact_includes_resolved_payload(monkeypatch)
         feature_spec_version="v1",
         run_id="run-3",
         execution_ts_iso="2025-01-01T00:00:00Z",
+        training_start_ts="2024-01-01T00:00:00Z",
+        training_end_ts="2024-04-01T00:00:00Z",
+        eval_start_ts="2024-04-01T00:00:00Z",
+        eval_end_ts="2024-05-01T00:00:00Z",
     )
     resolved_payload = {"feature_inputs": {"fg_a": "a", "fg_c": "c"}, "param": 1}
     job = IFTrainingJob(_DummyDF(), runtime, _make_spec(), resolved_spec_payload=resolved_payload)
@@ -218,6 +230,10 @@ def test_log_sagemaker_experiments_writes_rich_components(monkeypatch):
         feature_spec_version="v1",
         run_id="run-4",
         execution_ts_iso="2025-01-01T00:00:00Z",
+        training_start_ts="2024-01-01T00:00:00Z",
+        training_end_ts="2024-04-01T00:00:00Z",
+        eval_start_ts="2024-04-01T00:00:00Z",
+        eval_end_ts="2024-05-01T00:00:00Z",
     )
     job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
 
@@ -249,6 +265,10 @@ def test_preflight_fails_on_underfilled_window(monkeypatch):
         feature_spec_version="v1",
         run_id="run-5",
         execution_ts_iso="2025-01-01T00:00:00Z",
+        training_start_ts="2024-01-01T00:00:00Z",
+        training_end_ts="2024-04-01T00:00:00Z",
+        eval_start_ts="2024-04-01T00:00:00Z",
+        eval_end_ts="2024-05-01T00:00:00Z",
     )
     spec = _make_spec()
     spec.reliability.min_rows_per_window = 50
@@ -303,3 +323,78 @@ def test_preflight_fails_on_underfilled_window(monkeypatch):
         raise AssertionError("Expected underfilled window failure")
 
     assert captured["context"]["minimum_rows_per_window"] == 50
+
+def _runtime_with_stage(stage: str) -> IFTrainingRuntimeConfig:
+    return IFTrainingRuntimeConfig(
+        project_name="proj",
+        feature_spec_version="v1",
+        run_id=f"run-{stage}",
+        execution_ts_iso="2025-01-01T00:00:00Z",
+        training_start_ts="2024-01-01T00:00:00Z",
+        training_end_ts="2024-04-01T00:00:00Z",
+        eval_start_ts="2024-04-01T00:00:00Z",
+        eval_end_ts="2024-05-01T00:00:00Z",
+        stage=stage,
+    )
+
+
+def test_publish_stage_writes_publication_metadata(monkeypatch):
+    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("publish"), _make_spec())
+
+    monkeypatch.setattr(
+        job,
+        "_load_final_training_report",
+        lambda: {
+            "final_model": {
+                "model_image_copy_path": "s3://bucket/model.tar.gz",
+                "artifact_hash": "abc123",
+            },
+            "validation_gates": {"min_relative_improvement": {"passed": True}},
+        },
+    )
+    writes = {}
+    monkeypatch.setattr(job, "_write_stage_status", lambda stage, payload: writes.update({"stage": stage, "payload": payload}))
+
+    job.run()
+
+    assert writes["stage"] == "publish"
+    assert writes["payload"]["status"] == "published"
+    assert writes["payload"]["model_tar_s3_uri"] == "s3://bucket/model.tar.gz"
+
+
+def test_deploy_stage_invokes_maybe_deploy_with_published_model(monkeypatch):
+    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("deploy"), _make_spec())
+
+    monkeypatch.setattr(
+        job,
+        "_load_stage_status",
+        lambda *_args, **_kwargs: {
+            "model_tar_s3_uri": "s3://bucket/model.tar.gz",
+            "validation_gates": {"max_score_drift": {"passed": True}},
+        },
+    )
+    observed = {}
+    def _deploy_call(**kwargs):
+        observed["deploy_call"] = kwargs
+        return {"attempted": True, "status": "updated"}
+
+    monkeypatch.setattr(job, "_maybe_deploy", _deploy_call)
+    monkeypatch.setattr(job, "_write_stage_status", lambda stage, payload: observed.update({"stage": stage, "payload": payload}))
+
+    job.run()
+
+    assert observed["deploy_call"]["model_data_url"] == "s3://bucket/model.tar.gz"
+    assert observed["stage"] == "deploy"
+
+
+def test_remediate_stage_skips_when_no_missing_windows(monkeypatch):
+    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("remediate"), _make_spec())
+
+    monkeypatch.setattr(job, "_load_latest_verification_status", lambda: {"needs_remediation": False, "missing_windows": []})
+    observed = {}
+    monkeypatch.setattr(job, "_write_stage_status", lambda stage, payload: observed.update({"stage": stage, "payload": payload}))
+
+    job.run()
+
+    assert observed["stage"] == "remediation"
+    assert observed["payload"]["status"] == "skipped"

@@ -83,11 +83,7 @@ These fields are read from the `spec` payload itself by the JobSpec loader.
 - `project_parameters` (project-level parameters consumed across orchestration flows)
 - `pipeline_backfill_historical_extractor` (pipeline-level script/runtime contract for preliminary historical window extraction)
 - `pipeline_prediction_feature_join`
-- `pipeline_training_data_verifier`
-- `pipeline_missing_feature_creation`
-- `pipeline_model_publish`
-- `pipeline_model_attributes`
-- `pipeline_model_deploy`
+- `pipeline_if_training` (unified training lifecycle pipeline: verifier, remediation, training, publish, attributes, deploy)
 
 ## Job-Specific Spec Payloads
 Below are the *minimum* payload expectations based on runtime usage. Additional keys are allowed.

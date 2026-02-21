@@ -149,6 +149,12 @@ class IFTrainingRuntimeConfig:
     feature_spec_version: str
     run_id: str
     execution_ts_iso: str
+    training_start_ts: str | None = None
+    training_end_ts: str | None = None
+    eval_start_ts: str | None = None
+    eval_end_ts: str | None = None
+    missing_windows_override: str = "[]"
+    stage: str = "train"
 
 
 def parse_if_training_spec(job_spec: Dict[str, Any]) -> IFTrainingSpec:

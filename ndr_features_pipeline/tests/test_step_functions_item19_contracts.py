@@ -73,14 +73,24 @@ def test_prediction_publication_has_identity_lock_and_duplicate_suppression():
     assert join_success["Next"] == "MarkPublicationSucceeded"
 
 
-def test_training_orchestrator_has_verifier_remediation_with_retry_budget_two():
+def test_training_orchestrator_is_coarse_grained_single_training_pipeline():
     doc = _load("sfn_ndr_training_orchestrator.json")
     states = doc["States"]
-    assert "StartTrainingDataVerifier" in states
-    assert "VerifierFailedRetryGate" in states
-    choice = states["VerifierFailedRetryGate"]["Choices"][0]["Condition"]
-    assert "$remediation_attempt < 2" in choice
-    assert "TrainingVerifierRetryExhausted" in states
+
+    assert "StartTrainingPipeline" in states
+    assert "DescribeTrainingPipeline" in states
+    assert "TrainingPipelineStatusChoice" in states
+
+    assert "StartTrainingDataVerifier" not in states
+    assert "StartMissingFeatureCreation" not in states
+    assert "StartModelPublishPipeline" not in states
+    assert "StartModelAttributesPipeline" not in states
+    assert "StartModelDeployPipeline" not in states
+
+    args = states["StartTrainingPipeline"]["Arguments"]
+    assert args["PipelineName"] == "${PipelineNameIFTraining}"
+    names = {p["Name"] for p in args["PipelineParameters"]}
+    assert {"TrainingStartTs", "TrainingEndTs", "EvalStartTs", "EvalEndTs", "MissingWindowsOverride"}.issubset(names)
 
 
 def test_monthly_fg_b_baseline_has_no_supplemental_pipeline_states():

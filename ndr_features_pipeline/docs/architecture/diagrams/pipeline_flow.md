@@ -86,13 +86,7 @@ flowchart LR
     D5 --> C5
 
     B3 --> C8
-    C8 --> C10
-    C8 -. verifier failure, max 2 retries .-> C9
-    C9 --> C8
-    C10 --> D10
-    B3 --> C11
-    B3 --> C12
-    B3 --> C13
+    C8 --> D10
 
     B5 --> C14
     C14 --> D12
@@ -103,5 +97,5 @@ flowchart LR
 ## Notes
 
 - Reflects the current five-state-machine orchestration inventory: 15-minute, monthly baselines, training, prediction publication, and backfill/reprocessing.
-- Includes replacement pipeline-native stages now represented in orchestration definitions: training verifier/remediation and model publish/attributes/deploy; monthly baselines now complete after canonical FG-B publication without a supplemental placeholder pipeline.
+- Includes unified training orchestration where verifier/remediation/training/publish/attributes/deploy are internal stages of one IF training pipeline; monthly baselines complete after canonical FG-B publication without a supplemental placeholder pipeline.
 - Shows that prediction publication runs as a separate state machine started synchronously by the 15-minute workflow.

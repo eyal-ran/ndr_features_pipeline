@@ -199,84 +199,43 @@ It includes:
 1. `NormalizeIncomingMessage` — normalize inbound payload.
 2. `ParseIncomingProjectContext` — parse project/spec hints.
 3. `LoadProjectParametersFromDynamo` — load project defaults.
-4. `ResolvePipelineRuntimeParams` — resolve training runtime values.
-5. `StartTrainingDataVerifier` — **⚠️ PIPELINE TRIGGER — NOT IMPLEMENTED (PLACEHOLDER NAME ONLY)**; starts `${PipelineNameTrainingDataVerifier}` placeholder.
-6. `DescribeTrainingDataVerifier` — poll verifier pipeline status.
-7. `TrainingDataVerifierChoice` — branch on verifier status.
-8. `WaitBeforeVerifierDescribe` — wait between verifier polls.
-9. `IncrementVerifierPollAttempt` — increment verifier poll counter.
-10. `VerifierFailedRetryGate` — gate remediation retry budget.
-11. `StartMissingFeatureCreationPipeline` — **⚠️ PIPELINE TRIGGER — NOT IMPLEMENTED (PLACEHOLDER NAME ONLY)**; starts `${PipelineNameMissingFeatureCreation}` placeholder.
-12. `DescribeMissingFeatureCreationPipeline` — poll remediation pipeline status.
-13. `MissingFeatureCreationChoice` — branch on remediation status.
-14. `WaitBeforeMissingFeatureDescribe` — wait between remediation polls.
-15. `IncrementMissingFeaturePollAttempt` — increment remediation poll counter.
-16. `IncrementRemediationAttempt` — increment remediation attempt count.
-17. `StartTrainingPipeline` — **PIPELINE TRIGGER**; start `${PipelineNameTraining}`.
-18. `DescribeTrainingPipeline` — poll training pipeline status.
-19. `TrainingPipelineChoice` — branch on training status.
-20. `WaitBeforeTrainingDescribe` — wait between training polls.
-21. `IncrementTrainingPollAttempt` — increment training poll counter.
-22. `StartModelPublishPipeline` — **⚠️ PIPELINE TRIGGER — NOT IMPLEMENTED (PLACEHOLDER NAME ONLY)**; starts `${PipelineNameModelPublish}` placeholder.
-23. `DescribeModelPublishPipeline` — poll model-publish status.
-24. `ModelPublishChoice` — branch on model-publish status.
-25. `WaitBeforeModelPublishDescribe` — wait between model-publish polls.
-26. `IncrementModelPublishPollAttempt` — increment model-publish poll counter.
-27. `StartModelAttributesPipeline` — **⚠️ PIPELINE TRIGGER — NOT IMPLEMENTED (PLACEHOLDER NAME ONLY)**; starts `${PipelineNameModelAttributes}` placeholder.
-28. `DescribeModelAttributesPipeline` — poll model-attributes status.
-29. `ModelAttributesChoice` — branch on model-attributes status.
-30. `WaitBeforeModelAttributesDescribe` — wait between model-attributes polls.
-31. `IncrementModelAttributesPollAttempt` — increment model-attributes poll counter.
-32. `StartModelDeployPipeline` — **⚠️ PIPELINE TRIGGER — NOT IMPLEMENTED (PLACEHOLDER NAME ONLY)**; starts `${PipelineNameModelDeploy}` placeholder.
-33. `DescribeModelDeployPipeline` — poll model-deploy status.
-34. `ModelDeployChoice` — branch on model-deploy status.
-35. `WaitBeforeModelDeployDescribe` — wait between model-deploy polls.
-36. `IncrementModelDeployPollAttempt` — increment model-deploy poll counter.
-37. `TrainingVerifierRetryExhausted` — terminal failure after retry exhaustion.
-38. `WorkflowFailed` — terminal workflow failure state.
-39. `Success` — terminal success state.
+4. `ResolvePipelineRuntimeParams` — resolve unified training runtime values.
+5. `StartTrainingPipeline` — **PIPELINE TRIGGER**; starts `${PipelineNameIFTraining}`.
+6. `DescribeTrainingPipeline` — poll unified training pipeline status.
+7. `TrainingPipelineStatusChoice` — branch on pipeline status.
+8. `WaitBeforeTrainingDescribe` — wait between polls.
+9. `IncrementTrainingPollAttempt` — increment poll counter.
+10. `WorkflowFailed` — terminal workflow failure state.
+11. `Success` — terminal success state.
 
-### Pipeline triggered at `StartTrainingDataVerifier`: `${PipelineNameTrainingDataVerifier}`
-- **Implementation state:** **Placeholder in orchestrator; pipeline definition not found in current `src/ndr/pipeline/sagemaker_pipeline_definitions_*.py` inventory.**
-- **Placeholder reference location:** `docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json`.
-- **Expected purpose:** verify training/eval data coverage before model training.
-- **Scripts/processing chain:** unresolved in current repository pipeline definitions.
-
-### Pipeline triggered at `StartMissingFeatureCreationPipeline`: `${PipelineNameMissingFeatureCreation}`
-- **Implementation state:** **Placeholder in orchestrator; pipeline definition not found in current `src/ndr/pipeline/sagemaker_pipeline_definitions_*.py` inventory.**
-- **Expected purpose:** remediation path for missing feature windows.
-- **Scripts/processing chain:** unresolved in current repository pipeline definitions.
-
-### Pipeline triggered at `StartTrainingPipeline`: `${PipelineNameTraining}`
-- **Implementation state:** Implemented.
+### Pipeline triggered at `StartTrainingPipeline`: `${PipelineNameIFTraining}`
+- **Implementation state:** Implemented and authoritative owner for the full training lifecycle.
 - **Implemented pipeline function:** `build_if_training_pipeline`.
 - **Pipeline code location:** `src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py`.
-- **Purpose:** train Isolation Forest model artifacts from prepared feature datasets.
+- **Purpose:** execute verifier + bounded remediation + re-verification + IF training + publish + attributes + deploy in one ordered pipeline-native chain.
 
 #### Pipeline steps and run chain
-1. `IFTrainingStep`
-   - Runs: `python -m ndr.scripts.run_if_training`
-   - Script: `src/ndr/scripts/run_if_training.py`
-   - Second-hand processing entrypoint: `run_if_training_from_runtime_config`
-   - Processing module: `src/ndr/processing/if_training_job.py`
-   - Processing purpose: end-to-end IF training workflow over training/eval windows.
-
-### Pipeline triggered at `StartModelPublishPipeline`: `${PipelineNameModelPublish}`
-- **Implementation state:** **Placeholder in orchestrator; pipeline definition not found in current `src/ndr/pipeline/sagemaker_pipeline_definitions_*.py` inventory.**
-- **Expected purpose:** publish trained model artifacts/versions.
-- **Scripts/processing chain:** unresolved in current repository pipeline definitions.
-
-### Pipeline triggered at `StartModelAttributesPipeline`: `${PipelineNameModelAttributes}`
-- **Implementation state:** **Placeholder in orchestrator; pipeline definition not found in current `src/ndr/pipeline/sagemaker_pipeline_definitions_*.py` inventory.**
-- **Expected purpose:** register/update model metadata/attributes.
-- **Scripts/processing chain:** unresolved in current repository pipeline definitions.
-
-### Pipeline triggered at `StartModelDeployPipeline`: `${PipelineNameModelDeploy}`
-- **Implementation state:** **Placeholder in orchestrator; pipeline definition not found in current `src/ndr/pipeline/sagemaker_pipeline_definitions_*.py` inventory.**
-- **Expected purpose:** deploy model to target serving environment.
-- **Scripts/processing chain:** unresolved in current repository pipeline definitions.
-
----
+1. `TrainingDataVerifierStep`
+   - Runs: `python -m ndr.scripts.run_if_training --stage verify`
+   - Purpose: validate FG-A/FG-C coverage and persist deterministic verification status artifact.
+2. `MissingFeatureCreationStep`
+   - Runs: `python -m ndr.scripts.run_if_training --stage remediate`
+   - Purpose: bounded remediation (`max 2` attempts) using missing windows from verifier status or runtime override.
+3. `PostRemediationVerificationStep`
+   - Runs: `python -m ndr.scripts.run_if_training --stage reverify`
+   - Purpose: re-check coverage after remediation and persist re-verification status.
+4. `IFTrainingStep`
+   - Runs: `python -m ndr.scripts.run_if_training --stage train`
+   - Purpose: train/validate/refit, persist artifacts, write final report and SUCCESS marker.
+5. `ModelPublishStep`
+   - Runs: `python -m ndr.scripts.run_if_training --stage publish`
+   - Purpose: persist publication metadata derived from final report for deterministic downstream lifecycle state.
+6. `ModelAttributesStep`
+   - Runs: `python -m ndr.scripts.run_if_training --stage attributes`
+   - Purpose: persist model attributes payload (join/preprocessing/window metadata) with idempotent run key.
+7. `ModelDeployStep`
+   - Runs: `python -m ndr.scripts.run_if_training --stage deploy`
+   - Purpose: perform deployment gate evaluation + deployment call and persist rollout status artifact.
 
 ## 5) Triggering source: `sfn_ndr_backfill_reprocessing` (backfill and reprocessing)
 

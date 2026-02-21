@@ -986,3 +986,183 @@
 - End-to-end monthly baseline workflow validation passes in pre-production with explicit evidence captured.
 
 **Status:** Planned.
+
+## 22) Redesign `sfn_ndr_training_orchestrator` to coarse-grained mode with one fully implemented unified training pipeline (Option A)
+**Issue:** The training orchestrator currently contains five placeholder/unimplemented pipeline stages (`training_data_verifier`, `missing_feature_creation`, `model_publish`, `model_attributes`, `model_deploy`) and corresponding polling branches. This creates orchestration complexity and contract drift while core behavior should be owned by one pipeline-native training lifecycle.
+
+**Goal:** Implement Option A end-to-end: keep Step Functions coarse-grained and make a single SageMaker training pipeline fully own verifier + remediation + training + publish + attributes + deploy, with bounded retries, deterministic contracts, and production-grade observability.
+
+### Implementation plan (authoritative)
+
+1. **Architecture baseline and invariants (must be captured first)**
+   - Establish canonical target architecture:
+     - `sfn_ndr_training_orchestrator` only performs input normalization, runtime resolution, starts one training pipeline, polls status, emits success/failure.
+     - `pipeline_if_training` becomes the sole implementation owner for:
+       1) training/eval data verification,
+       2) missing-window remediation,
+       3) IF model training,
+       4) model publication,
+       5) model attributes registration,
+       6) model deployment.
+   - Preserve fail-closed behavior and bounded retry semantics currently expected by orchestration contracts.
+   - Define compatibility policy for rollout:
+     - backward-compatible input fields retained at Step Function boundary,
+     - explicit deprecation path for orphan placeholder pipeline names and Dynamo job-spec entries.
+
+2. **Refactor Step Functions definition to coarse-grained orchestration**
+   - Update `docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json` to:
+     - remove verifier/remediation branches and all model lifecycle sub-pipeline branches,
+     - retain a single `StartTrainingPipeline` + `DescribeTrainingPipeline` polling loop,
+     - route successful completion directly to terminal success,
+     - route failures to explicit terminal failure with deterministic cause/error identifiers.
+   - Ensure runtime parameter resolution still supports all required fields for the unified pipeline.
+   - Keep polling backoff/retry patterns aligned with existing state machine conventions.
+
+3. **Expand unified training pipeline contract (`pipeline_if_training`)**
+   - Extend required runtime parameters beyond current training-only keys to include verifier/remediation inputs:
+     - `TrainingStartTs`, `TrainingEndTs`, `EvalStartTs`, `EvalEndTs`, optional `MissingWindowsOverride` (or approved equivalent).
+   - Update pipeline-definition parameter objects and downstream argument wiring.
+   - Add strict runtime validation for required timestamps/ranges and parameter coherence before heavy compute starts.
+
+4. **Implement full internal step chain inside unified training pipeline**
+   - Update `src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py` to define a full ordered multi-step pipeline that includes:
+     1. **TrainingDataVerifierStep**
+        - verifies training/eval feature coverage and emits deterministic machine-readable verification outputs.
+     2. **MissingFeatureCreationStep (conditional/remediation path)**
+        - when verifier indicates missing windows, execute remediation using existing data creation implementation path(s) (manual/orchestrated-equivalent code), constrained to missing windows only.
+     3. **Post-remediation re-verification step**
+        - confirms gaps are resolved before training continues.
+     4. **IFTrainingStep**
+        - trains model artifacts with validated/complete features.
+     5. **ModelPublishStep**
+        - publishes versioned model artifact(s) and writes deterministic publication metadata.
+     6. **ModelAttributesStep**
+        - writes/updates model attributes/registry metadata with idempotent keys.
+     7. **ModelDeployStep**
+        - deploys/promotes model to serving target(s) with explicit rollout status output.
+   - Ensure each step emits clear outputs/metrics needed for troubleshooting and auditability.
+
+5. **Bounded remediation and failure semantics (inside pipeline)**
+   - Recreate bounded retry/remediation safety previously represented in Step Functions (`max 2` remediation attempts or approved equivalent) within pipeline-native control logic.
+   - Enforce deterministic terminal failure categories:
+     - verifier failed without remediable gaps,
+     - remediation exhausted,
+     - training failure,
+     - publication/attributes/deploy failure.
+   - Ensure failure propagation to Step Functions is unambiguous (single pipeline status surface + structured diagnostics persisted to expected outputs/logs).
+
+6. **DynamoDB JobSpec/runtime contract cleanup and migration**
+   - Update `src/ndr/scripts/create_ml_projects_parameters_table.py` and related contract docs/templates:
+     - move unified requirements into `pipeline_if_training` spec,
+     - deprecate/remove placeholder pipeline specs:
+       - `pipeline_training_data_verifier`,
+       - `pipeline_missing_feature_creation`,
+       - `pipeline_model_publish`,
+       - `pipeline_model_attributes`,
+       - `pipeline_model_deploy`.
+   - Ensure seeded scripts/data-prefix metadata for the unified pipeline contains all new internal steps.
+   - Provide migration notes for existing environments that still have old seeded entries.
+
+7. **Deployment/IaC/runtime placeholder alignment**
+   - Remove obsolete deployment placeholders and references for retired training sub-pipelines.
+   - Retain only the unified training pipeline placeholder for training orchestration.
+   - Validate IAM policies still include required actions for the now-expanded unified training pipeline behavior (training + publish + deploy related calls/resources).
+
+8. **Code quality, reliability, and observability hardening (required)**
+   - Add/standardize structured logs per internal stage with correlation identifiers (`project_name`, `feature_spec_version`, `run_id`, execution ARN/ID).
+   - Add stage-level counters/timers/status artifacts to support production monitoring.
+   - Apply idempotency and replay-safe behavior for publish/attributes/deploy writes.
+   - Validate safe defaults and explicit input validation for all new runtime parameters.
+
+9. **Documentation synchronization (required in same change set)**
+   - Update all relevant documents to reflect post-implementation truth:
+     - `docs/pipelines/pipelines_flow_description.md`
+     - `docs/architecture/orchestration/step_functions.md`
+     - `docs/architecture/orchestration/dynamodb_io_contract.md`
+     - `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md`
+     - training runbooks/protocol docs (`docs/TRAINING_PROTOCOL_IF.md` and any training orchestration references)
+     - diagrams/docs that currently imply separate verifier/remediation/model lifecycle pipeline triggers.
+   - Remove stale references to unimplemented placeholder training sub-pipelines once unified path is implemented.
+
+10. **Testing, checks, and verification gates (must pass before completion)**
+   - **Step Functions contract tests**
+     - update/add tests to assert training orchestrator no longer contains:
+       - `StartTrainingDataVerifier` branch,
+       - `StartMissingFeatureCreationPipeline` branch,
+       - `StartModelPublishPipeline`, `StartModelAttributesPipeline`, `StartModelDeployPipeline` branches,
+       - associated describe/wait/increment/choice states.
+     - assert single `StartTrainingPipeline` success path and polling behavior remain valid.
+   - **Unified training pipeline tests**
+     - add/extend unit/integration tests for:
+       - verifier detects missing/non-missing windows,
+       - remediation called only when needed,
+       - remediation bounded retry behavior,
+       - training execution after successful verification,
+       - publish/attributes/deploy stage sequencing and outputs,
+       - idempotent re-run behavior.
+   - **Contract/bootstrap tests**
+     - update tests to confirm retired pipeline specs/placeholders are removed from seeds/contracts.
+     - verify `pipeline_if_training` required runtime parameter list and step metadata are complete and valid.
+   - **Documentation/contract consistency checks**
+     - add/extend assertions or review checklist ensuring docs and JSON definitions align with implemented architecture.
+   - **Pre-prod end-to-end dry run**
+     - execute one full training orchestration in non-prod and capture evidence for:
+       - unified pipeline launch and completion,
+       - verifier + remediation behavior,
+       - model publication/attributes/deploy completion,
+       - expected terminal orchestration status,
+       - observability signals and alerts.
+
+11. **Rollout, migration, rollback strategy**
+   - **Rollout order:**
+     1) implement unified training pipeline internals and tests,
+     2) update Dynamo contracts + docs,
+     3) deploy updated training pipeline,
+     4) deploy simplified `sfn_ndr_training_orchestrator`,
+     5) remove deprecated placeholder wiring from IaC/config.
+   - **Rollback plan:**
+     - restore prior Step Functions definition and/or prior training pipeline version alias,
+     - re-enable legacy placeholder wiring only if operationally required,
+     - keep backward-compatible parameter acceptance for rapid rollback.
+
+12. **Execution checklist (authoritative go-live gate)**
+   - Run all targeted and relevant full-suite tests for orchestration, pipeline definitions, and contract generation.
+   - Validate no stale placeholder references remain in code/docs/tests/deployment templates.
+   - Validate pipeline-level observability and failure diagnostics in non-prod.
+   - Record explicit evidence of successful non-prod run and rollback readiness.
+   - Confirm docs reflect implemented state exactly (no future-tense placeholders for completed behavior).
+
+13. **Completeness matrix (required file-level coverage, including omissions)**
+   - **Orchestration definition + contracts**
+     - `docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json`: reduce to coarse-grained start/poll/finalize pattern and remove verifier/remediation/model-lifecycle branch states.
+     - `tests/test_step_functions_item19_contracts.py`: replace assertions that currently require verifier/remediation states with assertions that require unified training orchestration shape and preserved polling/failure semantics.
+   - **Unified training pipeline implementation**
+     - `src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py`: implement full multi-step chain (verifier, conditional remediation, re-verification, training, publish, attributes, deploy) and parameter/step dependency wiring.
+     - `src/ndr/scripts/run_if_training.py` and `src/ndr/processing/if_training_job.py`: extend runtime/config handling so pipeline step arguments and internal stage execution are fully implemented and auditable.
+     - Any new/updated step-entry scripts required by the unified chain (for verifier/remediation/publish/attributes/deploy) must be added under `src/ndr/scripts/` and covered by tests.
+   - **Dynamo seed/runtime contracts**
+     - `src/ndr/scripts/create_ml_projects_parameters_table.py`: migrate runtime params and seeded step metadata into `pipeline_if_training`; deprecate/remove separate training sub-pipeline specs/placeholders.
+     - `tests/test_create_ml_projects_parameters_table.py`: update expected pipeline catalog and per-pipeline contract assertions for the new unified training contract.
+   - **Documentation set that must be synchronized**
+     - `docs/pipelines/pipelines_flow_description.md`: remove placeholder-stage narrative and describe single unified training pipeline lifecycle.
+     - `docs/architecture/orchestration/step_functions.md`: update responsibilities and required runtime/IAM placeholder list to remove retired training sub-pipeline placeholders.
+     - `docs/architecture/orchestration/dynamodb_io_contract.md`: update example pipeline keys/contracts to reflect unified training ownership.
+     - `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md`: remove retired training sub-pipeline entries and document unified runtime-parameter expectations.
+     - `docs/TRAINING_PROTOCOL_IF.md`: align operational training protocol with verifier/remediation/publish/deploy now being pipeline-native internal stages.
+     - `docs/architecture/diagrams/pipeline_flow.md` and `docs/architecture/diagrams/orchestration_event_lifecycle.md` (+ generated artifacts if maintained): remove obsolete branch topology and reflect coarse-grained training orchestrator flow.
+   - **Deployment/runtime wiring**
+     - IaC/template/environment wiring that currently references `PipelineNameTrainingDataVerifier`, `PipelineNameMissingFeatureCreation`, `PipelineNameModelPublish`, `PipelineNameModelAttributes`, `PipelineNameModelDeploy`: remove/retire and keep only unified training pipeline placeholder wiring.
+   - **Explicit omissions to prevent incomplete implementation**
+     - Do not leave stale placeholder names in tests/docs/contracts after code migration.
+     - Do not remove Step Functions branches without implementing equivalent bounded remediation/failure semantics inside unified pipeline.
+     - Do not promote with docs-only updates; implementation, tests, and docs must ship together for this item to be considered complete.
+
+### Definition of done
+- `sfn_ndr_training_orchestrator` is coarse-grained and controls only unified training pipeline start/poll/finalization.
+- Unified `pipeline_if_training` fully implements verifier + remediation + training + publish + attributes + deploy.
+- No required runtime/deployment contract depends on retired training sub-pipeline placeholders.
+- Bounded remediation safety, deterministic failure signaling, and idempotent model lifecycle side effects are implemented and validated.
+- All relevant docs/diagrams/contracts are synchronized with post-implementation reality.
+- Automated tests and non-prod end-to-end verification demonstrate the redesigned workflow is coordinated, robust, and production-ready.
+
+**Status:** Planned.

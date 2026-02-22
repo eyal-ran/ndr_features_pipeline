@@ -80,3 +80,17 @@ Step Functions JSONata definitions should:
 - Pass resolved values to SageMaker pipelines via `PipelineParameters`.
 
 This ensures project scoping and runtime parameter behavior are table-driven and consistent across 15m features/inference, monthly baselines, publication, backfill, and training orchestrators.
+
+## Runtime parameter validation contract (item 23)
+
+For the four orchestrators (`15m_features_inference`, `monthly_fg_b_baselines`, `backfill_reprocessing`, `training_orchestrator`), runtime resolution must be followed by `ValidateResolvedRuntimeParams`.
+
+Validation behavior:
+- Required fields are fail-fast (no silent empty-string fallback for required parameters).
+- Validation failures use deterministic Step Functions fail code `RuntimeParameterValidationError`.
+- `Cause` text is single-line and operator-readable.
+
+Backfill-specific contract:
+- `start_ts` and `end_ts` cannot use static hardcoded defaults.
+- Allowed sources are invocation input, parsed message content, or explicit project defaults in DynamoDB parameters.
+- Both timestamps must match ISO-8601 UTC (`YYYY-MM-DDThh:mm:ssZ`) and satisfy `start_ts < end_ts` before downstream pipeline start.

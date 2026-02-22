@@ -109,3 +109,20 @@ def test_monthly_fg_b_baseline_has_no_supplemental_pipeline_states():
         if choice["Condition"] == "{% $fgb_pipeline_status = 'Succeeded' %}"
     )
     assert fgb_success["Next"] == "EmitBaselineReadyEvent"
+
+
+
+def test_item23_validation_failures_use_deterministic_error_code():
+    for name in [
+        "sfn_ndr_15m_features_inference.json",
+        "sfn_ndr_monthly_fg_b_baselines.json",
+        "sfn_ndr_backfill_reprocessing.json",
+        "sfn_ndr_training_orchestrator.json",
+    ]:
+        doc = _load(name)
+        states = doc["States"]
+        fail_states = [v for v in states.values() if isinstance(v, dict) and v.get("Type") == "Fail" and v.get("Error") == "RuntimeParameterValidationError"]
+        assert fail_states, f"{name} expected RuntimeParameterValidationError fail states"
+        for state in fail_states:
+            assert isinstance(state.get("Cause"), str)
+            assert state["Cause"]

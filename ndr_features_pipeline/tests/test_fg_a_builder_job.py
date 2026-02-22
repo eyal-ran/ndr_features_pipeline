@@ -302,3 +302,141 @@ def test_fg_a_builder_novelty_and_high_risk_segments(tmp_path):
     assert row_15m.new_pair_cnt_lookback30d_w_15m == 2
     assert row_15m.high_risk_segment_sessions_cnt_w_15m == 3
     assert row_15m.has_high_risk_segment_interaction_w_15m == 1
+
+
+def test_fg_a_builder_fails_when_runtime_mini_batch_is_requested_but_column_missing(tmp_path):
+    spark = _create_spark()
+    anchor = dt.datetime(2025, 1, 1, 12, 0, 0)
+    slice_end = anchor
+
+    delta_df = spark.createDataFrame(
+        [
+            {
+                "host_ip": "10.0.0.1",
+                "role": "outbound",
+                "slice_start_ts": slice_end - dt.timedelta(minutes=15),
+                "slice_end_ts": slice_end,
+                "sessions_cnt": 1,
+                "allow_cnt": 1,
+                "deny_cnt": 0,
+                "alert_cnt": 0,
+                "rst_cnt": 0,
+                "aged_out_cnt": 0,
+                "zero_reply_cnt": 0,
+                "short_session_cnt": 0,
+                "bytes_src_sum": 10.0,
+                "bytes_dst_sum": 1.0,
+                "duration_sum": 1.0,
+                "tcp_cnt": 1,
+                "udp_cnt": 0,
+                "icmp_cnt": 0,
+                "threat_cnt": 0,
+                "traffic_cnt": 1,
+                "peer_ip_nunique": 1,
+                "peer_port_nunique": 1,
+                "peer_segment_nunique": 1,
+                "peer_ip_entropy": 0.0,
+                "peer_port_entropy": 0.0,
+                "peer_ip_top1_sessions_share": 1.0,
+                "peer_port_top1_sessions_share": 1.0,
+                "peer_ip_top1_bytes_share": 1.0,
+                "peer_port_top1_bytes_share": 1.0,
+                "max_sessions_per_minute": 1,
+                "high_risk_port_sessions_cnt": 0,
+                "admin_port_sessions_cnt": 0,
+                "fileshare_port_sessions_cnt": 0,
+                "directory_port_sessions_cnt": 0,
+                "db_port_sessions_cnt": 0,
+            }
+        ]
+    )
+
+    delta_path = str(tmp_path / "delta_missing_batch")
+    delta_df.write.mode("overwrite").parquet(delta_path)
+
+    config = FGABuilderConfig(
+        project_name="ndr-unit-test",
+        delta_s3_prefix=delta_path,
+        output_s3_prefix=str(tmp_path / "fg_a"),
+        mini_batch_id="batch-1",
+        batch_start_ts_iso=anchor.isoformat() + "Z",
+        feature_spec_version="fga_v1_test",
+    )
+    job = FGABuilderJob(spark=spark, config=config)
+
+    try:
+        job._read_delta_table()
+    except ValueError as exc:
+        msg = str(exc)
+        assert "strict mini-batch enforcement failed" in msg
+        assert "project_name=ndr-unit-test" in msg
+        assert "feature_spec_version=fga_v1_test" in msg
+        assert "mini_batch_id=batch-1" in msg
+        assert f"delta_s3_prefix={delta_path}" in msg
+    else:
+        raise AssertionError("Expected strict mini_batch_id enforcement to fail")
+
+
+def test_fg_a_builder_compatibility_mode_allows_missing_mini_batch_column(tmp_path):
+    spark = _create_spark()
+    anchor = dt.datetime(2025, 1, 1, 12, 0, 0)
+    slice_end = anchor
+
+    delta_df = spark.createDataFrame(
+        [
+            {
+                "host_ip": "10.0.0.1",
+                "role": "outbound",
+                "slice_start_ts": slice_end - dt.timedelta(minutes=15),
+                "slice_end_ts": slice_end,
+                "sessions_cnt": 1,
+                "allow_cnt": 1,
+                "deny_cnt": 0,
+                "alert_cnt": 0,
+                "rst_cnt": 0,
+                "aged_out_cnt": 0,
+                "zero_reply_cnt": 0,
+                "short_session_cnt": 0,
+                "bytes_src_sum": 10.0,
+                "bytes_dst_sum": 1.0,
+                "duration_sum": 1.0,
+                "tcp_cnt": 1,
+                "udp_cnt": 0,
+                "icmp_cnt": 0,
+                "threat_cnt": 0,
+                "traffic_cnt": 1,
+                "peer_ip_nunique": 1,
+                "peer_port_nunique": 1,
+                "peer_segment_nunique": 1,
+                "peer_ip_entropy": 0.0,
+                "peer_port_entropy": 0.0,
+                "peer_ip_top1_sessions_share": 1.0,
+                "peer_port_top1_sessions_share": 1.0,
+                "peer_ip_top1_bytes_share": 1.0,
+                "peer_port_top1_bytes_share": 1.0,
+                "max_sessions_per_minute": 1,
+                "high_risk_port_sessions_cnt": 0,
+                "admin_port_sessions_cnt": 0,
+                "fileshare_port_sessions_cnt": 0,
+                "directory_port_sessions_cnt": 0,
+                "db_port_sessions_cnt": 0,
+            }
+        ]
+    )
+
+    delta_path = str(tmp_path / "delta_missing_batch_compat")
+    delta_df.write.mode("overwrite").parquet(delta_path)
+
+    config = FGABuilderConfig(
+        project_name="ndr-unit-test",
+        delta_s3_prefix=delta_path,
+        output_s3_prefix=str(tmp_path / "fg_a"),
+        mini_batch_id="batch-1",
+        batch_start_ts_iso=anchor.isoformat() + "Z",
+        feature_spec_version="fga_v1_test",
+        allow_missing_mini_batch_id_column=True,
+    )
+    job = FGABuilderJob(spark=spark, config=config)
+
+    read_df = job._read_delta_table()
+    assert "host_ip" in read_df.columns

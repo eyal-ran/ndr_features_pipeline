@@ -317,3 +317,15 @@ The architecture inventory lists currently implemented pipeline definition modul
 - `src/ndr/pipeline/sagemaker_pipeline_definitions_backfill_historical_extractor.py`
 
 Any pipeline names present only as Step Functions placeholders and not present in these modules are explicitly marked as placeholders in this document.
+
+## Orchestration/runtime hardening updates (item 23)
+
+The current flow includes explicit runtime validation gates before launching downstream pipelines for inference, monthly baselines, backfill, and unified training.
+
+Operational behavior:
+- Missing required runtime inputs now fail before compute starts.
+- Backfill windows are validated for presence, ISO-8601 UTC format, and `start_ts < end_ts` ordering.
+- Invalid runtime windows are rejected pre-launch (no extractor or map-window fanout starts).
+- FG-A mini-batch runs fail fast when source deltas do not include `mini_batch_id` unless compatibility mode is explicitly enabled.
+
+IF training telemetry now explicitly records whether HPO used primary Optuna or fallback local Bayesian search (`hpo_method`, `hpo_fallback_used`, `hpo_fallback_activation_count`) so fallback frequency can be monitored over time.

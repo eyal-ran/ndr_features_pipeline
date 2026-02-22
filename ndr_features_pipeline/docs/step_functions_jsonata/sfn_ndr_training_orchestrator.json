@@ -51,7 +51,7 @@
         "eval_end_ts": "{% $exists($states.input.eval_end_ts) ? $states.input.eval_end_ts : ($exists($project_defaults.EvalEndTs.S) ? $project_defaults.EvalEndTs.S : '') %}",
         "missing_windows_override": "{% $exists($states.input.missing_windows_override) ? $states.input.missing_windows_override : [] %}"
       },
-      "Next": "StartTrainingPipeline"
+      "Next": "ValidateResolvedRuntimeParams"
     },
     "StartTrainingPipeline": {
       "Type": "Task",
@@ -59,15 +59,42 @@
       "Arguments": {
         "PipelineName": "${PipelineNameIFTraining}",
         "PipelineParameters": [
-          {"Name": "ProjectName", "Value": "{% $project_name %}"},
-          {"Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}"},
-          {"Name": "RunId", "Value": "{% $run_id %}"},
-          {"Name": "ExecutionTsIso", "Value": "{% $execution_ts_iso %}"},
-          {"Name": "TrainingStartTs", "Value": "{% $training_start_ts %}"},
-          {"Name": "TrainingEndTs", "Value": "{% $training_end_ts %}"},
-          {"Name": "EvalStartTs", "Value": "{% $eval_start_ts %}"},
-          {"Name": "EvalEndTs", "Value": "{% $eval_end_ts %}"},
-          {"Name": "MissingWindowsOverride", "Value": "{% $string($missing_windows_override) %}"}
+          {
+            "Name": "ProjectName",
+            "Value": "{% $project_name %}"
+          },
+          {
+            "Name": "FeatureSpecVersion",
+            "Value": "{% $feature_spec_version %}"
+          },
+          {
+            "Name": "RunId",
+            "Value": "{% $run_id %}"
+          },
+          {
+            "Name": "ExecutionTsIso",
+            "Value": "{% $execution_ts_iso %}"
+          },
+          {
+            "Name": "TrainingStartTs",
+            "Value": "{% $training_start_ts %}"
+          },
+          {
+            "Name": "TrainingEndTs",
+            "Value": "{% $training_end_ts %}"
+          },
+          {
+            "Name": "EvalStartTs",
+            "Value": "{% $eval_start_ts %}"
+          },
+          {
+            "Name": "EvalEndTs",
+            "Value": "{% $eval_end_ts %}"
+          },
+          {
+            "Name": "MissingWindowsOverride",
+            "Value": "{% $string($missing_windows_override) %}"
+          }
         ]
       },
       "Assign": {
@@ -76,7 +103,11 @@
       },
       "Retry": [
         {
-          "ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"],
+          "ErrorEquals": [
+            "SageMaker.AmazonSageMakerException",
+            "ThrottlingException",
+            "States.TaskFailed"
+          ],
           "IntervalSeconds": 5,
           "MaxAttempts": 4,
           "BackoffRate": 2.0
@@ -96,7 +127,11 @@
       },
       "Retry": [
         {
-          "ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"],
+          "ErrorEquals": [
+            "SageMaker.AmazonSageMakerException",
+            "ThrottlingException",
+            "States.TaskFailed"
+          ],
           "IntervalSeconds": 5,
           "MaxAttempts": 6,
           "BackoffRate": 2.0
@@ -107,7 +142,10 @@
     "TrainingPipelineStatusChoice": {
       "Type": "Choice",
       "Choices": [
-        {"Condition": "{% $training_pipeline_status = 'Succeeded' %}", "Next": "Success"},
+        {
+          "Condition": "{% $training_pipeline_status = 'Succeeded' %}",
+          "Next": "Success"
+        },
         {
           "Condition": "{% ($training_pipeline_status = 'Executing' or $training_pipeline_status = 'Stopping') and $training_poll_attempt < 120 %}",
           "Next": "WaitBeforeTrainingDescribe"
@@ -132,6 +170,77 @@
       "Error": "NdrUnifiedTrainingPipelineFailed",
       "Cause": "Unified IF training pipeline failed, was stopped, or exceeded poll budget"
     },
-    "Success": {"Type": "Succeed"}
+    "Success": {
+      "Type": "Succeed"
+    },
+    "ValidateResolvedRuntimeParams": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $project_name = \"\" %}",
+          "Next": "FailMissingProjectName"
+        },
+        {
+          "Condition": "{% $feature_spec_version = \"\" %}",
+          "Next": "FailMissingFeatureSpecVersion"
+        },
+        {
+          "Condition": "{% $run_id = \"\" %}",
+          "Next": "FailMissingRunId"
+        },
+        {
+          "Condition": "{% $training_start_ts = \"\" %}",
+          "Next": "FailMissingTrainingStartTs"
+        },
+        {
+          "Condition": "{% $training_end_ts = \"\" %}",
+          "Next": "FailMissingTrainingEndTs"
+        },
+        {
+          "Condition": "{% $eval_start_ts = \"\" %}",
+          "Next": "FailMissingEvalStartTs"
+        },
+        {
+          "Condition": "{% $eval_end_ts = \"\" %}",
+          "Next": "FailMissingEvalEndTs"
+        }
+      ],
+      "Default": "StartTrainingPipeline"
+    },
+    "FailMissingProjectName": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: project_name"
+    },
+    "FailMissingFeatureSpecVersion": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: feature_spec_version"
+    },
+    "FailMissingRunId": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: run_id"
+    },
+    "FailMissingTrainingStartTs": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: training_start_ts"
+    },
+    "FailMissingTrainingEndTs": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: training_end_ts"
+    },
+    "FailMissingEvalStartTs": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: eval_start_ts"
+    },
+    "FailMissingEvalEndTs": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: eval_end_ts"
+    }
   }
 }

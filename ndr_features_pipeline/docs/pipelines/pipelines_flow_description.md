@@ -329,3 +329,6 @@ Operational behavior:
 - FG-A mini-batch runs fail fast when source deltas do not include `mini_batch_id` unless compatibility mode is explicitly enabled.
 
 IF training telemetry now explicitly records whether HPO used primary Optuna or fallback local Bayesian search (`hpo_method`, `hpo_fallback_used`, `hpo_fallback_activation_count`) so fallback frequency can be monitored over time.
+
+
+- FG-B ingestion compatibility: `run_fg_b_builder` supports runtime/job-spec layout mode `fg_a_layout` (`auto` default; `wide`; `long`). Auto mode normalizes current FG-A wide outputs into role-explicit long rows and derives `time_band` before baseline computation, preserving downstream FG-C contracts.

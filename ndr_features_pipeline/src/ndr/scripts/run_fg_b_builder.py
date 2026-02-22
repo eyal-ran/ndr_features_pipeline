@@ -60,6 +60,12 @@ def parse_args(argv=None):
         choices=["REGULAR", "BACKFILL"],
         help="Execution mode: REGULAR (default) or BACKFILL.",
     )
+    parser.add_argument(
+        "--fg-a-layout",
+        default="auto",
+        choices=["auto", "wide", "long"],
+        help="FG-A input layout mode for FG-B ingestion: auto, wide, or long.",
+    )
 
     return parser.parse_args(argv)
 
@@ -75,6 +81,7 @@ def main(argv=None) -> int:
             "feature_spec_version": args.feature_spec_version,
             "reference_time_iso": args.reference_time_iso,
             "mode": args.mode,
+            "fg_a_layout": args.fg_a_layout,
         },
     )
 
@@ -83,6 +90,7 @@ def main(argv=None) -> int:
         feature_spec_version=args.feature_spec_version,
         reference_time_iso=args.reference_time_iso,
         mode=args.mode,
+        fg_a_layout=args.fg_a_layout,
     )
 
     run_fg_b_builder_from_runtime_config(runtime_config)

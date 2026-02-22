@@ -194,7 +194,7 @@ class TestFGCCorrelationBuilder(unittest.TestCase):
         job = FGCorrBuilderJob(runtime_config=runtime_cfg)
         job.job_spec = {
             "join_keys": ["host_ip", "window_label"],
-            "segment_join_keys": ["segment_id", "window_label"],
+            "segment_join_keys": ["segment_id", "role", "time_band", "window_label"],
             "pair_counts": {"enabled": True},
         }
 
@@ -203,14 +203,16 @@ class TestFGCCorrelationBuilder(unittest.TestCase):
                 T.StructField("host_ip", T.StringType(), True),
                 T.StructField("window_label", T.StringType(), True),
                 T.StructField("segment_id", T.StringType(), True),
+                T.StructField("role", T.StringType(), True),
+                T.StructField("time_band", T.StringType(), True),
                 T.StructField("dst_ip", T.StringType(), True),
                 T.StructField("dst_port", T.IntegerType(), True),
                 T.StructField("m", T.DoubleType(), True),
             ]
         )
         fg_a_rows = [
-            ("10.0.0.1", "w_15m", "seg-a", "8.8.8.8", 53, 5.0),
-            ("10.0.0.2", "w_15m", "seg-b", "1.1.1.1", 443, 5.0),
+            ("10.0.0.1", "w_15m", "seg-a", "outbound", "working_hours", "8.8.8.8", 53, 5.0),
+            ("10.0.0.2", "w_15m", "seg-b", "outbound", "off_hours", "1.1.1.1", 443, 5.0),
         ]
         fg_a_df = self.spark.createDataFrame(fg_a_rows, schema=fg_a_schema)
 
@@ -251,6 +253,8 @@ class TestFGCCorrelationBuilder(unittest.TestCase):
         segment_schema = T.StructType(
             [
                 T.StructField("segment_id", T.StringType(), True),
+                T.StructField("role", T.StringType(), True),
+                T.StructField("time_band", T.StringType(), True),
                 T.StructField("window_label", T.StringType(), True),
                 T.StructField("baseline_horizon", T.StringType(), True),
                 T.StructField("m_median", T.DoubleType(), True),
@@ -264,7 +268,7 @@ class TestFGCCorrelationBuilder(unittest.TestCase):
             ]
         )
         segment_baselines = self.spark.createDataFrame(
-            [("seg-b", "w_15m", "7d", 100.0, 10.0, 20.0, 30.0, 40.0, 5.0, 5.0, 50)],
+            [("seg-b", "outbound", "off_hours", "w_15m", "7d", 100.0, 10.0, 20.0, 30.0, 40.0, 5.0, 5.0, 50)],
             schema=segment_schema,
         )
 
@@ -291,6 +295,8 @@ class TestFGCCorrelationBuilder(unittest.TestCase):
         pair_segment_schema = T.StructType(
             [
                 T.StructField("segment_id", T.StringType(), True),
+                T.StructField("role", T.StringType(), True),
+                T.StructField("time_band", T.StringType(), True),
                 T.StructField("dst_ip", T.StringType(), True),
                 T.StructField("dst_port", T.IntegerType(), True),
                 T.StructField("baseline_horizon", T.StringType(), True),
@@ -304,7 +310,7 @@ class TestFGCCorrelationBuilder(unittest.TestCase):
             ]
         )
         pair_segment_df = self.spark.createDataFrame(
-            [("seg-b", "1.1.1.1", 443, "7d", 3, None, 1, 3.0, 0.5, 0, 1)],
+            [("seg-b", "outbound", "off_hours", "1.1.1.1", 443, "7d", 3, None, 1, 3.0, 0.5, 0, 1)],
             schema=pair_segment_schema,
         )
 

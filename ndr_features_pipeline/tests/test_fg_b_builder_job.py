@@ -252,5 +252,115 @@ class TestFGBaselineBuilderJob(unittest.TestCase):
         assert publish_row["baseline_end_ts"] == "2025-12-29T00:00:00Z"
 
 
+    def test_normalize_fg_a_wide_to_role_long_and_time_band(self):
+        cfg = FGBaselineJobRuntimeConfig(
+            project_name="ndr_project",
+            feature_spec_version="v1",
+            reference_time_iso="2025-12-31T00:00:00Z",
+        )
+        job = FGBaselineBuilderJob(runtime_config=cfg)
+        job.spark = self.spark
+        job.job_spec = {
+            "baseline_metrics": ["sessions_cnt", "bytes_src_sum"],
+            "fg_a_layout": "auto",
+        }
+
+        schema = T.StructType([
+            T.StructField("host_ip", T.StringType(), True),
+            T.StructField("window_label", T.StringType(), True),
+            T.StructField("window_end_ts", T.StringType(), True),
+            T.StructField("hour_of_day", T.IntegerType(), True),
+            T.StructField("sessions_cnt", T.DoubleType(), True),
+            T.StructField("bytes_src_sum", T.DoubleType(), True),
+            T.StructField("in_sessions_cnt", T.DoubleType(), True),
+            T.StructField("in_bytes_src_sum", T.DoubleType(), True),
+        ])
+        df = self.spark.createDataFrame([
+            ("10.0.0.1", "w_15m", "2025-12-30T10:15:00Z", 10, 4.0, 100.0, 7.0, 300.0)
+        ], schema=schema)
+
+        out = job._prepare_fg_a_for_baselines(df)
+        rows = {(r.host_ip, r.role): r for r in out.select("host_ip", "role", "sessions_cnt", "bytes_src_sum", "time_band").collect()}
+        self.assertEqual(set(rows.keys()), {("10.0.0.1", "outbound"), ("10.0.0.1", "inbound")})
+        self.assertAlmostEqual(rows[("10.0.0.1", "outbound")].sessions_cnt, 4.0)
+        self.assertAlmostEqual(rows[("10.0.0.1", "inbound")].sessions_cnt, 7.0)
+        self.assertEqual(rows[("10.0.0.1", "outbound")].time_band, "working_hours")
+
+    def test_prepare_fg_a_auto_prefers_long_when_role_and_time_band_present(self):
+        cfg = FGBaselineJobRuntimeConfig(
+            project_name="ndr_project",
+            feature_spec_version="v1",
+            reference_time_iso="2025-12-31T00:00:00Z",
+        )
+        job = FGBaselineBuilderJob(runtime_config=cfg)
+        job.spark = self.spark
+        job.job_spec = {"baseline_metrics": ["sessions_cnt"], "fg_a_layout": "auto"}
+
+        schema = T.StructType([
+            T.StructField("host_ip", T.StringType(), True),
+            T.StructField("window_label", T.StringType(), True),
+            T.StructField("role", T.StringType(), True),
+            T.StructField("time_band", T.StringType(), True),
+            T.StructField("sessions_cnt", T.DoubleType(), True),
+        ])
+        df = self.spark.createDataFrame([
+            ("10.0.0.1", "w_15m", "outbound", "working_hours", 2.0)
+        ], schema=schema)
+
+        out = job._prepare_fg_a_for_baselines(df)
+        self.assertIn("role", out.columns)
+        self.assertEqual(out.count(), 1)
+
+    def test_prepare_fg_a_long_layout_missing_role_fails_fast(self):
+        cfg = FGBaselineJobRuntimeConfig(
+            project_name="ndr_project",
+            feature_spec_version="v1",
+            reference_time_iso="2025-12-31T00:00:00Z",
+            fg_a_layout="long",
+        )
+        job = FGBaselineBuilderJob(runtime_config=cfg)
+        job.spark = self.spark
+        job.job_spec = {"baseline_metrics": ["sessions_cnt"]}
+
+        schema = T.StructType([
+            T.StructField("host_ip", T.StringType(), True),
+            T.StructField("window_label", T.StringType(), True),
+            T.StructField("sessions_cnt", T.DoubleType(), True),
+        ])
+        df = self.spark.createDataFrame([("10.0.0.1", "w_15m", 2.0)], schema=schema)
+
+        with self.assertRaises(ValueError):
+            job._prepare_fg_a_for_baselines(df)
+
+    def test_prepare_fg_a_invalid_time_band_fails_fast(self):
+        cfg = FGBaselineJobRuntimeConfig(
+            project_name="ndr_project",
+            feature_spec_version="v1",
+            reference_time_iso="2025-12-31T00:00:00Z",
+        )
+        job = FGBaselineBuilderJob(runtime_config=cfg)
+        job.spark = self.spark
+        job.job_spec = {
+            "baseline_metrics": ["sessions_cnt"],
+            "fg_a_layout": "auto",
+            "time_band_values": ["working_hours", "off_hours"],
+        }
+
+        schema = T.StructType([
+            T.StructField("host_ip", T.StringType(), True),
+            T.StructField("window_label", T.StringType(), True),
+            T.StructField("role", T.StringType(), True),
+            T.StructField("time_band", T.StringType(), True),
+            T.StructField("sessions_cnt", T.DoubleType(), True),
+        ])
+        df = self.spark.createDataFrame([
+            ("10.0.0.1", "w_15m", "outbound", "night_shift", 2.0)
+        ], schema=schema)
+
+        with self.assertRaises(ValueError):
+            job._prepare_fg_a_for_baselines(df)
+
+
+
 if __name__ == "__main__":
     unittest.main()

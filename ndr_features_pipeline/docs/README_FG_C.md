@@ -120,3 +120,8 @@ Additional tests can be added to validate:
 - More metrics
 - Edge cases when MAD/IQR are zero or null
 - Integration with real FG‑A / FG‑B sample data.
+
+
+## FG-B compatibility note
+
+FG-C baseline joins remain unchanged. FG-B now guarantees role-separated baseline outputs regardless of whether FG-A input arrives in long form or in the existing wide form, so FG-C downstream contracts continue to consume `role` + `time_band` keyed baseline tables without additional transforms.

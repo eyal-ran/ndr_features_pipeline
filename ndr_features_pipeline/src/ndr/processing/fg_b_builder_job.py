@@ -67,6 +67,7 @@ class FGBaselineJobRuntimeConfig:
     reference_time_iso: str
     mode: str = "REGULAR"
     batch_id: str = "baseline"
+    fg_a_layout: str = "auto"
 
 
 class FGBaselineBuilderJob(BaseRunner):
@@ -246,6 +247,7 @@ class FGBaselineBuilderJob(BaseRunner):
 
         # Read FG-A Parquet within time range
         fg_a_df = self._read_fg_a_for_horizon(fg_a_prefix, bounds)
+        fg_a_df = self._prepare_fg_a_for_baselines(fg_a_df)
 
         # Derive segment_id (prefix-based default)
         fg_a_seg_df = self._add_segment_id(fg_a_df)
@@ -308,6 +310,173 @@ class FGBaselineBuilderJob(BaseRunner):
         df = df.filter((F.col("window_end_ts") >= F.lit(start_ts)) & (F.col("window_end_ts") < F.lit(end_ts)))
 
         return df
+
+    def _prepare_fg_a_for_baselines(self, df: DataFrame) -> DataFrame:
+        """Prepare FG-A input into a role-explicit long format for FG-B baselines."""
+        layout_mode = str(
+            self.job_spec.get("fg_a_layout", self.runtime_config.fg_a_layout)
+        ).strip().lower()
+        if layout_mode not in {"auto", "wide", "long"}:
+            raise ValueError(f"Unsupported fg_a_layout='{layout_mode}'. Expected one of: auto, wide, long.")
+
+        looks_long = "role" in df.columns
+        looks_wide = any(col.startswith("in_") for col in df.columns)
+
+        if layout_mode == "long":
+            if not looks_long:
+                raise ValueError("fg_a_layout=long configured but FG-A input is missing required 'role' column.")
+            selected_layout = "long"
+            out = df
+        elif layout_mode == "wide":
+            if not looks_wide:
+                raise ValueError("fg_a_layout=wide configured but FG-A input does not have inbound 'in_' columns.")
+            selected_layout = "wide"
+            out = self._normalize_fg_a_for_baselines(df)
+        else:
+            if looks_long and "time_band" in df.columns:
+                selected_layout = "long"
+                out = df
+            else:
+                selected_layout = "wide"
+                out = self._normalize_fg_a_for_baselines(df)
+
+        out = self._ensure_time_band(out)
+        self._validate_time_band_values(out)
+        self._validate_baseline_metric_contract(out)
+        LOGGER.info(
+            "FG-B prepared FG-A input for baselines.",
+            extra={
+                "requested_fg_a_layout": layout_mode,
+                "selected_fg_a_layout": selected_layout,
+                "input_columns": len(df.columns),
+                "output_columns": len(out.columns),
+            },
+        )
+        return out
+
+    def _normalize_fg_a_for_baselines(self, df: DataFrame) -> DataFrame:
+        """Normalize FG-A wide rows into role-explicit long rows consumed by FG-B."""
+        base_metrics = self._get_configured_fg_a_metrics(df)
+        join_cols = [
+            c for c in ["host_ip", "window_label", "window_start_ts", "window_end_ts", "hour_of_day", "time_band"] if c in df.columns
+        ]
+
+        outbound_required = [m for m in base_metrics if m in df.columns]
+        inbound_pairs = [(m, f"in_{m}") for m in base_metrics if f"in_{m}" in df.columns]
+        inbound_required = [target for _, target in inbound_pairs]
+
+        if not outbound_required and not inbound_required:
+            raise ValueError(
+                "Unable to normalize FG-A wide rows: no configured baseline metrics were found in either outbound or inbound columns."
+            )
+
+        outbound_cols = [F.col(c) for c in join_cols] + [F.lit("outbound").alias("role")]
+        outbound_cols.extend([F.col(m).alias(m) for m in outbound_required])
+        outbound = df.select(*outbound_cols)
+        outbound_count_expr = F.lit(0)
+        for metric in outbound_required:
+            outbound_count_expr = outbound_count_expr + F.when(F.col(metric).isNotNull(), F.lit(1)).otherwise(F.lit(0))
+        outbound = outbound.withColumn("fg_a_role_row_metric_count", outbound_count_expr)
+
+        inbound_cols = [F.col(c) for c in join_cols] + [F.lit("inbound").alias("role")]
+        inbound_cols.extend([F.col(source).alias(target) for target, source in inbound_pairs])
+        inbound = df.select(*inbound_cols)
+        inbound_count_expr = F.lit(0)
+        for metric, _ in inbound_pairs:
+            inbound_count_expr = inbound_count_expr + F.when(F.col(metric).isNotNull(), F.lit(1)).otherwise(F.lit(0))
+        inbound = inbound.withColumn("fg_a_role_row_metric_count", inbound_count_expr)
+
+        combined = outbound.unionByName(inbound, allowMissingColumns=True)
+        combined = combined.withColumn(
+            "fg_a_role_row_dropped",
+            F.when(F.col("fg_a_role_row_metric_count") > F.lit(0), F.lit(0)).otherwise(F.lit(1)),
+        )
+
+        drop_stats = combined.groupBy("role", "fg_a_role_row_dropped").count().collect()
+        for row in drop_stats:
+            if row["fg_a_role_row_dropped"] == 1:
+                LOGGER.warning(
+                    "Dropping normalized FG-A role rows with no metric values.",
+                    extra={"role": row["role"], "row_count": row["count"]},
+                )
+
+        return combined.filter(F.col("fg_a_role_row_dropped") == F.lit(0)).drop(
+            "fg_a_role_row_metric_count",
+            "fg_a_role_row_dropped",
+        )
+
+    def _get_configured_fg_a_metrics(self, df: DataFrame) -> List[str]:
+        """Get baseline metric names expected in canonical (unprefixed) FG-B form."""
+        metrics = self.job_spec.get("baseline_metrics", [])
+        if metrics:
+            return metrics
+        excluded = {
+            "host_ip",
+            "window_label",
+            "window_start_ts",
+            "window_end_ts",
+            "hour_of_day",
+            "time_band",
+            "role",
+            "segment_id",
+        }
+        inferred = []
+        for c in df.columns:
+            if c in excluded or c.startswith("in_"):
+                continue
+            inferred.append(c)
+        return sorted(inferred)
+
+    def _ensure_time_band(self, df: DataFrame) -> DataFrame:
+        """Ensure time_band is available and derived consistently for FG-B grouping."""
+        if "time_band" in df.columns:
+            return df
+
+        if "is_working_hours" in df.columns:
+            return df.withColumn(
+                "time_band",
+                F.when(F.col("is_working_hours") == F.lit(1), F.lit("working_hours")).otherwise(F.lit("off_hours")),
+            )
+
+        if "hour_of_day" in df.columns:
+            return df.withColumn(
+                "time_band",
+                F.when((F.col("hour_of_day") >= 7) & (F.col("hour_of_day") < 17), F.lit("working_hours"))
+                .otherwise(F.lit("off_hours")),
+            )
+
+        if "window_end_ts" in df.columns:
+            hour_col = F.hour(F.to_timestamp(F.col("window_end_ts")))
+            return df.withColumn(
+                "time_band",
+                F.when((hour_col >= 7) & (hour_col < 17), F.lit("working_hours")).otherwise(F.lit("off_hours")),
+            )
+
+        raise ValueError("FG-B requires one of ['time_band', 'is_working_hours', 'hour_of_day', 'window_end_ts'] to derive time_band.")
+
+    def _validate_time_band_values(self, df: DataFrame) -> None:
+        """Validate time_band values against allowed enumerations."""
+        allowed = set(self.job_spec.get("time_band_values", ["working_hours", "off_hours"]))
+        invalid = (
+            df.select("time_band")
+            .where(F.col("time_band").isNotNull())
+            .where(~F.col("time_band").isin([v for v in allowed]))
+            .distinct()
+            .collect()
+        )
+        if invalid:
+            values = [r["time_band"] for r in invalid]
+            raise ValueError(f"FG-B found invalid time_band values: {values}. Allowed values: {sorted(allowed)}")
+
+    def _validate_baseline_metric_contract(self, df: DataFrame) -> None:
+        """Fail fast when no configured baseline metric family is available for FG-B."""
+        expected = self._get_baseline_metrics(df, ["host_ip", "role", "segment_id", "time_band", "window_label"])
+        available = [m for m in expected if m in df.columns]
+        if not available:
+            raise ValueError(
+                "FG-B baseline metric contract mismatch: no baseline metrics are available after FG-A layout preparation. "
+                f"Expected one of: {expected}. Input columns: {df.columns}"
+            )
 
     # ------------------------------------------------------------------ #
     # Segment ID derivation                                              #

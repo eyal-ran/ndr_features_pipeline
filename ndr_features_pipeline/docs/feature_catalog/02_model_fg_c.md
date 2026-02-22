@@ -1324,3 +1324,6 @@ Total features in this section: **1320**.
 | 1803 | v1:fg_c:in_has_high_risk_segment_interaction_w_24h_z_mad | 1803 | in_has_high_risk_segment_interaction_w_24h_z_mad | fg_c feature derived for in_has_high_risk_segment_interaction_w_24h_z_mad. | Derived in fg_c. | src/ndr/processing/fg_c_builder_job.py | fg_a_builder, fg_b_builder, pair_counts_builder |
 | 1804 | v1:fg_c:in_has_high_risk_segment_interaction_w_24h_ratio | 1804 | in_has_high_risk_segment_interaction_w_24h_ratio | fg_c feature derived for in_has_high_risk_segment_interaction_w_24h_ratio. | Derived in fg_c. | src/ndr/processing/fg_c_builder_job.py | fg_a_builder, fg_b_builder, pair_counts_builder |
 | 1805 | v1:fg_c:in_has_high_risk_segment_interaction_w_24h_log_ratio | 1805 | in_has_high_risk_segment_interaction_w_24h_log_ratio | fg_c feature derived for in_has_high_risk_segment_interaction_w_24h_log_ratio. | Derived in fg_c. | src/ndr/processing/fg_c_builder_job.py | fg_a_builder, fg_b_builder, pair_counts_builder |
+
+
+> Dependency note: FG-C expects FG-B role/time-band keyed baseline outputs; FG-B now guarantees this contract by normalizing FG-A wide rows when needed.

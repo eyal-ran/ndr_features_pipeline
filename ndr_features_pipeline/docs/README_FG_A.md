@@ -33,3 +33,8 @@ defined delta table schema and does not modify the delta builder
 behaviour. Baseline and correlation features are handled by FG-B and
 FG-C builder jobs, and may be joined to FG-A outputs in later steps of
 the pipeline.
+
+
+## FG-A to FG-B contract note
+
+FG-A continues to publish the current wide write contract (outbound metrics as unprefixed columns plus inbound metrics prefixed with `in_`). FG-B now performs in-job normalization to role-explicit long rows when needed, preserving outbound/inbound baseline semantics without requiring FG-A shape changes.

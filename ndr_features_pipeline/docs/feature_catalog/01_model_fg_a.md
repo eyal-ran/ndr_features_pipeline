@@ -489,3 +489,6 @@ Total features in this section: **485**.
 | 483 | v1:fg_a:is_off_hours | 483 | is_off_hours | fg_a feature derived for is_off_hours. | Derived in fg_a. | src/ndr/processing/fg_a_builder_job.py | delta_builder |
 | 484 | v1:fg_a:is_night_hours | 484 | is_night_hours | fg_a feature derived for is_night_hours. | Derived in fg_a. | src/ndr/processing/fg_a_builder_job.py | delta_builder |
 | 485 | v1:fg_a:is_weekend | 485 | is_weekend | fg_a feature derived for is_weekend. | Derived in fg_a. | src/ndr/processing/fg_a_builder_job.py | delta_builder |
+
+
+> Compatibility note: FG-A output shape remains wide (outbound + `in_` inbound). FG-B Option-A normalization now converts this shape internally into role-long records for baseline modeling.

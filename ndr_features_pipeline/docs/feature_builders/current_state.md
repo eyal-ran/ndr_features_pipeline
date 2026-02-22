@@ -96,3 +96,6 @@ The system is orchestrated through Step Functions and SageMaker Pipelines. Pipel
 - Architecture and system-level pipeline behavior: `docs/architecture/overview.md`
 - Orchestration details and Step Functions definitions: `docs/architecture/orchestration/step_functions.md`
 - Feature-level artifact catalog: `docs/FEATURE_CATALOG.md` and `docs/feature_catalog/`
+
+
+- FG-B input contract: FG-B now accepts FG-A in either long (`role`, `time_band`) or wide (`in_` inbound columns + outbound unprefixed columns) shape. In `fg_a_layout=auto` (default), long is used when both `role` and `time_band` exist; otherwise FG-B normalizes wide rows into role-explicit long rows before anomaly capping and baseline aggregation.

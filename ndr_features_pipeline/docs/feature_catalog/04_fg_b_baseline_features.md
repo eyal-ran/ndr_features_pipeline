@@ -4333,3 +4333,6 @@ Total features in this section: **4329**.
 | 6154 | v1:fg_b_baselines:baseline_start_ts | 4349 | baseline_start_ts | fg_b_baselines feature derived for baseline_start_ts. | Derived in fg_b_baselines. | src/ndr/processing/fg_b_builder_job.py | fg_a_builder |
 | 6155 | v1:fg_b_baselines:baseline_end_ts | 4350 | baseline_end_ts | fg_b_baselines feature derived for baseline_end_ts. | Derived in fg_b_baselines. | src/ndr/processing/fg_b_builder_job.py | fg_a_builder |
 | 6156 | v1:fg_b_baselines:record_id | 4351 | record_id | fg_b_baselines feature derived for record_id. | Derived in fg_b_baselines. | src/ndr/processing/fg_b_builder_job.py | fg_a_builder |
+
+
+> Contract update: source FG-A input can be wide or long at FG-B ingestion time. FG-B normalizes wide rows to role-explicit long rows (`role`, `time_band`) before computing the baseline features cataloged below.

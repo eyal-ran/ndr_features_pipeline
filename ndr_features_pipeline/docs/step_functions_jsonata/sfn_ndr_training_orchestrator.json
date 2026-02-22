@@ -49,7 +49,14 @@
         "training_end_ts": "{% $exists($states.input.training_end_ts) ? $states.input.training_end_ts : ($exists($project_defaults.TrainingEndTs.S) ? $project_defaults.TrainingEndTs.S : '') %}",
         "eval_start_ts": "{% $exists($states.input.eval_start_ts) ? $states.input.eval_start_ts : ($exists($project_defaults.EvalStartTs.S) ? $project_defaults.EvalStartTs.S : '') %}",
         "eval_end_ts": "{% $exists($states.input.eval_end_ts) ? $states.input.eval_end_ts : ($exists($project_defaults.EvalEndTs.S) ? $project_defaults.EvalEndTs.S : '') %}",
-        "missing_windows_override": "{% $exists($states.input.missing_windows_override) ? $states.input.missing_windows_override : [] %}"
+        "missing_windows_override": "{% $exists($states.input.missing_windows_override) ? $states.input.missing_windows_override : [] %}",
+        "evaluation_windows_json": "{% $exists($states.input.evaluation_windows_json) ? $states.input.evaluation_windows_json : ($exists($project_defaults.EvaluationWindowsJson.S) ? $project_defaults.EvaluationWindowsJson.S : '[]') %}",
+        "enable_history_planner": "{% $exists($states.input.enable_history_planner) ? $states.input.enable_history_planner : ($exists($project_defaults.EnableHistoryPlanner.BOOL) ? $project_defaults.EnableHistoryPlanner.BOOL : true) %}",
+        "enable_auto_remediate_15m": "{% $exists($states.input.enable_auto_remediate_15m) ? $states.input.enable_auto_remediate_15m : ($exists($project_defaults.EnableAutoRemediate15m.BOOL) ? $project_defaults.EnableAutoRemediate15m.BOOL : true) %}",
+        "enable_auto_remediate_fgb": "{% $exists($states.input.enable_auto_remediate_fgb) ? $states.input.enable_auto_remediate_fgb : ($exists($project_defaults.EnableAutoRemediateFgb.BOOL) ? $project_defaults.EnableAutoRemediateFgb.BOOL : true) %}",
+        "enable_post_training_evaluation": "{% $exists($states.input.enable_post_training_evaluation) ? $states.input.enable_post_training_evaluation : ($exists($project_defaults.EnablePostTrainingEvaluation.BOOL) ? $project_defaults.EnablePostTrainingEvaluation.BOOL : true) %}",
+        "enable_eval_join_publication": "{% $exists($states.input.enable_eval_join_publication) ? $states.input.enable_eval_join_publication : ($exists($project_defaults.EnableEvalJoinPublication.BOOL) ? $project_defaults.EnableEvalJoinPublication.BOOL : true) %}",
+        "enable_eval_experiments_logging": "{% $exists($states.input.enable_eval_experiments_logging) ? $states.input.enable_eval_experiments_logging : ($exists($project_defaults.EnableEvalExperimentsLogging.BOOL) ? $project_defaults.EnableEvalExperimentsLogging.BOOL : true) %}"
       },
       "Next": "ValidateResolvedRuntimeParams"
     },
@@ -94,6 +101,34 @@
           {
             "Name": "MissingWindowsOverride",
             "Value": "{% $string($missing_windows_override) %}"
+          },
+          {
+            "Name": "EvaluationWindowsJson",
+            "Value": "{% $string($evaluation_windows_json) %}"
+          },
+          {
+            "Name": "EnableHistoryPlanner",
+            "Value": "{% $string($enable_history_planner) %}"
+          },
+          {
+            "Name": "EnableAutoRemediate15m",
+            "Value": "{% $string($enable_auto_remediate_15m) %}"
+          },
+          {
+            "Name": "EnableAutoRemediateFgb",
+            "Value": "{% $string($enable_auto_remediate_fgb) %}"
+          },
+          {
+            "Name": "EnablePostTrainingEvaluation",
+            "Value": "{% $string($enable_post_training_evaluation) %}"
+          },
+          {
+            "Name": "EnableEvalJoinPublication",
+            "Value": "{% $string($enable_eval_join_publication) %}"
+          },
+          {
+            "Name": "EnableEvalExperimentsLogging",
+            "Value": "{% $string($enable_eval_experiments_logging) %}"
           }
         ]
       },
@@ -203,6 +238,10 @@
         {
           "Condition": "{% $eval_end_ts = \"\" %}",
           "Next": "FailMissingEvalEndTs"
+        },
+        {
+          "Condition": "{% $type($evaluation_windows_json)='string' and $trim($evaluation_windows_json) = '' %}",
+          "Next": "FailMissingEvaluationWindowsJson"
         }
       ],
       "Default": "StartTrainingPipeline"
@@ -241,6 +280,11 @@
       "Type": "Fail",
       "Error": "RuntimeParameterValidationError",
       "Cause": "Missing required runtime parameter: eval_end_ts"
+    },
+    "FailMissingEvaluationWindowsJson": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: evaluation_windows_json"
     }
   }
 }

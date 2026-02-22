@@ -82,6 +82,7 @@ def test_run_orchestrates_artifact_before_deploy(monkeypatch):
         training_end_ts="2024-04-01T00:00:00Z",
         eval_start_ts="2024-04-01T00:00:00Z",
         eval_end_ts="2024-05-01T00:00:00Z",
+        enable_post_training_evaluation=False,
     )
     job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
 
@@ -121,6 +122,7 @@ def test_run_orchestrates_artifact_before_deploy(monkeypatch):
     monkeypatch.setattr(job, "_persist_artifacts", _persist)
     monkeypatch.setattr(job, "_maybe_deploy", _deploy)
     monkeypatch.setattr(job, "_promote_latest_model_pointer", lambda *_args, **_kwargs: "s3://b/latest")
+    monkeypatch.setattr(job, "_write_history_plan", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(job, "_log_sagemaker_experiments", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(job, "_write_final_report_and_success", lambda *_args, **_kwargs: call_order.append("report"))
 
@@ -145,6 +147,7 @@ def test_run_failure_writes_failure_artifacts(monkeypatch):
     monkeypatch.setattr(job, "_resolve_training_window", lambda: (datetime(2024, 1, 1, tzinfo=timezone.utc), datetime(2024, 4, 1, tzinfo=timezone.utc)))
 
     calls = []
+    monkeypatch.setattr(job, "_write_history_plan", lambda *_args, **_kwargs: None)
 
     def _boom(*_args, **_kwargs):
         raise ValueError("forced preflight failure")
@@ -250,10 +253,12 @@ def test_log_sagemaker_experiments_writes_rich_components(monkeypatch):
         report_s3_uri="s3://reports/run/final_training_report.json",
         selected_feature_count=10,
         all_feature_count=20,
+        history_planner={"computed": {"w_required": {"start": "2024-01-01T00:00:00Z"}}},
+        evaluation_windows=[{"window_id": "e1", "start_ts": "2024-04-01T00:00:00Z", "end_ts": "2024-04-02T00:00:00Z"}],
     )
 
-    assert len(sm_client.associations) == 3
-    assert {item["TrialComponentName"] for item in sm_client.batch_metrics} == {
+    assert len(sm_client.associations) >= 4
+    assert {item["TrialComponentName"] for item in sm_client.batch_metrics} >= {
         "if-training-v1-run-4-tuning",
         "if-training-v1-run-4-final",
     }
@@ -393,6 +398,7 @@ def test_remediate_stage_skips_when_no_missing_windows(monkeypatch):
     job = IFTrainingJob(_DummyDF(), _runtime_with_stage("remediate"), _make_spec())
 
     monkeypatch.setattr(job, "_load_latest_verification_status", lambda: {"needs_remediation": False, "missing_windows": []})
+    monkeypatch.setattr(job, "_load_stage_status", lambda *_args, **_kwargs: {})
     observed = {}
     monkeypatch.setattr(job, "_write_stage_status", lambda stage, payload: observed.update({"stage": stage, "payload": payload}))
 
@@ -472,3 +478,199 @@ def test_tune_and_validate_emits_fallback_telemetry_when_optuna_missing(monkeypa
     assert tuning_summary["hpo_method"] == "local_bayesian_fallback"
     assert tuning_summary["hpo_fallback_used"] is True
     assert tuning_summary["hpo_fallback_activation_count"] == 1
+
+
+def test_history_planner_computes_required_44_day_envelope():
+    runtime = _runtime_with_stage("train")
+    job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+
+    from datetime import datetime, timezone
+    training_start = datetime(2024, 4, 1, tzinfo=timezone.utc)
+    training_end = datetime(2024, 4, 2, tzinfo=timezone.utc)
+    eval_windows = [{"window_id": "w1", "start_ts": "2024-04-10T00:00:00Z", "end_ts": "2024-04-11T00:00:00Z"}]
+
+    plan = job._compute_history_plan(training_start, training_end, eval_windows)
+    assert plan["computed"]["b_start"] == "2024-02-17T00:00:00Z"
+    assert plan["computed"]["b_end"] == "2024-04-09T00:00:00Z"
+    assert plan["computed"]["w_required"]["start"] == "2024-02-17T00:00:00Z"
+
+
+def test_runtime_eval_windows_json_overrides_legacy_fields():
+    runtime = _runtime_with_stage("train")
+    runtime.evaluation_windows_json = '[{"window_id":"w_json","start_ts":"2024-04-03T00:00:00Z","end_ts":"2024-04-04T00:00:00Z"}]'
+    runtime.eval_start_ts = "2024-05-01T00:00:00Z"
+    runtime.eval_end_ts = "2024-05-02T00:00:00Z"
+    job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+
+    windows = job._resolve_evaluation_windows()
+    assert windows[0]["window_id"] == "w_json"
+    assert windows[0]["start_ts"] == "2024-04-03T00:00:00Z"
+
+
+def test_post_training_evaluation_writes_manifests(monkeypatch):
+    runtime = _runtime_with_stage("train")
+    job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+
+    class _S3:
+        def __init__(self):
+            self.keys = []
+
+        def put_object(self, **kwargs):
+            self.keys.append(kwargs["Key"])
+
+    class _SM:
+        def start_pipeline_execution(self, **_kwargs):
+            return {"PipelineExecutionArn": "arn:aws:sagemaker:region:acct:pipeline/execution/1"}
+
+        def describe_pipeline_execution(self, **_kwargs):
+            return {"PipelineExecutionStatus": "Succeeded"}
+
+    s3 = _S3()
+    sm = _SM()
+
+    def _client(name):
+        if name == "s3":
+            return s3
+        if name == "sagemaker":
+            return sm
+        raise AssertionError(name)
+
+    monkeypatch.setattr(sys.modules["boto3"], "client", _client, raising=False)
+    windows = [{"window_id": "eval_1", "start_ts": "2024-04-03T00:00:00Z", "end_ts": "2024-04-04T00:00:00Z"}]
+    manifests = job._run_post_training_evaluation(windows)
+    assert manifests[0]["window_id"] == "eval_1"
+    assert any(key.endswith("predictions_manifest.json") for key in s3.keys)
+    assert manifests[0]["predictions_manifest"]["status"] == "Succeeded"
+
+
+def test_post_training_evaluation_skips_join_when_publication_disabled(monkeypatch):
+    runtime = _runtime_with_stage("train")
+    runtime.enable_eval_join_publication = False
+    job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+
+    class _S3:
+        def put_object(self, **_kwargs):
+            return None
+
+    class _SM:
+        def start_pipeline_execution(self, **kwargs):
+            if kwargs["PipelineName"] == "pipeline_prediction_feature_join":
+                raise AssertionError("join pipeline must not be called")
+            return {"PipelineExecutionArn": "arn:aws:sagemaker:region:acct:pipeline/execution/1"}
+
+        def describe_pipeline_execution(self, **_kwargs):
+            return {"PipelineExecutionStatus": "Succeeded"}
+
+    def _client(name):
+        if name == "s3":
+            return _S3()
+        if name == "sagemaker":
+            return _SM()
+        raise AssertionError(name)
+
+    monkeypatch.setattr(sys.modules["boto3"], "client", _client, raising=False)
+    manifests = job._run_post_training_evaluation([
+        {"window_id": "eval_1", "start_ts": "2024-04-03T00:00:00Z", "end_ts": "2024-04-04T00:00:00Z"}
+    ])
+    assert manifests[0]["join_manifest"]["status"] == "Skipped"
+
+
+def test_remediation_stage_invokes_orchestrators(monkeypatch):
+    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("remediate"), _make_spec())
+
+    monkeypatch.setattr(
+        job,
+        "_load_latest_verification_status",
+        lambda: {"needs_remediation": True, "missing_windows": ["2024-04-01"]},
+    )
+    monkeypatch.setattr(
+        job,
+        "_load_stage_status",
+        lambda *_args, **_kwargs: {
+            "manifests": {
+                "missing_15m_windows": [
+                    {"window_start_ts": "2024-04-01T00:00:00Z", "window_end_ts": "2024-04-01T00:15:00Z"}
+                ],
+                "missing_fgb_windows": [{"reference_time_iso": "2024-04-01T00:00:00Z", "horizons": ["7d", "30d"]}],
+            }
+        },
+    )
+
+    class _S3:
+        def put_object(self, **_kwargs):
+            return None
+
+    class _SFN:
+        def start_execution(self, **_kwargs):
+            return {"executionArn": "arn:aws:states:region:acct:execution:sm:1"}
+
+        def describe_execution(self, **_kwargs):
+            return {"status": "SUCCEEDED"}
+
+    class _SM:
+        def start_pipeline_execution(self, **_kwargs):
+            return {"PipelineExecutionArn": "arn:aws:sagemaker:region:acct:pipeline/execution/2"}
+
+        def describe_pipeline_execution(self, **_kwargs):
+            return {"PipelineExecutionStatus": "Succeeded"}
+
+    def _client(name):
+        if name == "s3":
+            return _S3()
+        if name == "stepfunctions":
+            return _SFN()
+        if name == "sagemaker":
+            return _SM()
+        raise AssertionError(name)
+
+    monkeypatch.setattr(sys.modules["boto3"], "client", _client, raising=False)
+    monkeypatch.setattr("ndr.processing.if_training_job.time.sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setenv("NDR_BACKFILL_STATE_MACHINE_ARN", "arn:aws:states:region:acct:stateMachine:ndr-backfill")
+
+    observed = {}
+    monkeypatch.setattr(job, "_write_stage_status", lambda stage, payload: observed.update({"stage": stage, "payload": payload}))
+
+    job.run()
+    assert observed["stage"] == "remediation"
+    assert observed["payload"]["status"] == "completed"
+    assert observed["payload"]["records"][0]["backfill_execution"]["status"] == "Succeeded"
+    assert observed["payload"]["records"][0]["fgb_execution"]["status"] == "Succeeded"
+
+
+def test_backfill_execution_already_exists_is_handled_as_idempotent_skip(monkeypatch):
+    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("remediate"), _make_spec())
+    monkeypatch.setenv("NDR_BACKFILL_STATE_MACHINE_ARN", "arn:aws:states:region:acct:stateMachine:ndr-backfill")
+
+    class _SFN:
+        def start_execution(self, **_kwargs):
+            raise RuntimeError("ExecutionAlreadyExists")
+
+    result = job._invoke_backfill_reprocessing(
+        sfn_client=_SFN(),
+        missing_15m=[{"window_start_ts": "2024-04-01T00:00:00Z", "window_end_ts": "2024-04-01T00:15:00Z"}],
+        attempt=1,
+    )
+    assert result["status"] == "Skipped"
+    assert result["failure_reason"] == "ExecutionAlreadyExists"
+
+
+def test_fgb_rebuild_not_capped_to_ten_references(monkeypatch):
+    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("remediate"), _make_spec())
+
+    class _SM:
+        def __init__(self):
+            self.started = 0
+
+        def start_pipeline_execution(self, **_kwargs):
+            self.started += 1
+            return {"PipelineExecutionArn": f"arn:exec:{self.started}"}
+
+        def describe_pipeline_execution(self, **_kwargs):
+            return {"PipelineExecutionStatus": "Succeeded"}
+
+    sm = _SM()
+    monkeypatch.setattr("ndr.processing.if_training_job.time.sleep", lambda *_args, **_kwargs: None)
+    payload = [{"reference_time_iso": f"2024-04-{i:02d}T00:00:00Z", "horizons": ["7d"]} for i in range(1, 13)]
+    result = job._invoke_fgb_baseline_rebuild(sm, payload, attempt=1)
+    assert sm.started == 12
+    assert result["status"] == "Succeeded"

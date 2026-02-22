@@ -220,7 +220,9 @@ It includes:
    - Purpose: validate FG-A/FG-C coverage and persist deterministic verification status artifact.
 2. `MissingFeatureCreationStep`
    - Runs: `python -m ndr.scripts.run_if_training --stage remediate`
-   - Purpose: bounded remediation (`max 2` attempts) using missing windows from verifier status or runtime override.
+   - Purpose: bounded remediation (`max_retries` from IF training spec) with real orchestrator execution:
+     - starts Step Functions backfill for missing 15m windows,
+     - starts FG-B baseline pipeline for missing reference periods.
 3. `PostRemediationVerificationStep`
    - Runs: `python -m ndr.scripts.run_if_training --stage reverify`
    - Purpose: re-check coverage after remediation and persist re-verification status.
@@ -332,3 +334,12 @@ IF training telemetry now explicitly records whether HPO used primary Optuna or 
 
 
 - FG-B ingestion compatibility: `run_fg_b_builder` supports runtime/job-spec layout mode `fg_a_layout` (`auto` default; `wide`; `long`). Auto mode normalizes current FG-A wide outputs into role-explicit long rows and derives `time_band` before baseline computation, preserving downstream FG-C contracts.
+
+## IF training pipeline flow additions (item 25)
+Unified IF training now includes:
+1. history-planner computation + artifact,
+2. verification/remediation/reverification,
+3. train/persist/report,
+4. post-training evaluation replay for each configured evaluation window,
+5. prediction-feature join/publication manifests,
+6. expanded experiments lineage for planner + evaluation windows.

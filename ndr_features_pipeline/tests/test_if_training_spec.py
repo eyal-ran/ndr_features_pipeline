@@ -40,6 +40,9 @@ def test_parse_if_training_spec_happy_path_defaults():
     assert parsed.experiments.enabled is True
     assert parsed.cost_guardrail.option1_monthly_budget_usd == 86.4
     assert parsed.preprocessing.imputation_strategy == "median_scaled"
+    assert parsed.history_planner.fg_a_max_lookback_minutes == 24 * 60
+    assert parsed.remediation.max_retries == 2
+    assert parsed.evaluation_windows == []
 
 
 def test_parse_if_training_spec_uses_validation_gate_improvement():
@@ -117,3 +120,26 @@ def test_parse_if_training_reliability_override():
     assert parsed.reliability.min_partition_coverage_ratio == 0.9
     assert parsed.reliability.min_rows_per_window == 40
     assert parsed.reliability.max_rows_per_join_key == 3.0
+
+
+def test_parse_if_training_evaluation_windows_and_toggles():
+    spec = {
+        "feature_inputs": {
+            "fg_a": {"s3_prefix": "s3://fg-a"},
+            "fg_c": {"s3_prefix": "s3://fg-c"},
+        },
+        "output": {
+            "artifacts_s3_prefix": "s3://models/if_training",
+            "report_s3_prefix": "s3://models/reports",
+        },
+        "model": {"version": "v2"},
+        "evaluation": {
+            "windows": [
+                {"window_id": "eval_1", "start_ts": "2024-04-01T00:00:00Z", "end_ts": "2024-04-02T00:00:00Z"}
+            ]
+        },
+        "toggles": {"enable_post_training_evaluation": False},
+    }
+    parsed = parse_if_training_spec(spec)
+    assert parsed.evaluation_windows[0].window_id == "eval_1"
+    assert parsed.toggles.enable_post_training_evaluation is False

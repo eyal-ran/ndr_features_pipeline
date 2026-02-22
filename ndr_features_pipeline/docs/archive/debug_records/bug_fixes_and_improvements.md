@@ -835,6 +835,7 @@
   4) clean up Dynamo seed templates.
 - **Rollback:** restore prior Step Functions definition and placeholder wiring if any production dependency still expects the second pipeline state.
 
+
 ### Definition of done
 - Publication executes fully via `PipelineNamePredictionJoin` (join + publish), with support for both S3 and Redshift destinations.
 - `sfn_ndr_prediction_publication` has no `StartPublicationPipeline` branch.
@@ -975,6 +976,73 @@
      - FG-C successfully reading canonical baselines for both horizons.
    - Validate monitoring/alerts and runbook updates are complete.
    - Record rollback drill outcome (or documented simulation) before production rollout.
+
+
+### Completeness verification and mandatory gap-closure checklist (required before implementation sign-off)
+To ensure the plan is correct, complete, and workable end-to-end, implementation must explicitly close all items below and record evidence per item.
+
+#### 1) Code-path coverage (all required modifications)
+1. **IF training runtime/spec layer**
+   - `src/ndr/processing/if_training_spec.py`: add typed fields for evaluation windows, history planner policy, remediation toggles, and evaluation output sinks.
+   - `src/ndr/scripts/run_if_training.py`: add argument plumbing for multi-window evaluation payload and optional toggles.
+2. **IF training execution layer**
+   - `src/ndr/processing/if_training_job.py`:
+     - add history planner computation + persisted artifact,
+     - replace placeholder remediation with real orchestrated invocations,
+     - add post-training evaluation replay orchestration,
+     - add final report expansion for evaluation artifacts and provenance.
+3. **Pipeline definition layer**
+   - `src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py`:
+     - add parameters for evaluation windows/toggles,
+     - add step sequencing dependencies reflecting planner→verify→remediate→reverify→train→evaluate→publish/attributes/deploy (or equivalent coherent order).
+4. **Orchestration definitions**
+   - `docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json`:
+     - add parameter resolution/validation for evaluation windows and toggles,
+     - ensure remediation/evaluation orchestration branches are represented and bounded.
+   - `docs/step_functions_jsonata/sfn_ndr_backfill_reprocessing.json`:
+     - confirm contract compatibility with planner-produced windows payload.
+   - `docs/step_functions_jsonata/sfn_ndr_monthly_fg_b_baselines.json` (or equivalent FG-B orchestration owner):
+     - ensure callable contract supports remediation-triggered FG-B rebuild windows/reference periods.
+5. **Evaluation reuse integration (must avoid duplicate logic)**
+   - Confirm invocation contracts are compatible with:
+     - `src/ndr/pipeline/sagemaker_pipeline_definitions_inference.py`
+     - `src/ndr/pipeline/sagemaker_pipeline_definitions_prediction_feature_join.py`
+     - `src/ndr/processing/inference_predictions_job.py`
+     - `src/ndr/processing/prediction_feature_join_job.py`
+6. **DynamoDB seed/contracts**
+   - `src/ndr/scripts/create_ml_projects_parameters_table.py`: seed new defaults/spec fields and runtime requirements.
+   - Ensure validators enforce presence/shape and fail-fast behavior.
+
+#### 2) Documentation coverage (all required updates)
+The following docs must be updated in the same delivery stream so post-implementation state is accurately documented:
+- `docs/TRAINING_PROTOCOL_IF.md`
+- `docs/TRAINING_PROTOCOL_IF_VERIFICATION.md`
+- `docs/architecture/orchestration/step_functions.md`
+- `docs/pipelines/pipelines_flow_description.md`
+- `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md`
+- `docs/architecture/orchestration/dynamodb_io_contract.md`
+- relevant FG-B/FG-C references where safety-gap/horizon planner behavior is described.
+
+#### 3) Explicit omissions that must be preserved (no unintended scope creep)
+- Do **not** duplicate inference scoring/join algorithms; only orchestrate reuse.
+- Do **not** remove existing fail-fast validation semantics; extend them for new params.
+- Do **not** introduce mandatory rollout/canary requirements; rollout controls remain optional toggles.
+- Do **not** silently change FG-A/FG-B/FG-C output schemas without synchronized contract docs/tests.
+
+#### 4) Verification evidence matrix (required artifacts)
+Implementation PR(s) must include evidence links/artifacts for:
+- formula correctness tests (`W_15m`, `B_start/B_end`, `W_required`) including concrete 44-day derivation under current policy,
+- remediation invocation payload correctness (15m backfill + FG-B rebuild),
+- evaluation replay output manifests and joined output sink writes,
+- SageMaker Experiments lineage screenshots/log excerpts/JSON artifacts,
+- orchestration bounded retry/idempotency behavior under replay.
+
+#### 5) Final implementation readiness gate (must pass)
+A final coordinated review must confirm:
+- all files in sections (1) and (2) were updated or explicitly marked N/A with rationale,
+- tests/checks from this item all pass,
+- no unresolved TODO/placeholder remains in planner/remediation/evaluation paths,
+- operational runbook notes (inputs, toggles, rollback) are documented.
 
 ### Definition of done
 - Monthly state machine contains no supplemental placeholder pipeline states.
@@ -1159,6 +1227,7 @@
      - Do not remove Step Functions branches without implementing equivalent bounded remediation/failure semantics inside unified pipeline.
      - Do not promote with docs-only updates; implementation, tests, and docs must ship together for this item to be considered complete.
 
+
 ### Definition of done
 - `sfn_ndr_training_orchestrator` is coarse-grained and controls only unified training pipeline start/poll/finalization.
 - Unified `pipeline_if_training` fully implements verifier + remediation + training + publish + attributes + deploy.
@@ -1286,6 +1355,73 @@ Do **not** implement Priority 2 item E (machine-inventory fallback changes) or i
   - Do not implement machine-inventory fallback policy changes (`src/ndr/processing/machine_inventory_unload_job.py`).
   - Do not change config-loader fallback policy (`src/ndr/config/job_spec_loader.py`, `src/ndr/config/project_parameters_loader.py`) beyond documentation/validation clarity.
 
+
+### Completeness verification and mandatory gap-closure checklist (required before implementation sign-off)
+To ensure the plan is correct, complete, and workable end-to-end, implementation must explicitly close all items below and record evidence per item.
+
+#### 1) Code-path coverage (all required modifications)
+1. **IF training runtime/spec layer**
+   - `src/ndr/processing/if_training_spec.py`: add typed fields for evaluation windows, history planner policy, remediation toggles, and evaluation output sinks.
+   - `src/ndr/scripts/run_if_training.py`: add argument plumbing for multi-window evaluation payload and optional toggles.
+2. **IF training execution layer**
+   - `src/ndr/processing/if_training_job.py`:
+     - add history planner computation + persisted artifact,
+     - replace placeholder remediation with real orchestrated invocations,
+     - add post-training evaluation replay orchestration,
+     - add final report expansion for evaluation artifacts and provenance.
+3. **Pipeline definition layer**
+   - `src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py`:
+     - add parameters for evaluation windows/toggles,
+     - add step sequencing dependencies reflecting planner→verify→remediate→reverify→train→evaluate→publish/attributes/deploy (or equivalent coherent order).
+4. **Orchestration definitions**
+   - `docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json`:
+     - add parameter resolution/validation for evaluation windows and toggles,
+     - ensure remediation/evaluation orchestration branches are represented and bounded.
+   - `docs/step_functions_jsonata/sfn_ndr_backfill_reprocessing.json`:
+     - confirm contract compatibility with planner-produced windows payload.
+   - `docs/step_functions_jsonata/sfn_ndr_monthly_fg_b_baselines.json` (or equivalent FG-B orchestration owner):
+     - ensure callable contract supports remediation-triggered FG-B rebuild windows/reference periods.
+5. **Evaluation reuse integration (must avoid duplicate logic)**
+   - Confirm invocation contracts are compatible with:
+     - `src/ndr/pipeline/sagemaker_pipeline_definitions_inference.py`
+     - `src/ndr/pipeline/sagemaker_pipeline_definitions_prediction_feature_join.py`
+     - `src/ndr/processing/inference_predictions_job.py`
+     - `src/ndr/processing/prediction_feature_join_job.py`
+6. **DynamoDB seed/contracts**
+   - `src/ndr/scripts/create_ml_projects_parameters_table.py`: seed new defaults/spec fields and runtime requirements.
+   - Ensure validators enforce presence/shape and fail-fast behavior.
+
+#### 2) Documentation coverage (all required updates)
+The following docs must be updated in the same delivery stream so post-implementation state is accurately documented:
+- `docs/TRAINING_PROTOCOL_IF.md`
+- `docs/TRAINING_PROTOCOL_IF_VERIFICATION.md`
+- `docs/architecture/orchestration/step_functions.md`
+- `docs/pipelines/pipelines_flow_description.md`
+- `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md`
+- `docs/architecture/orchestration/dynamodb_io_contract.md`
+- relevant FG-B/FG-C references where safety-gap/horizon planner behavior is described.
+
+#### 3) Explicit omissions that must be preserved (no unintended scope creep)
+- Do **not** duplicate inference scoring/join algorithms; only orchestrate reuse.
+- Do **not** remove existing fail-fast validation semantics; extend them for new params.
+- Do **not** introduce mandatory rollout/canary requirements; rollout controls remain optional toggles.
+- Do **not** silently change FG-A/FG-B/FG-C output schemas without synchronized contract docs/tests.
+
+#### 4) Verification evidence matrix (required artifacts)
+Implementation PR(s) must include evidence links/artifacts for:
+- formula correctness tests (`W_15m`, `B_start/B_end`, `W_required`) including concrete 44-day derivation under current policy,
+- remediation invocation payload correctness (15m backfill + FG-B rebuild),
+- evaluation replay output manifests and joined output sink writes,
+- SageMaker Experiments lineage screenshots/log excerpts/JSON artifacts,
+- orchestration bounded retry/idempotency behavior under replay.
+
+#### 5) Final implementation readiness gate (must pass)
+A final coordinated review must confirm:
+- all files in sections (1) and (2) were updated or explicitly marked N/A with rationale,
+- tests/checks from this item all pass,
+- no unresolved TODO/placeholder remains in planner/remediation/evaluation paths,
+- operational runbook notes (inputs, toggles, rollback) are documented.
+
 ### Definition of done
 - Required runtime parameters fail fast instead of silently defaulting to empty/static values.
 - Backfill flow rejects invalid/missing windows and has no hardcoded date fallbacks.
@@ -1406,6 +1542,73 @@ Implement a normalization layer inside FG-B that converts FG-A wide rows (`outbo
   - Do not change FG-A published dataset shape to long form as part of this item.
   - Do not introduce parallel FG-A writer contracts unless separately planned and documented as migration work.
 
+
+### Completeness verification and mandatory gap-closure checklist (required before implementation sign-off)
+To ensure the plan is correct, complete, and workable end-to-end, implementation must explicitly close all items below and record evidence per item.
+
+#### 1) Code-path coverage (all required modifications)
+1. **IF training runtime/spec layer**
+   - `src/ndr/processing/if_training_spec.py`: add typed fields for evaluation windows, history planner policy, remediation toggles, and evaluation output sinks.
+   - `src/ndr/scripts/run_if_training.py`: add argument plumbing for multi-window evaluation payload and optional toggles.
+2. **IF training execution layer**
+   - `src/ndr/processing/if_training_job.py`:
+     - add history planner computation + persisted artifact,
+     - replace placeholder remediation with real orchestrated invocations,
+     - add post-training evaluation replay orchestration,
+     - add final report expansion for evaluation artifacts and provenance.
+3. **Pipeline definition layer**
+   - `src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py`:
+     - add parameters for evaluation windows/toggles,
+     - add step sequencing dependencies reflecting planner→verify→remediate→reverify→train→evaluate→publish/attributes/deploy (or equivalent coherent order).
+4. **Orchestration definitions**
+   - `docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json`:
+     - add parameter resolution/validation for evaluation windows and toggles,
+     - ensure remediation/evaluation orchestration branches are represented and bounded.
+   - `docs/step_functions_jsonata/sfn_ndr_backfill_reprocessing.json`:
+     - confirm contract compatibility with planner-produced windows payload.
+   - `docs/step_functions_jsonata/sfn_ndr_monthly_fg_b_baselines.json` (or equivalent FG-B orchestration owner):
+     - ensure callable contract supports remediation-triggered FG-B rebuild windows/reference periods.
+5. **Evaluation reuse integration (must avoid duplicate logic)**
+   - Confirm invocation contracts are compatible with:
+     - `src/ndr/pipeline/sagemaker_pipeline_definitions_inference.py`
+     - `src/ndr/pipeline/sagemaker_pipeline_definitions_prediction_feature_join.py`
+     - `src/ndr/processing/inference_predictions_job.py`
+     - `src/ndr/processing/prediction_feature_join_job.py`
+6. **DynamoDB seed/contracts**
+   - `src/ndr/scripts/create_ml_projects_parameters_table.py`: seed new defaults/spec fields and runtime requirements.
+   - Ensure validators enforce presence/shape and fail-fast behavior.
+
+#### 2) Documentation coverage (all required updates)
+The following docs must be updated in the same delivery stream so post-implementation state is accurately documented:
+- `docs/TRAINING_PROTOCOL_IF.md`
+- `docs/TRAINING_PROTOCOL_IF_VERIFICATION.md`
+- `docs/architecture/orchestration/step_functions.md`
+- `docs/pipelines/pipelines_flow_description.md`
+- `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md`
+- `docs/architecture/orchestration/dynamodb_io_contract.md`
+- relevant FG-B/FG-C references where safety-gap/horizon planner behavior is described.
+
+#### 3) Explicit omissions that must be preserved (no unintended scope creep)
+- Do **not** duplicate inference scoring/join algorithms; only orchestrate reuse.
+- Do **not** remove existing fail-fast validation semantics; extend them for new params.
+- Do **not** introduce mandatory rollout/canary requirements; rollout controls remain optional toggles.
+- Do **not** silently change FG-A/FG-B/FG-C output schemas without synchronized contract docs/tests.
+
+#### 4) Verification evidence matrix (required artifacts)
+Implementation PR(s) must include evidence links/artifacts for:
+- formula correctness tests (`W_15m`, `B_start/B_end`, `W_required`) including concrete 44-day derivation under current policy,
+- remediation invocation payload correctness (15m backfill + FG-B rebuild),
+- evaluation replay output manifests and joined output sink writes,
+- SageMaker Experiments lineage screenshots/log excerpts/JSON artifacts,
+- orchestration bounded retry/idempotency behavior under replay.
+
+#### 5) Final implementation readiness gate (must pass)
+A final coordinated review must confirm:
+- all files in sections (1) and (2) were updated or explicitly marked N/A with rationale,
+- tests/checks from this item all pass,
+- no unresolved TODO/placeholder remains in planner/remediation/evaluation paths,
+- operational runbook notes (inputs, toggles, rollback) are documented.
+
 ### Definition of done
 - FG-B reliably consumes current FG-A wide output by normalizing to role-explicit long rows.
 - Role semantics (source vs target behavior baselines) are explicitly preserved and validated.
@@ -1415,3 +1618,349 @@ Implement a normalization layer inside FG-B that converts FG-A wide rows (`outbo
 
 **Status:** Planned.
 
+
+---
+
+## 25) Unified automated IF training + evaluation with history planner, remediation orchestration, and DDB-driven runtime windows
+
+### Objective
+Implement a fully automated, production-ready IF training lifecycle that:
+1. derives training/evaluation windows and required history from DynamoDB,
+2. computes exact historical backfill envelopes using FG-A lookbacks + FG-B horizon safety gaps,
+3. performs real remediation by orchestrating existing backfill and feature/statistics creation flows,
+4. trains IF, runs post-training evaluation windows, writes outputs, joins evaluation predictions with features, and optionally publishes to Redshift,
+5. logs complete lineage/metrics to SageMaker Experiments,
+6. keeps rollout controls optional and table-driven.
+
+### Why this is required (current gap summary)
+- Current IF remediation stage only writes status artifacts and does not create missing data.
+- Training orchestrator currently launches one unified training pipeline but does not orchestrate external remediation.
+- Eval timestamps are runtime-required yet not used to execute real post-training evaluation windows.
+- Backfill 15m flow regenerates Delta/FG-A/PairCounts/FG-C but does not rebuild FG-B monthly/statistical baselines.
+
+### Known current parameters that MUST be pre-integrated (not only symbolic formulas)
+The first implementation must wire these as explicit defaults/known constants (while still supporting future config overrides):
+- **FG-A max lookback:** `L_A = 24h` from current FG-A windows (`w_15m`, `w_30m`, `w_1h`, `w_8h`, `w_24h`).
+- **FG-B baseline horizons:** `H = {7d, 30d}`.
+- **FG-B safety gaps (current known policy):**
+  - for `7d`: `tail_days=2`, `head_days=2`,
+  - for `30d`: `tail_days=7`, `head_days=7`.
+- **FG-C back-dating requirements already known in feature set:** novelty/rarity families use `lookback30d` (for example `new_peer_cnt_lookback30d`, `rare_peer_cnt_lookback30d`, `new_dst_port_cnt_lookback30d`, `new_pair_cnt_lookback30d`, `new_src_dst_port_cnt_lookback30d`).
+
+For initial implementation, planner output must expose both:
+1. **computed values from formulas**, and
+2. **resolved concrete values** above, with per-run provenance (`from_job_spec` vs `from_default_constants`).
+
+### Authoritative required-history formulas (must be implemented exactly)
+Let:
+- training interval be `[T_s, T_e)`,
+- evaluation intervals be `{[E_{s,i}, E_{e,i})}_{i=1..N}`,
+- scoring union be `U = [T_s, T_e) ∪ ⋃[E_{s,i}, E_{e,i})`,
+- `U_start = min(T_s, E_{s,1..N})`, `U_end = max(T_e, E_{e,1..N})`.
+
+#### A) 15m-chain envelope (raw/delta/FG-A/PairCounts/FG-C-current rows)
+- FG-A max lookback window minutes:
+  `L_A = max(FG_A_WINDOWS_MINUTES)` (currently 24h).
+- Required 15m envelope:
+  `W_15m = [U_start - L_A, U_end)`.
+
+#### B) FG-B baseline envelope needed by FG-C
+For each configured baseline horizon `h`:
+- `d(h)` = effective horizon days (e.g., 7 or 30),
+- `g_t(h)` = tail safety gap days,
+- `g_h(h)` = head safety gap days.
+
+FG-B bound per reference time `ref`:
+- `baseline_end(h, ref)   = ref - g_h(h)`
+- `baseline_start(h, ref) = baseline_end(h, ref) - (d(h) + g_t(h))`
+
+Across the full union interval:
+- earliest baseline input requirement:
+  `B_start = U_start - max_h(d(h) + g_t(h) + g_h(h))`
+- latest baseline input requirement:
+  `B_end   = U_end   - min_h(g_h(h))`
+
+#### C) Global historical creation envelope
+- `W_required = [min(W_15m.start, B_start), U_end)`
+
+#### D) Concrete envelope under current known horizons/safety gaps (must be emitted by planner)
+Given current known FG-B policy:
+- `d(7d)=7`, `g_t(7d)=2`, `g_h(7d)=2`  => `d+g_t+g_h = 11`
+- `d(30d)=30`, `g_t(30d)=7`, `g_h(30d)=7` => `d+g_t+g_h = 44`
+
+Therefore initial planner must compute:
+- `B_start = U_start - max(11, 44) days = U_start - 44 days`
+- `B_end   = U_end   - min(2, 7) days = U_end - 2 days`
+- `W_15m   = [U_start - 24h, U_end)`
+- `W_required = [min(U_start - 24h, U_start - 44d), U_end) = [U_start - 44d, U_end)`
+
+Operationally, this means the first automated implementation must plan/remediate at least **44 days of backward data** before the earliest point in `(training ∪ evaluation)` under current known settings.
+
+This formula set must drive both verification expectations and remediation task planning.
+
+### Scope and implementation plan
+
+#### 1) Introduce history-planner stage (new, required)
+Add a deterministic planning stage before verify/remediation that:
+- loads training/eval windows from DynamoDB defaults/spec,
+- loads FG-B horizon + safety-gap policy from FG-B spec,
+- computes `W_15m`, `B_start/B_end`, `W_required`,
+- materializes required partition/window manifests:
+  - missing 15m windows,
+  - missing FG-B baseline windows by horizon/reference period,
+- writes planning artifact under training report prefix (`run_id=.../history_planner.json`).
+
+#### 2) Refactor runtime/contracts to be fully DDB-derived (required)
+All required runtime values must be resolvable from DDB (payload overrides allowed but optional).
+
+##### 2.1 `project_parameters#<feature_spec_version>.spec.defaults` additions
+Add defaults for:
+- `TrainingStartTs`
+- `TrainingEndTs`
+- `EvaluationWindowsJson` (JSON array of windows; preferred)
+- optional fallback compatibility fields:
+  - `EvalStartTs`, `EvalEndTs` (single window)
+- optional automation toggles:
+  - `EnableHistoryPlanner`
+  - `EnableAutoRemediate15m`
+  - `EnableAutoRemediateFGB`
+  - `EnablePostTrainingEvaluation`
+  - `EnableEvalJoinPublication`
+  - `EnableEvalExperimentsLogging`
+
+##### 2.2 `if_training#<feature_spec_version>.spec` additions
+Add typed/table-driven fields:
+- `evaluation.windows` (structured list)
+- `history_planner` policy block:
+  - `derive_from_training_and_evaluation: true`
+  - `fg_a_max_lookback_minutes` (optional override; default from FG-A schema)
+- `remediation` policy block:
+  - `enable_backfill_15m`
+  - `enable_fgb_rebuild`
+  - `max_retries`
+- `evaluation_output` block:
+  - S3 output prefixes for predictions/joined outputs
+  - optional Redshift sink settings (reuse prediction join sink model)
+
+##### 2.3 `pipeline_if_training#<feature_spec_version>.spec`
+Update `required_runtime_params` and step metadata to include:
+- multi-window evaluation payload parameter (e.g., `EvaluationWindowsJson`)
+- optional toggles if passed runtime-side.
+
+##### 2.4 Validation contracts
+Extend `project_parameters.spec.validation` for timestamp and evaluation-windows JSON shape.
+Fail fast on invalid/missing required derived params.
+
+#### 3) Make remediation actually generate missing data (required)
+
+##### 3.1 Remediation orchestration wiring
+Replace placeholder remediation behavior with orchestrated execution of existing flows:
+1. for missing 15m windows: invoke existing backfill orchestration (`sfn_ndr_backfill_reprocessing`) with computed range/windows.
+2. for missing/stale FG-B baseline coverage: invoke existing FG-B baseline pipeline/orchestrator for required reference period(s) + horizons.
+3. rerun verify (`reverify`) after remediation.
+4. enforce bounded retries and deterministic failure artifact on exhaustion.
+
+##### 3.2 Sufficiency rule
+Backfill15m is necessary but not sufficient; FG-B rebuild must run when baseline coverage is incomplete per planner output.
+
+#### 4) Implement true automated post-training evaluation (required)
+
+##### 4.1 Evaluation execution model
+After training completion and artifact persistence:
+- for each configured evaluation window:
+  1. ensure required history/features are present (using planner/remediation outputs),
+  2. run inference replay using existing inference predictions logic/pipeline,
+  3. write predictions to evaluation S3 prefixes,
+  4. run prediction-feature join using existing join flow,
+  5. write joined outputs to S3 and optionally Redshift (existing destination model).
+
+##### 4.2 Reuse-first rule
+Do not duplicate scoring/join logic; reuse:
+- `inference_predictions` job/pipeline for model scoring,
+- `prediction_feature_join` job/pipeline for joined outputs and optional Redshift copy.
+
+##### 4.3 Evaluation artifacts
+Persist per-window artifacts:
+- `evaluation/<window_id>/predictions_manifest.json`
+- `evaluation/<window_id>/join_manifest.json`
+- `evaluation/<window_id>/metrics.json`
+Include these in final training report.
+
+#### 5) SageMaker Experiments lineage expansion (required)
+Extend experiments logging to register:
+- one trial lineage per training run,
+- one trial component per evaluation window,
+- metrics/artifact URIs for planner, remediation actions, training outputs, and evaluation outputs.
+
+#### 6) Optional rollout controls only (required)
+Rollout strategy is optional, controlled by toggles. No mandatory canary sequence in DoD.
+- all automation blocks can be selectively enabled/disabled via DDB config.
+
+### Orchestration and architecture coherence requirements
+- Keep Step Functions fail-fast validation for resolved params.
+- Ensure orchestration remains callback-free and poll-based where already standardized.
+- Ensure idempotency keys are deterministic for remediation and evaluation replay runs.
+- Ensure bounded retries and explicit terminal diagnostics.
+
+### Required documentation updates (must be in same implementation stream)
+Update docs to reflect post-implementation authoritative behavior:
+1. `docs/TRAINING_PROTOCOL_IF.md`
+   - include history-planner formulas and remediation orchestration semantics.
+2. `docs/TRAINING_PROTOCOL_IF_VERIFICATION.md`
+   - update checklist and caveats for true remediation + evaluation flow.
+3. `docs/architecture/orchestration/step_functions.md`
+   - reflect training orchestrator decision branches and remediation/evaluation orchestration.
+4. `docs/pipelines/pipelines_flow_description.md`
+   - include history-planner + evaluation replay/join steps in training flow.
+5. `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md`
+   - add new defaults/spec keys and examples for training/evaluation windows + toggles.
+6. `docs/architecture/orchestration/dynamodb_io_contract.md`
+   - include new runtime params and validation rules.
+7. Any relevant FG-B/FG-C docs impacted by horizon/safety-gap planner behavior.
+
+### Testing, checks, and verification gates (must pass)
+
+#### A) Unit tests (required)
+1. History planner computation tests
+   - verify exact formulas for `W_15m`, `B_start/B_end`, `W_required` under multiple horizon/gap configs.
+   - verify union behavior across multiple evaluation windows.
+2. Runtime parsing/spec tests
+   - verify DDB-derived training/eval window loading and compatibility fallback (`EvalStartTs/EvalEndTs`).
+3. Remediation behavior tests
+   - verify missing 15m windows trigger backfill orchestrator invocation payloads.
+   - verify missing FG-B coverage triggers FG-B rebuild invocations.
+   - verify bounded retries and terminal failure context.
+4. Evaluation automation tests
+   - verify per-window replay invocation, S3 outputs, join invocation, and manifest generation.
+5. Experiments logging tests
+   - verify trial components for planner/remediation/evaluation with proper lineage.
+
+#### B) Integration/contract tests (required)
+1. Step Functions JSONata contract checks
+   - runtime param resolution from DDB defaults,
+   - validation failures for malformed timestamps/eval JSON,
+   - correct parameter pass-through to pipelines.
+2. DDB schema seed/validation tests
+   - ensure seeded table definitions include new required params and pass contract validators.
+3. Pipeline composition tests
+   - ensure training flow stage order and dependencies are coherent with remediation and evaluation branches.
+
+#### C) End-to-end non-prod verification (required)
+Execute at least one non-prod scenario each:
+1. clean-data scenario (no remediation needed)
+2. missing 15m data scenario (backfill remediation path)
+3. missing FG-B baseline scenario (FG-B remediation path)
+4. mixed-missing scenario (both remediation paths)
+5. multi-window evaluation scenario (≥2 historical eval windows)
+
+For each scenario verify:
+- successful completion or deterministic expected failure,
+- produced artifacts/manifests/reports,
+- joined evaluation outputs written to sink,
+- experiments lineage completeness,
+- no orchestration dead-ends/poll leaks.
+
+#### D) Performance/reliability checks (required)
+- verify retries/backoff bounded behavior,
+- verify idempotent rerun safety for same `run_id` + window IDs,
+- verify no duplicate publication/join writes under replay,
+- verify observability: stage timers/counters/log correlation ids.
+
+### Completeness matrix (files expected to change)
+- **Core training flow**
+  - `src/ndr/processing/if_training_job.py`
+  - `src/ndr/processing/if_training_spec.py`
+  - `src/ndr/scripts/run_if_training.py`
+  - `src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py`
+- **Orchestration definitions**
+  - `docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json`
+  - optionally related orchestration docs if additional branches/states are introduced.
+- **DDB schema/seed contracts**
+  - `src/ndr/scripts/create_ml_projects_parameters_table.py`
+  - `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md`
+  - `docs/architecture/orchestration/dynamodb_io_contract.md`
+- **Evaluation reuse integration**
+  - interfaces touching `inference_predictions` / `prediction_feature_join` invocation wiring.
+- **Tests**
+  - existing IF orchestration/spec tests + new planner/remediation/evaluation coverage.
+- **Documentation**
+  - training protocol, architecture/orchestration, pipeline flow, and any FG-B/FG-C contract notes impacted.
+
+
+### Completeness verification and mandatory gap-closure checklist (required before implementation sign-off)
+To ensure the plan is correct, complete, and workable end-to-end, implementation must explicitly close all items below and record evidence per item.
+
+#### 1) Code-path coverage (all required modifications)
+1. **IF training runtime/spec layer**
+   - `src/ndr/processing/if_training_spec.py`: add typed fields for evaluation windows, history planner policy, remediation toggles, and evaluation output sinks.
+   - `src/ndr/scripts/run_if_training.py`: add argument plumbing for multi-window evaluation payload and optional toggles.
+2. **IF training execution layer**
+   - `src/ndr/processing/if_training_job.py`:
+     - add history planner computation + persisted artifact,
+     - replace placeholder remediation with real orchestrated invocations,
+     - add post-training evaluation replay orchestration,
+     - add final report expansion for evaluation artifacts and provenance.
+3. **Pipeline definition layer**
+   - `src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py`:
+     - add parameters for evaluation windows/toggles,
+     - add step sequencing dependencies reflecting planner→verify→remediate→reverify→train→evaluate→publish/attributes/deploy (or equivalent coherent order).
+4. **Orchestration definitions**
+   - `docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json`:
+     - add parameter resolution/validation for evaluation windows and toggles,
+     - ensure remediation/evaluation orchestration branches are represented and bounded.
+   - `docs/step_functions_jsonata/sfn_ndr_backfill_reprocessing.json`:
+     - confirm contract compatibility with planner-produced windows payload.
+   - `docs/step_functions_jsonata/sfn_ndr_monthly_fg_b_baselines.json` (or equivalent FG-B orchestration owner):
+     - ensure callable contract supports remediation-triggered FG-B rebuild windows/reference periods.
+5. **Evaluation reuse integration (must avoid duplicate logic)**
+   - Confirm invocation contracts are compatible with:
+     - `src/ndr/pipeline/sagemaker_pipeline_definitions_inference.py`
+     - `src/ndr/pipeline/sagemaker_pipeline_definitions_prediction_feature_join.py`
+     - `src/ndr/processing/inference_predictions_job.py`
+     - `src/ndr/processing/prediction_feature_join_job.py`
+6. **DynamoDB seed/contracts**
+   - `src/ndr/scripts/create_ml_projects_parameters_table.py`: seed new defaults/spec fields and runtime requirements.
+   - Ensure validators enforce presence/shape and fail-fast behavior.
+
+#### 2) Documentation coverage (all required updates)
+The following docs must be updated in the same delivery stream so post-implementation state is accurately documented:
+- `docs/TRAINING_PROTOCOL_IF.md`
+- `docs/TRAINING_PROTOCOL_IF_VERIFICATION.md`
+- `docs/architecture/orchestration/step_functions.md`
+- `docs/pipelines/pipelines_flow_description.md`
+- `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md`
+- `docs/architecture/orchestration/dynamodb_io_contract.md`
+- relevant FG-B/FG-C references where safety-gap/horizon planner behavior is described.
+
+#### 3) Explicit omissions that must be preserved (no unintended scope creep)
+- Do **not** duplicate inference scoring/join algorithms; only orchestrate reuse.
+- Do **not** remove existing fail-fast validation semantics; extend them for new params.
+- Do **not** introduce mandatory rollout/canary requirements; rollout controls remain optional toggles.
+- Do **not** silently change FG-A/FG-B/FG-C output schemas without synchronized contract docs/tests.
+
+#### 4) Verification evidence matrix (required artifacts)
+Implementation PR(s) must include evidence links/artifacts for:
+- formula correctness tests (`W_15m`, `B_start/B_end`, `W_required`) including concrete 44-day derivation under current policy,
+- remediation invocation payload correctness (15m backfill + FG-B rebuild),
+- evaluation replay output manifests and joined output sink writes,
+- SageMaker Experiments lineage screenshots/log excerpts/JSON artifacts,
+- orchestration bounded retry/idempotency behavior under replay.
+
+#### 5) Final implementation readiness gate (must pass)
+A final coordinated review must confirm:
+- all files in sections (1) and (2) were updated or explicitly marked N/A with rationale,
+- tests/checks from this item all pass,
+- no unresolved TODO/placeholder remains in planner/remediation/evaluation paths,
+- operational runbook notes (inputs, toggles, rollback) are documented.
+
+
+### Definition of done
+- Training/eval windows are derivable from DynamoDB (payload override optional).
+- History planner computes and persists exact required envelopes using FG-A lookbacks + FG-B horizon safety gaps.
+- Missing data remediation actually creates required data by invoking existing flows (15m backfill and FG-B rebuild as needed).
+- Training runs end-to-end; configured evaluation windows execute automatically post-training.
+- Evaluation predictions + joined outputs are written to configured sinks (S3, optional Redshift).
+- SageMaker Experiments includes planner/remediation/training/evaluation lineage artifacts and metrics.
+- Documentation and tests are updated and demonstrably consistent with implementation.
+
+**Status:** Planned.

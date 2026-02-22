@@ -31,6 +31,18 @@ def test_backfill_step_function_wires_preliminary_extractor_before_map():
 
     start = states["StartHistoricalWindowsExtractorPipeline"]
     assert start["Arguments"]["PipelineName"] == "${PipelineNameBackfillHistoricalExtractor}"
-    assert states["ResolvePipelineRuntimeParams"]["Next"] == "StartHistoricalWindowsExtractorPipeline"
+    assert states["ResolvePipelineRuntimeParams"]["Next"] == "ValidateResolvedRuntimeParams"
+    assert states["ValidateResolvedRuntimeParams"]["Default"] == "StartHistoricalWindowsExtractorPipeline"
     assert states["ResolveBackfillWindows"]["Next"] == "RunBackfillWindows"
     assert states["RunBackfillWindows"]["Items"] == "{% $windows %}"
+
+
+
+def test_item23_validation_guards_run_before_pipeline_start():
+    inference = _load("docs/step_functions_jsonata/sfn_ndr_15m_features_inference.json")
+    assert inference["States"]["ResolvePipelineRuntimeParams"]["Next"] == "ValidateResolvedRuntimeParams"
+    assert inference["States"]["ValidateResolvedRuntimeParams"]["Default"] == "AcquireMiniBatchLock"
+
+    backfill = _load("docs/step_functions_jsonata/sfn_ndr_backfill_reprocessing.json")
+    assert backfill["States"]["ResolvePipelineRuntimeParams"]["Next"] == "ValidateResolvedRuntimeParams"
+    assert backfill["States"]["ValidateResolvedRuntimeParams"]["Default"] == "StartHistoricalWindowsExtractorPipeline"

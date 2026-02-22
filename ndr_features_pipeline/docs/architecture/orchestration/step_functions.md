@@ -81,3 +81,20 @@ Definitions contain deploy-time placeholders (for names/ARNs/resources). Replace
   - `PipelineNamePredictionJoin`
   - `PipelineNameIFTraining`
   - `PredictionPublicationStateMachineArn`
+
+## Runtime fail-fast policy (item 23)
+
+The four core orchestrators now include a `ValidateResolvedRuntimeParams` guard immediately after runtime resolution and before any pipeline start/lock mutation:
+- `sfn_ndr_15m_features_inference.json`
+- `sfn_ndr_monthly_fg_b_baselines.json`
+- `sfn_ndr_backfill_reprocessing.json`
+- `sfn_ndr_training_orchestrator.json`
+
+Required values must be non-empty. Validation failures terminate with deterministic `RuntimeParameterValidationError` fail states and single-line operator-readable causes (for example: `Missing required runtime parameter: project_name`).
+
+Backfill no longer uses static date literals. `start_ts`/`end_ts` must come from invocation payload, parsed message, or explicit Dynamo defaults, and are validated for:
+- presence,
+- ISO-8601 UTC format (`YYYY-MM-DDThh:mm:ssZ`),
+- strict ordering (`start_ts < end_ts`).
+
+FG-A now defaults to strict mini-batch enforcement: if runtime specifies `mini_batch_id` and the source delta data is missing the `mini_batch_id` column, processing fails fast. Compatibility mode is opt-in via `allow_missing_mini_batch_id_column=true`.

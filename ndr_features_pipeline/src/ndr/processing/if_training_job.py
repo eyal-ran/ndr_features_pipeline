@@ -798,6 +798,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         trials: List[Dict[str, Any]] = [{"trial": 0, "params": baseline_params, **baseline_eval}]
 
         hpo_method = "optuna_tpe"
+        hpo_fallback_used = False
         try:
             import optuna
 
@@ -844,6 +845,17 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 initial_params=baseline_params,
             )
             hpo_method = "local_bayesian_fallback"
+            hpo_fallback_used = True
+            logger.warning(
+                "Optuna dependency unavailable; using local Bayesian fallback for IF training HPO.",
+                extra={
+                    "hpo_method": hpo_method,
+                    "hpo_fallback_used": hpo_fallback_used,
+                    "project_name": self.runtime_config.project_name,
+                    "feature_spec_version": self.runtime_config.feature_spec_version,
+                    "run_id": self.runtime_config.run_id,
+                },
+            )
 
         best_trial = min(trials, key=lambda t: t["objective"])
         baseline_obj = baseline_eval["objective"]
@@ -878,6 +890,9 @@ class IFTrainingJob(BaseProcessingJobRunner):
 
         tuning_summary = {
             "method": hpo_method,
+            "hpo_method": hpo_method,
+            "hpo_fallback_used": hpo_fallback_used,
+            "hpo_fallback_activation_count": 1 if hpo_fallback_used else 0,
             "max_trials": self.training_spec.tuning.max_trials,
             "timeout_seconds": self.training_spec.tuning.timeout_seconds,
             "search_space": search_space,

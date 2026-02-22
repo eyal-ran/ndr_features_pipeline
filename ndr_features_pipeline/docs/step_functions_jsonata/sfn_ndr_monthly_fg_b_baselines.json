@@ -47,7 +47,7 @@
         "reference_time_iso": "{% $exists($states.input.reference_time_iso) ? $states.input.reference_time_iso : ($contains($raw_message,'reference_time_iso=') ? $split($split($raw_message,'reference_time_iso=')[1],';')[0] : ($exists($project_defaults.ReferenceTimeIso.S) ? $project_defaults.ReferenceTimeIso.S : '')) %}",
         "mode": "{% $exists($states.input.mode) ? $states.input.mode : ($contains($raw_message,'mode=') ? $split($split($raw_message,'mode=')[1],';')[0] : 'REGULAR') %}"
       },
-      "Next": "StartMachineInventoryRefresh"
+      "Next": "ValidateResolvedRuntimeParams"
     },
     "StartMachineInventoryRefresh": {
       "Type": "Task",
@@ -246,6 +246,48 @@
       "Type": "Fail",
       "Error": "NdrMonthlyBaselinesFailed",
       "Cause": "Monthly baseline pipeline orchestration failed"
+    },
+    "ValidateResolvedRuntimeParams": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $project_name = \"\" %}",
+          "Next": "FailMissingProjectName"
+        },
+        {
+          "Condition": "{% $feature_spec_version = \"\" %}",
+          "Next": "FailMissingFeatureSpecVersion"
+        },
+        {
+          "Condition": "{% $reference_month_iso = \"\" %}",
+          "Next": "FailMissingReferenceMonthIso"
+        },
+        {
+          "Condition": "{% $reference_time_iso = \"\" %}",
+          "Next": "FailMissingReferenceTimeIso"
+        }
+      ],
+      "Default": "StartMachineInventoryRefresh"
+    },
+    "FailMissingProjectName": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: project_name"
+    },
+    "FailMissingFeatureSpecVersion": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: feature_spec_version"
+    },
+    "FailMissingReferenceMonthIso": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: reference_month_iso"
+    },
+    "FailMissingReferenceTimeIso": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: reference_time_iso"
     }
   }
 }

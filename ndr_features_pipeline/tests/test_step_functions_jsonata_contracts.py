@@ -19,3 +19,56 @@ def test_step_functions_no_hard_coded_project_defaults():
         text = path.read_text(encoding="utf-8")
         assert "ndr-project" not in text
         assert "'v1'" not in text
+
+
+def test_priority_item23_required_runtime_validation_states_present():
+    required = {
+        "sfn_ndr_15m_features_inference.json": {
+            "ValidateResolvedRuntimeParams",
+            "FailMissingProjectName",
+            "FailMissingFeatureSpecVersion",
+            "FailMissingMiniBatchId",
+            "FailMissingBatchStartTsIso",
+            "FailMissingBatchEndTsIso",
+            "FailMissingMiniBatchS3Prefix",
+        },
+        "sfn_ndr_monthly_fg_b_baselines.json": {
+            "ValidateResolvedRuntimeParams",
+            "FailMissingProjectName",
+            "FailMissingFeatureSpecVersion",
+            "FailMissingReferenceMonthIso",
+            "FailMissingReferenceTimeIso",
+        },
+        "sfn_ndr_backfill_reprocessing.json": {
+            "ValidateResolvedRuntimeParams",
+            "FailMissingProjectName",
+            "FailMissingFeatureSpecVersion",
+            "FailMissingStartTs",
+            "FailMissingEndTs",
+            "FailInvalidStartTsFormat",
+            "FailInvalidEndTsFormat",
+            "FailInvalidBackfillWindow",
+        },
+        "sfn_ndr_training_orchestrator.json": {
+            "ValidateResolvedRuntimeParams",
+            "FailMissingProjectName",
+            "FailMissingFeatureSpecVersion",
+            "FailMissingRunId",
+            "FailMissingTrainingStartTs",
+            "FailMissingTrainingEndTs",
+            "FailMissingEvalStartTs",
+            "FailMissingEvalEndTs",
+        },
+    }
+
+    for filename, expected_states in required.items():
+        doc = json.loads((STEP_FUNCTIONS_DIR / filename).read_text(encoding="utf-8"))
+        states = doc["States"]
+        missing = expected_states - set(states)
+        assert not missing, f"{filename} missing runtime validation states: {sorted(missing)}"
+
+
+def test_priority_item23_backfill_has_no_static_date_literals():
+    text = (STEP_FUNCTIONS_DIR / "sfn_ndr_backfill_reprocessing.json").read_text(encoding="utf-8")
+    assert "2025-01-01T00:00:00Z" not in text
+    assert "2025-01-02T00:00:00Z" not in text

@@ -39,20 +39,33 @@
       ],
       "Default": "IgnoreNonBatchCompletionEvent"
     },
-    "IgnoreNonBatchCompletionEvent": {"Type": "Succeed"},
+    "IgnoreNonBatchCompletionEvent": {
+      "Type": "Succeed"
+    },
     "LoadProjectRoutingFromDynamo": {
       "Type": "Task",
       "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
       "Arguments": {
         "TableName": "${ProjectRoutingTableName}",
-        "Key": {"org_key": {"S": "{% $parsed_org1 & '#' & $parsed_org2 %}"}},
+        "Key": {
+          "org_key": {
+            "S": "{% $parsed_org1 & '#' & $parsed_org2 %}"
+          }
+        },
         "ConsistentRead": true
       },
       "Assign": {
         "routed_project_name": "{% $exists($states.result.Item.project_name.S) ? $states.result.Item.project_name.S : '' %}",
         "routed_ingestion_prefix": "{% $exists($states.result.Item.ingestion_prefix.S) ? $states.result.Item.ingestion_prefix.S : '' %}"
       },
-      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "LoadProjectParametersFromDynamo"}],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "LoadProjectParametersFromDynamo"
+        }
+      ],
       "Next": "LoadProjectParametersFromDynamo"
     },
     "LoadProjectParametersFromDynamo": {
@@ -61,8 +74,12 @@
       "Arguments": {
         "TableName": "${ProjectParametersTableName}",
         "Key": {
-          "project_name": {"S": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : $routed_project_name) %}"},
-          "job_name": {"S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"}
+          "project_name": {
+            "S": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : $routed_project_name) %}"
+          },
+          "job_name": {
+            "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
+          }
         },
         "ConsistentRead": true
       },
@@ -85,7 +102,7 @@
         "lock_ttl_epoch": "{% $exists($states.input.lock_ttl_epoch) ? $states.input.lock_ttl_epoch : ($exists($project_defaults.LockTtlEpoch.N) ? $number($project_defaults.LockTtlEpoch.N) : 1893456000) %}",
         "mini_batch_s3_prefix": "{% $exists($states.input.mini_batch_s3_prefix) ? $states.input.mini_batch_s3_prefix : ($routed_ingestion_prefix != '' and $parsed_date_prefix != '' and $parsed_batch_folder != '' ? $routed_ingestion_prefix & '/' & $parsed_date_prefix & '/' & $parsed_batch_folder & '/' : ($exists($project_defaults.MiniBatchS3Prefix.S) ? $project_defaults.MiniBatchS3Prefix.S : '')) %}"
       },
-      "Next": "AcquireMiniBatchLock"
+      "Next": "ValidateResolvedRuntimeParams"
     },
     "AcquireMiniBatchLock": {
       "Type": "Task",
@@ -93,91 +110,258 @@
       "Arguments": {
         "TableName": "${LockTableName}",
         "Item": {
-          "pk": {"S": "{% $project_name & '#' & $feature_spec_version %}"},
-          "sk": {"S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"},
-          "ttl_epoch": {"N": "{% $string($lock_ttl_epoch) %}"},
-          "created_at": {"S": "{% $execution_ts_iso %}"}
+          "pk": {
+            "S": "{% $project_name & '#' & $feature_spec_version %}"
+          },
+          "sk": {
+            "S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"
+          },
+          "ttl_epoch": {
+            "N": "{% $string($lock_ttl_epoch) %}"
+          },
+          "created_at": {
+            "S": "{% $execution_ts_iso %}"
+          }
         },
         "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"
       },
-      "Catch": [{"ErrorEquals": ["DynamoDB.ConditionalCheckFailedException"], "Next": "DuplicateMiniBatch"}],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
+          "Next": "DuplicateMiniBatch"
+        }
+      ],
       "Next": "Start15mFeaturesPipeline"
     },
-    "DuplicateMiniBatch": {"Type": "Fail", "Error": "DuplicateMiniBatch", "Cause": "Execution lock already exists for this 15m window"},
+    "DuplicateMiniBatch": {
+      "Type": "Fail",
+      "Error": "DuplicateMiniBatch",
+      "Cause": "Execution lock already exists for this 15m window"
+    },
     "Start15mFeaturesPipeline": {
       "Type": "Task",
       "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
       "Arguments": {
         "PipelineName": "${PipelineName15m}",
         "PipelineParameters": [
-          {"Name": "ProjectName", "Value": "{% $project_name %}"},
-          {"Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}"},
-          {"Name": "MiniBatchId", "Value": "{% $mini_batch_id %}"},
-          {"Name": "BatchStartTsIso", "Value": "{% $batch_start_ts_iso %}"},
-          {"Name": "BatchEndTsIso", "Value": "{% $batch_end_ts_iso %}"}
+          {
+            "Name": "ProjectName",
+            "Value": "{% $project_name %}"
+          },
+          {
+            "Name": "FeatureSpecVersion",
+            "Value": "{% $feature_spec_version %}"
+          },
+          {
+            "Name": "MiniBatchId",
+            "Value": "{% $mini_batch_id %}"
+          },
+          {
+            "Name": "BatchStartTsIso",
+            "Value": "{% $batch_start_ts_iso %}"
+          },
+          {
+            "Name": "BatchEndTsIso",
+            "Value": "{% $batch_end_ts_iso %}"
+          }
         ]
       },
-      "Assign": {"features_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}", "features_poll_attempt": 0},
-      "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 4, "BackoffRate": 2.0}],
-      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "ReleaseMiniBatchLockOnFailure"}],
+      "Assign": {
+        "features_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
+        "features_poll_attempt": 0
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "SageMaker.AmazonSageMakerException",
+            "ThrottlingException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 4,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "ReleaseMiniBatchLockOnFailure"
+        }
+      ],
       "Next": "Describe15mFeaturesPipeline"
     },
     "Describe15mFeaturesPipeline": {
       "Type": "Task",
       "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
-      "Arguments": {"PipelineExecutionArn": "{% $features_pipeline_execution_arn %}"},
-      "Assign": {"features_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"},
-      "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 6, "BackoffRate": 2.0}],
-      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "ReleaseMiniBatchLockOnFailure"}],
+      "Arguments": {
+        "PipelineExecutionArn": "{% $features_pipeline_execution_arn %}"
+      },
+      "Assign": {
+        "features_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "SageMaker.AmazonSageMakerException",
+            "ThrottlingException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 6,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "ReleaseMiniBatchLockOnFailure"
+        }
+      ],
       "Next": "FeaturesPipelineStatusChoice"
     },
     "FeaturesPipelineStatusChoice": {
       "Type": "Choice",
       "Choices": [
-        {"Condition": "{% $features_pipeline_status = 'Succeeded' %}", "Next": "StartInferencePipeline"},
-        {"Condition": "{% ($features_pipeline_status = 'Executing' or $features_pipeline_status = 'Stopping') and $features_poll_attempt < 120 %}", "Next": "WaitBeforeDescribe15mFeatures"}
+        {
+          "Condition": "{% $features_pipeline_status = 'Succeeded' %}",
+          "Next": "StartInferencePipeline"
+        },
+        {
+          "Condition": "{% ($features_pipeline_status = 'Executing' or $features_pipeline_status = 'Stopping') and $features_poll_attempt < 120 %}",
+          "Next": "WaitBeforeDescribe15mFeatures"
+        }
       ],
       "Default": "ReleaseMiniBatchLockOnFailure"
     },
-    "WaitBeforeDescribe15mFeatures": {"Type": "Wait", "Seconds": 30, "Next": "IncrementFeaturesPollAttempt"},
-    "IncrementFeaturesPollAttempt": {"Type": "Pass", "Assign": {"features_poll_attempt": "{% $features_poll_attempt + 1 %}"}, "Next": "Describe15mFeaturesPipeline"},
+    "WaitBeforeDescribe15mFeatures": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "IncrementFeaturesPollAttempt"
+    },
+    "IncrementFeaturesPollAttempt": {
+      "Type": "Pass",
+      "Assign": {
+        "features_poll_attempt": "{% $features_poll_attempt + 1 %}"
+      },
+      "Next": "Describe15mFeaturesPipeline"
+    },
     "StartInferencePipeline": {
       "Type": "Task",
       "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
       "Arguments": {
         "PipelineName": "${PipelineNameInference}",
         "PipelineParameters": [
-          {"Name": "ProjectName", "Value": "{% $project_name %}"},
-          {"Name": "FeatureSpecVersion", "Value": "{% $feature_spec_version %}"},
-          {"Name": "MiniBatchId", "Value": "{% $mini_batch_id %}"},
-          {"Name": "BatchStartTsIso", "Value": "{% $batch_start_ts_iso %}"},
-          {"Name": "BatchEndTsIso", "Value": "{% $batch_end_ts_iso %}"}
+          {
+            "Name": "ProjectName",
+            "Value": "{% $project_name %}"
+          },
+          {
+            "Name": "FeatureSpecVersion",
+            "Value": "{% $feature_spec_version %}"
+          },
+          {
+            "Name": "MiniBatchId",
+            "Value": "{% $mini_batch_id %}"
+          },
+          {
+            "Name": "BatchStartTsIso",
+            "Value": "{% $batch_start_ts_iso %}"
+          },
+          {
+            "Name": "BatchEndTsIso",
+            "Value": "{% $batch_end_ts_iso %}"
+          }
         ]
       },
-      "Assign": {"inference_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}", "inference_poll_attempt": 0},
-      "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 4, "BackoffRate": 2.0}],
-      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "ReleaseMiniBatchLockOnFailure"}],
+      "Assign": {
+        "inference_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
+        "inference_poll_attempt": 0
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "SageMaker.AmazonSageMakerException",
+            "ThrottlingException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 4,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "ReleaseMiniBatchLockOnFailure"
+        }
+      ],
       "Next": "DescribeInferencePipeline"
     },
     "DescribeInferencePipeline": {
       "Type": "Task",
       "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
-      "Arguments": {"PipelineExecutionArn": "{% $inference_pipeline_execution_arn %}"},
-      "Assign": {"inference_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"},
-      "Retry": [{"ErrorEquals": ["SageMaker.AmazonSageMakerException", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 6, "BackoffRate": 2.0}],
-      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "ReleaseMiniBatchLockOnFailure"}],
+      "Arguments": {
+        "PipelineExecutionArn": "{% $inference_pipeline_execution_arn %}"
+      },
+      "Assign": {
+        "inference_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "SageMaker.AmazonSageMakerException",
+            "ThrottlingException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 6,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "ReleaseMiniBatchLockOnFailure"
+        }
+      ],
       "Next": "InferencePipelineStatusChoice"
     },
     "InferencePipelineStatusChoice": {
       "Type": "Choice",
       "Choices": [
-        {"Condition": "{% $inference_pipeline_status = 'Succeeded' %}", "Next": "StartPredictionPublicationWorkflow"},
-        {"Condition": "{% ($inference_pipeline_status = 'Executing' or $inference_pipeline_status = 'Stopping') and $inference_poll_attempt < 120 %}", "Next": "WaitBeforeDescribeInference"}
+        {
+          "Condition": "{% $inference_pipeline_status = 'Succeeded' %}",
+          "Next": "StartPredictionPublicationWorkflow"
+        },
+        {
+          "Condition": "{% ($inference_pipeline_status = 'Executing' or $inference_pipeline_status = 'Stopping') and $inference_poll_attempt < 120 %}",
+          "Next": "WaitBeforeDescribeInference"
+        }
       ],
       "Default": "ReleaseMiniBatchLockOnFailure"
     },
-    "WaitBeforeDescribeInference": {"Type": "Wait", "Seconds": 30, "Next": "IncrementInferencePollAttempt"},
-    "IncrementInferencePollAttempt": {"Type": "Pass", "Assign": {"inference_poll_attempt": "{% $inference_poll_attempt + 1 %}"}, "Next": "DescribeInferencePipeline"},
+    "WaitBeforeDescribeInference": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "IncrementInferencePollAttempt"
+    },
+    "IncrementInferencePollAttempt": {
+      "Type": "Pass",
+      "Assign": {
+        "inference_poll_attempt": "{% $inference_poll_attempt + 1 %}"
+      },
+      "Next": "DescribeInferencePipeline"
+    },
     "StartPredictionPublicationWorkflow": {
       "Type": "Task",
       "Resource": "arn:aws:states:::states:startExecution.sync:2",
@@ -191,8 +375,26 @@
           "batch_end_ts_iso": "{% $batch_end_ts_iso %}"
         }
       },
-      "Retry": [{"ErrorEquals": ["StepFunctions.ExecutionLimitExceeded", "ThrottlingException", "States.TaskFailed"], "IntervalSeconds": 5, "MaxAttempts": 3, "BackoffRate": 2.0}],
-      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "ReleaseMiniBatchLockOnFailure"}],
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "StepFunctions.ExecutionLimitExceeded",
+            "ThrottlingException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "ReleaseMiniBatchLockOnFailure"
+        }
+      ],
       "Next": "ReleaseMiniBatchLockOnSuccess"
     },
     "ReleaseMiniBatchLockOnSuccess": {
@@ -201,8 +403,12 @@
       "Arguments": {
         "TableName": "${LockTableName}",
         "Key": {
-          "pk": {"S": "{% $project_name & '#' & $feature_spec_version %}"},
-          "sk": {"S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"}
+          "pk": {
+            "S": "{% $project_name & '#' & $feature_spec_version %}"
+          },
+          "sk": {
+            "S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"
+          }
         }
       },
       "Next": "Success"
@@ -213,14 +419,91 @@
       "Arguments": {
         "TableName": "${LockTableName}",
         "Key": {
-          "pk": {"S": "{% $project_name & '#' & $feature_spec_version %}"},
-          "sk": {"S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"}
+          "pk": {
+            "S": "{% $project_name & '#' & $feature_spec_version %}"
+          },
+          "sk": {
+            "S": "{% $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"
+          }
         }
       },
-      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "WorkflowFailed"}],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "WorkflowFailed"
+        }
+      ],
       "Next": "WorkflowFailed"
     },
-    "WorkflowFailed": {"Type": "Fail", "Error": "Ndr15mFeaturesInferenceFailed", "Cause": "15m features/inference/publication orchestration failed"},
-    "Success": {"Type": "Succeed"}
+    "WorkflowFailed": {
+      "Type": "Fail",
+      "Error": "Ndr15mFeaturesInferenceFailed",
+      "Cause": "15m features/inference/publication orchestration failed"
+    },
+    "Success": {
+      "Type": "Succeed"
+    },
+    "ValidateResolvedRuntimeParams": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $project_name = \"\" %}",
+          "Next": "FailMissingProjectName"
+        },
+        {
+          "Condition": "{% $feature_spec_version = \"\" %}",
+          "Next": "FailMissingFeatureSpecVersion"
+        },
+        {
+          "Condition": "{% $mini_batch_id = \"\" %}",
+          "Next": "FailMissingMiniBatchId"
+        },
+        {
+          "Condition": "{% $batch_start_ts_iso = \"\" %}",
+          "Next": "FailMissingBatchStartTsIso"
+        },
+        {
+          "Condition": "{% $batch_end_ts_iso = \"\" %}",
+          "Next": "FailMissingBatchEndTsIso"
+        },
+        {
+          "Condition": "{% $mini_batch_s3_prefix = \"\" %}",
+          "Next": "FailMissingMiniBatchS3Prefix"
+        }
+      ],
+      "Default": "AcquireMiniBatchLock"
+    },
+    "FailMissingProjectName": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: project_name"
+    },
+    "FailMissingFeatureSpecVersion": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: feature_spec_version"
+    },
+    "FailMissingMiniBatchId": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: mini_batch_id"
+    },
+    "FailMissingBatchStartTsIso": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: batch_start_ts_iso"
+    },
+    "FailMissingBatchEndTsIso": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: batch_end_ts_iso"
+    },
+    "FailMissingMiniBatchS3Prefix": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: mini_batch_s3_prefix"
+    }
   }
 }

@@ -1,6 +1,8 @@
 import sys
 import types
 
+import pytest
+
 # Allow importing modules that require boto3/pyspark in this test environment.
 if "boto3" not in sys.modules:
     sys.modules["boto3"] = types.SimpleNamespace()
@@ -398,3 +400,75 @@ def test_remediate_stage_skips_when_no_missing_windows(monkeypatch):
 
     assert observed["stage"] == "remediation"
     assert observed["payload"]["status"] == "skipped"
+
+
+
+def test_tune_and_validate_emits_fallback_telemetry_when_optuna_missing(monkeypatch):
+    import builtins
+    pytest.importorskip("numpy")
+    pytest.importorskip("sklearn")
+    runtime = _runtime_with_stage("train")
+    job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+
+    class _SimplePandasLike:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fillna(self, _value):
+            return self
+
+        @property
+        def empty(self):
+            return len(self._rows) == 0
+
+        def to_numpy(self, dtype=float):
+            return self._rows
+
+    class _PandasCarrier:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def toPandas(self):
+            return _SimplePandasLike(self._rows)
+
+    class _Processed:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def select(self, *_args, **_kwargs):
+            return _PandasCarrier(self._rows)
+
+    train_processed = _Processed([[0.1, 1.0], [0.2, 1.1], [0.3, 1.2]])
+    val_processed = _Processed([[0.15, 1.05], [0.25, 1.15], [0.35, 1.25]])
+
+    observed = {}
+
+    def _fallback(**kwargs):
+        observed["fallback_called"] = True
+        params = {
+            "n_estimators": 200,
+            "max_samples": 1.0,
+            "max_features": 1.0,
+            "contamination": 0.01,
+            "bootstrap": False,
+        }
+        metrics = kwargs["evaluate_fn"](params)
+        return ([{"trial": 0, "params": params, **metrics}], {})
+
+    monkeypatch.setattr("ndr.processing.bayesian_search_fallback.run_bayesian_search", _fallback)
+
+    real_import = builtins.__import__
+
+    def _import(name, *args, **kwargs):
+        if name == "optuna":
+            raise ImportError("optuna unavailable in test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+
+    tuning_summary, _best_params, _gates, _val_metrics = job._tune_and_validate(train_processed, val_processed, ["f1", "f2"])
+
+    assert observed["fallback_called"] is True
+    assert tuning_summary["hpo_method"] == "local_bayesian_fallback"
+    assert tuning_summary["hpo_fallback_used"] is True
+    assert tuning_summary["hpo_fallback_activation_count"] == 1

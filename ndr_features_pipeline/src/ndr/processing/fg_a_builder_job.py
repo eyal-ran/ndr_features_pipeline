@@ -94,6 +94,7 @@ class FGABuilderConfig:
     lookback30d_thresholds: Optional[Dict[str, int]] = None
     high_risk_segments: Optional[List[str]] = None
     segment_mapping: Optional[Dict[str, Any]] = None
+    allow_missing_mini_batch_id_column: bool = False
 
 
 @dataclass
@@ -223,7 +224,29 @@ class FGABuilderJob(BaseProcessingJobRunner):
         if "mini_batch_id" in df.columns:
             df = df.filter(F.col("mini_batch_id") == self.config.mini_batch_id)
         else:
-            logger.warning("Delta DataFrame has no mini_batch_id column; using all rows under prefix")
+            error_context = {
+                "project_name": self.config.project_name,
+                "feature_spec_version": self.config.feature_spec_version,
+                "mini_batch_id": self.config.mini_batch_id,
+                "delta_s3_prefix": self.config.delta_s3_prefix,
+            }
+            if self.config.allow_missing_mini_batch_id_column:
+                logger.warning(
+                    "FG-A compatibility mode enabled: delta dataset is missing mini_batch_id and all rows under prefix will be processed.",
+                    extra=error_context,
+                )
+            else:
+                logger.error(
+                    "FG-A strict mini-batch enforcement failed: delta dataset is missing required mini_batch_id column.",
+                    extra=error_context,
+                )
+                raise ValueError(
+                    "FG-A strict mini-batch enforcement failed: delta dataset is missing required mini_batch_id column. "
+                    f"project_name={self.config.project_name}; "
+                    f"feature_spec_version={self.config.feature_spec_version}; "
+                    f"mini_batch_id={self.config.mini_batch_id}; "
+                    f"delta_s3_prefix={self.config.delta_s3_prefix}"
+                )
 
         rename_map = {}
         if "bytes_src_sum" not in df.columns and "bytes_sent_sum" in df.columns:

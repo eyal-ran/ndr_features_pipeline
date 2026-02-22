@@ -289,3 +289,20 @@ All other runtime fields (`project_name`, `mini_batch_id`, `feature_spec_version
 
 Backfill extractor callback contract:
 - Backfill Step Functions expects extractor completion payload to include `windows` compatible with map items containing at least `mini_batch_id`, `batch_start_ts_iso`, and `batch_end_ts_iso`.
+
+## Required-vs-optional runtime resolution notes (item 23)
+
+When Step Functions resolve runtime values from project parameters:
+- Required orchestration keys must resolve to non-empty values and pass validation guards.
+- Optional keys may still use empty/implicit defaults where explicitly documented by the workflow.
+
+Precedence order remains:
+1. explicit invocation payload,
+2. parsed message fields,
+3. DynamoDB project defaults (`project_parameters#<feature_spec_version>`).
+
+Backfill window keys (`start_ts`, `end_ts`) must not rely on static literals and must validate as ISO-8601 UTC with `start_ts < end_ts`.
+
+FG-A runtime behavior:
+- strict mini-batch filtering is the default contract (`mini_batch_id` column required in delta source for mini-batch runs),
+- temporary compatibility mode is explicit opt-in (`allow_missing_mini_batch_id_column=true`).

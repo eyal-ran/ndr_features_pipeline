@@ -28,7 +28,7 @@ JSONata definitions are stored under `docs/step_functions_jsonata/`:
 
 ### 3) Training orchestrator
 - Runs a training-data verifier pre-stage before training.
-- On verifier failure, runs bounded remediation (`missing feature creation`) and retries verifier with max 2 attempts.
+- On verifier failure, remediation stage triggers concrete orchestrations (backfill Step Functions + FG-B pipeline as needed) and retries verifier with bounded attempts from IF training spec.
 - Runs training, model publish, model attributes registration, and deployment as pipeline-native stages.
 - Uses native polling and fails closed with explicit terminal diagnostics after retry exhaustion.
 
@@ -98,3 +98,15 @@ Backfill no longer uses static date literals. `start_ts`/`end_ts` must come from
 - strict ordering (`start_ts < end_ts`).
 
 FG-A now defaults to strict mini-batch enforcement: if runtime specifies `mini_batch_id` and the source delta data is missing the `mini_batch_id` column, processing fails fast. Compatibility mode is opt-in via `allow_missing_mini_batch_id_column=true`.
+
+## Training orchestrator runtime expansion (item 25)
+The training orchestrator now resolves and passes additional IF training runtime parameters:
+- `EvaluationWindowsJson`
+- `EnableHistoryPlanner`
+- `EnableAutoRemediate15m`
+- `EnableAutoRemediateFgb`
+- `EnablePostTrainingEvaluation`
+- `EnableEvalJoinPublication`
+- `EnableEvalExperimentsLogging`
+
+Validation remains fail-fast before pipeline start.

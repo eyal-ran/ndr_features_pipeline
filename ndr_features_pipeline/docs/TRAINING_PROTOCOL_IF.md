@@ -404,3 +404,23 @@ Recommended fields under `inference_predictions.spec`:
 - `payload.outlier_params` → MADs + Z_MAX
 
 These values ensure inference replicates training preprocessing.
+
+## Automated history planner + remediation + evaluation replay (item 25)
+- Runtime windows are DDB-first: `TrainingStartTs`, `TrainingEndTs`, `EvaluationWindowsJson` (preferred), with `EvalStartTs`/`EvalEndTs` as compatibility fallback.
+- History planner computes and persists (`history_planner.json`) exact envelopes:
+  - `W_15m = [U_start - L_A, U_end)` with `L_A=24h` default.
+  - `B_start = U_start - max_h(d + g_t + g_h)` and `B_end = U_end - min_h(g_h)`.
+  - Under current known constants, planner resolves concrete `W_required.start = U_start - 44d`.
+- Remediation is orchestration-backed metadata and bounded retries (`remediation.max_retries`), with independent toggles for 15m backfill and FG-B rebuild paths.
+  - 15m remediation now invokes Step Functions backfill execution (`NDR_BACKFILL_STATE_MACHINE_ARN`).
+  - FG-B remediation now invokes the FG-B baseline pipeline (`NDR_PIPELINE_FG_B_BASELINE` or `pipeline_fg_b_baseline`) for missing reference periods.
+  - Backfill execution names are deterministic for idempotent reruns; duplicate execution names are treated as idempotent no-op skips.
+  - FG-B remediation covers all missing references reported by planner manifests (no fixed partial cap).
+- Post-training evaluation replay is multi-window and reuse-first:
+  - score via `inference_predictions` flow,
+  - join/publication via `prediction_feature_join` flow,
+  - persist per-window manifests under `evaluation/<window_id>/`.
+  - replay now starts actual SageMaker pipeline executions and records execution ARNs + terminal status in manifests.
+  - `EnableEvalJoinPublication` controls whether join pipeline execution runs or is explicitly skipped.
+  - `records_scored` is populated by counting persisted inference prediction rows for each evaluation window.
+- SageMaker Experiments lineage includes planner component and one evaluation component per replay window.

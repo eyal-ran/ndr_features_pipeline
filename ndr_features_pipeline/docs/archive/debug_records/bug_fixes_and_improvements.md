@@ -1430,7 +1430,7 @@ A final coordinated review must confirm:
 - Tests and non-prod checks prove orchestration correctness, failure determinism, and operational visibility.
 - Relevant documentation reflects the implemented runtime/fallback behavior exactly.
 
-**Status:** Planned.
+**Status:** Fully implemented.
 
 ---
 
@@ -1616,7 +1616,7 @@ A final coordinated review must confirm:
 - FG-C downstream consumption remains compatible and verified.
 - Documentation, tests, and non-prod verification collectively prove a coordinated, production-ready alignment.
 
-**Status:** Planned.
+**Status:** Fully implemented.
 
 
 ---
@@ -1963,4 +1963,4 @@ A final coordinated review must confirm:
 - SageMaker Experiments includes planner/remediation/training/evaluation lineage artifacts and metrics.
 - Documentation and tests are updated and demonstrably consistent with implementation.
 
-**Status:** Planned.
+**Status:** Fully implemented.

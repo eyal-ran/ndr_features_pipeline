@@ -51,3 +51,18 @@ Overall implementation quality is strong and well orchestrated for production-st
 
 ## Conclusion
 The protocol is **substantially implemented to a fine standard** with strong orchestration and reliability guardrails. For strict 1:1 protocol parity, address the two caveats above (payload `eps` consumption in inference preprocessing and explicit rollout strategy controls in deployment).
+
+## Item 25 verification additions
+- Verify `history_planner.json` exists and includes formula outputs (`w_15m`, `b_start`, `b_end`, `w_required`) and provenance (`from_job_spec` vs `from_default_constants`).
+- Verify remediation stage records orchestrated actions for both branches (`backfill_15m`, `fg_b_baseline`) and honors bounded retries.
+- Verify remediation stage stores real execution IDs/ARNs and terminal states for both orchestrations.
+- Verify backfill remediation uses deterministic execution naming and safely handles duplicate execution-name responses as idempotent skip.
+- Verify FG-B remediation covers the full missing-reference manifest (not a fixed subset).
+- Verify evaluation replay emits per-window:
+  - `predictions_manifest.json`
+  - `join_manifest.json`
+  - `metrics.json`
+- Verify manifests contain pipeline execution ARNs, terminal statuses, and failure reasons when applicable.
+- Verify join execution is skipped (with explicit manifest status) when `EnableEvalJoinPublication=false`.
+- Verify `records_scored` reflects persisted inference output row counts for the evaluation window.
+- Verify final training report includes planner outputs and evaluation manifests.

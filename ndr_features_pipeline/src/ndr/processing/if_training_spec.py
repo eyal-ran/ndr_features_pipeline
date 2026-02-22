@@ -122,6 +122,54 @@ class TrainingExperimentsSpec:
 
 
 @dataclass
+class EvaluationWindowSpec:
+    """One post-training evaluation replay interval."""
+
+    window_id: str
+    start_ts: str
+    end_ts: str
+
+
+@dataclass
+class HistoryPlannerSpec:
+    """Policy for deriving historical creation envelopes."""
+
+    derive_from_training_and_evaluation: bool = True
+    fg_a_max_lookback_minutes: int = 24 * 60
+
+
+@dataclass
+class RemediationSpec:
+    """Controls automated remediation orchestration behavior."""
+
+    enable_backfill_15m: bool = True
+    enable_fgb_rebuild: bool = True
+    max_retries: int = 2
+
+
+@dataclass
+class EvaluationOutputSpec:
+    """Routing destinations for evaluation replay outputs."""
+
+    predictions_s3_prefix: str | None = None
+    join_output_s3_prefix: str | None = None
+    publish_join_output: bool = False
+    redshift: Dict[str, Any] | None = None
+
+
+@dataclass
+class AutomationTogglesSpec:
+    """Feature flags for optional orchestration branches."""
+
+    enable_history_planner: bool = True
+    enable_auto_remediate_15m: bool = True
+    enable_auto_remediate_fgb: bool = True
+    enable_post_training_evaluation: bool = True
+    enable_eval_join_publication: bool = True
+    enable_eval_experiments_logging: bool = True
+
+
+@dataclass
 class IFTrainingSpec:
     """Fully parsed IF training specification used by runner code."""
 
@@ -138,6 +186,11 @@ class IFTrainingSpec:
     reliability: TrainingReliabilitySpec
     experiments: TrainingExperimentsSpec
     cost_guardrail: TrainingCostGuardrailSpec
+    evaluation_windows: List[EvaluationWindowSpec]
+    history_planner: HistoryPlannerSpec
+    remediation: RemediationSpec
+    evaluation_output: EvaluationOutputSpec
+    toggles: AutomationTogglesSpec
     random_seed: int = 42
 
 
@@ -153,8 +206,34 @@ class IFTrainingRuntimeConfig:
     training_end_ts: str | None = None
     eval_start_ts: str | None = None
     eval_end_ts: str | None = None
+    evaluation_windows_json: str | None = None
     missing_windows_override: str = "[]"
+    enable_history_planner: bool | None = None
+    enable_auto_remediate_15m: bool | None = None
+    enable_auto_remediate_fgb: bool | None = None
+    enable_post_training_evaluation: bool | None = None
+    enable_eval_join_publication: bool | None = None
+    enable_eval_experiments_logging: bool | None = None
     stage: str = "train"
+
+
+def _parse_evaluation_windows(job_spec: Dict[str, Any]) -> List[EvaluationWindowSpec]:
+    """Parse structured evaluation windows with legacy fallback support."""
+    payload = (job_spec.get("evaluation") or {}).get("windows")
+    if payload is None:
+        payload = job_spec.get("evaluation_windows")
+    windows: List[Dict[str, Any]] = payload or []
+    parsed: List[EvaluationWindowSpec] = []
+    for index, window in enumerate(windows):
+        if not isinstance(window, dict):
+            raise ValueError("evaluation windows entries must be objects")
+        start_ts = window.get("start_ts") or window.get("eval_start_ts")
+        end_ts = window.get("end_ts") or window.get("eval_end_ts")
+        if not start_ts or not end_ts:
+            raise ValueError("evaluation windows must include start_ts and end_ts")
+        window_id = window.get("window_id") or f"window_{index + 1}"
+        parsed.append(EvaluationWindowSpec(window_id=window_id, start_ts=start_ts, end_ts=end_ts))
+    return parsed
 
 
 def parse_if_training_spec(job_spec: Dict[str, Any]) -> IFTrainingSpec:
@@ -225,5 +304,10 @@ def parse_if_training_spec(job_spec: Dict[str, Any]) -> IFTrainingSpec:
         reliability=TrainingReliabilitySpec(**(job_spec.get("reliability") or {})),
         experiments=TrainingExperimentsSpec(**(job_spec.get("experiments") or {})),
         cost_guardrail=TrainingCostGuardrailSpec(**(job_spec.get("cost_guardrail") or {})),
+        evaluation_windows=_parse_evaluation_windows(job_spec),
+        history_planner=HistoryPlannerSpec(**(job_spec.get("history_planner") or {})),
+        remediation=RemediationSpec(**(job_spec.get("remediation") or {})),
+        evaluation_output=EvaluationOutputSpec(**(job_spec.get("evaluation_output") or {})),
+        toggles=AutomationTogglesSpec(**(job_spec.get("toggles") or {})),
         random_seed=int(job_spec.get("random_seed", 42)),
     )

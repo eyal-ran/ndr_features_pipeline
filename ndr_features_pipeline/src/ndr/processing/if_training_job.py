@@ -25,6 +25,16 @@ from ndr.processing.schema_enforcement import enforce_schema
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_BACKFILL_STATE_MACHINE_ENV = "NDR_BACKFILL_STATE_MACHINE_ARN"
+DEFAULT_BACKFILL_STATE_MACHINE_NAME = "sfn_ndr_backfill_reprocessing"
+DEFAULT_FGB_PIPELINE_ENV = "NDR_PIPELINE_FG_B_BASELINE"
+DEFAULT_FGB_PIPELINE_NAME = "pipeline_fg_b_baseline"
+DEFAULT_INFERENCE_PIPELINE_ENV = "NDR_PIPELINE_INFERENCE_PREDICTIONS"
+DEFAULT_INFERENCE_PIPELINE_NAME = "pipeline_inference_predictions"
+DEFAULT_PREDICTION_JOIN_PIPELINE_ENV = "NDR_PIPELINE_PREDICTION_FEATURE_JOIN"
+DEFAULT_PREDICTION_JOIN_PIPELINE_NAME = "pipeline_prediction_feature_join"
+
+
 class IFTrainingJob(BaseProcessingJobRunner):
     """Data container for IFTrainingJob."""
     def __init__(
@@ -46,12 +56,57 @@ class IFTrainingJob(BaseProcessingJobRunner):
         required = {
             "training_start_ts": self.runtime_config.training_start_ts,
             "training_end_ts": self.runtime_config.training_end_ts,
-            "eval_start_ts": self.runtime_config.eval_start_ts,
-            "eval_end_ts": self.runtime_config.eval_end_ts,
         }
         missing = [name for name, value in required.items() if not value]
         if missing:
             raise ValueError(f"Missing required unified training runtime parameters: {', '.join(missing)}")
+
+    @staticmethod
+    def _parse_iso_ts(value: str) -> datetime:
+        """Parse timestamp string and normalize to UTC."""
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+    def _resolve_evaluation_windows(self) -> List[Dict[str, Any]]:
+        """Resolve evaluation windows from runtime JSON, spec, or legacy start/end fields."""
+        payload = (self.runtime_config.evaluation_windows_json or "").strip()
+        windows: List[Dict[str, Any]] = []
+        if payload:
+            parsed = json.loads(payload)
+            if not isinstance(parsed, list):
+                raise ValueError("EvaluationWindowsJson must be a JSON array")
+            windows = parsed
+        elif self.training_spec.evaluation_windows:
+            windows = [
+                {"window_id": w.window_id, "start_ts": w.start_ts, "end_ts": w.end_ts}
+                for w in self.training_spec.evaluation_windows
+            ]
+        elif self.runtime_config.eval_start_ts and self.runtime_config.eval_end_ts:
+            windows = [
+                {
+                    "window_id": "legacy_window_1",
+                    "start_ts": self.runtime_config.eval_start_ts,
+                    "end_ts": self.runtime_config.eval_end_ts,
+                }
+            ]
+
+        normalized: List[Dict[str, Any]] = []
+        for idx, window in enumerate(windows, start=1):
+            start_ts = window.get("start_ts") or window.get("eval_start_ts")
+            end_ts = window.get("end_ts") or window.get("eval_end_ts")
+            if not start_ts or not end_ts:
+                raise ValueError("Each evaluation window must include start_ts and end_ts")
+            start_dt = self._parse_iso_ts(start_ts)
+            end_dt = self._parse_iso_ts(end_ts)
+            if start_dt >= end_dt:
+                raise ValueError("Evaluation window start_ts must be earlier than end_ts")
+            normalized.append(
+                {
+                    "window_id": str(window.get("window_id") or f"window_{idx}"),
+                    "start_ts": start_dt.isoformat().replace("+00:00", "Z"),
+                    "end_ts": end_dt.isoformat().replace("+00:00", "Z"),
+                }
+            )
+        return normalized
 
     def _run_verification_stage(self, stage_name: str) -> None:
         """Run deterministic data verification for verify/reverify stages."""
@@ -81,11 +136,145 @@ class IFTrainingJob(BaseProcessingJobRunner):
         _put_json(client, bucket, f"{base}/latest_status.json", verification_summary)
         logger.info("Unified training %s stage succeeded", stage_name, extra={"preflight": preflight})
 
+    def _resolve_toggle(self, runtime_value: bool | None, spec_value: bool, default: bool = True) -> bool:
+        """Resolve a runtime override over spec toggle with fallback default."""
+        if runtime_value is not None:
+            return bool(runtime_value)
+        if spec_value is None:
+            return default
+        return bool(spec_value)
+
+    def _compute_history_plan(self, train_start: datetime, train_end: datetime, evaluation_windows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Compute required historical envelopes and concrete resolved policy values."""
+        all_starts = [train_start]
+        all_ends = [train_end]
+        for window in evaluation_windows:
+            all_starts.append(self._parse_iso_ts(window["start_ts"]))
+            all_ends.append(self._parse_iso_ts(window["end_ts"]))
+        u_start = min(all_starts)
+        u_end = max(all_ends)
+
+        fg_a_minutes = int(self.training_spec.history_planner.fg_a_max_lookback_minutes or 24 * 60)
+        resolved_horizons = [
+            {"horizon_days": 7, "tail_days": 2, "head_days": 2, "provenance": "from_default_constants"},
+            {"horizon_days": 30, "tail_days": 7, "head_days": 7, "provenance": "from_default_constants"},
+        ]
+        max_back = max(h["horizon_days"] + h["tail_days"] + h["head_days"] for h in resolved_horizons)
+        min_head = min(h["head_days"] for h in resolved_horizons)
+
+        w_15m_start = u_start - timedelta(minutes=fg_a_minutes)
+        b_start = u_start - timedelta(days=max_back)
+        b_end = u_end - timedelta(days=min_head)
+        w_required_start = min(w_15m_start, b_start)
+
+        missing_15m_windows = self._derive_missing_15m_windows(w_required_start, u_end)
+        missing_fgb_windows = self._derive_missing_fgb_windows(u_start, u_end, resolved_horizons)
+
+        return {
+            "inputs": {
+                "training": {"start": train_start.isoformat().replace("+00:00", "Z"), "end": train_end.isoformat().replace("+00:00", "Z")},
+                "evaluation_windows": evaluation_windows,
+            },
+            "resolved_constants": {
+                "fg_a_max_lookback_minutes": {"value": fg_a_minutes, "provenance": "from_job_spec" if self.training_spec.history_planner.fg_a_max_lookback_minutes != 24 * 60 else "from_default_constants"},
+                "fg_b_horizons": resolved_horizons,
+            },
+            "computed": {
+                "u_start": u_start.isoformat().replace("+00:00", "Z"),
+                "u_end": u_end.isoformat().replace("+00:00", "Z"),
+                "w_15m": {"start": w_15m_start.isoformat().replace("+00:00", "Z"), "end": u_end.isoformat().replace("+00:00", "Z")},
+                "b_start": b_start.isoformat().replace("+00:00", "Z"),
+                "b_end": b_end.isoformat().replace("+00:00", "Z"),
+                "w_required": {"start": w_required_start.isoformat().replace("+00:00", "Z"), "end": u_end.isoformat().replace("+00:00", "Z")},
+            },
+            "manifests": {
+                "missing_15m_windows": missing_15m_windows,
+                "missing_fgb_windows": missing_fgb_windows,
+            },
+        }
+
+    def _derive_missing_15m_windows(self, start: datetime, end: datetime) -> List[Dict[str, str]]:
+        """Derive missing 15m windows using FG-A partition availability heuristics."""
+        from pyspark.sql import functions as F
+
+        fg_a_prefix = self.training_spec.feature_inputs["fg_a"].s3_prefix
+        try:
+            df = self.spark.read.option("mergeSchema", "true").parquet(fg_a_prefix)
+            if "window_end_ts" not in df.columns:
+                return []
+            available = {
+                row["window_end_ts"].astimezone(timezone.utc)
+                for row in df.select("window_end_ts")
+                .where((F.col("window_end_ts") >= F.lit(start)) & (F.col("window_end_ts") < F.lit(end)))
+                .distinct()
+                .collect()
+            }
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("Unable to derive missing 15m windows from FG-A input: %s", exc)
+            return []
+
+        missing: List[Dict[str, str]] = []
+        cursor = start
+        while cursor < end:
+            if cursor not in available:
+                missing.append({"window_start_ts": cursor.isoformat().replace("+00:00", "Z"), "window_end_ts": (cursor + timedelta(minutes=15)).isoformat().replace("+00:00", "Z")})
+            cursor += timedelta(minutes=15)
+        return missing
+
+    def _derive_missing_fgb_windows(self, u_start: datetime, u_end: datetime, horizons: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Derive missing FG-B baseline references by checking daily reference rows."""
+        from pyspark.sql import functions as F
+
+        fgb_input = self.resolved_spec_payload.get("fg_b_input") or {}
+        fg_b_prefix = fgb_input.get("s3_prefix")
+        if not fg_b_prefix:
+            return []
+
+        earliest_ref = u_start
+        latest_ref = u_end
+        try:
+            df = self.spark.read.option("mergeSchema", "true").parquet(fg_b_prefix)
+            if "reference_time" not in df.columns:
+                return []
+            available = {
+                row["reference_time"].date().isoformat()
+                for row in df.select("reference_time")
+                .where((F.col("reference_time") >= F.lit(earliest_ref)) & (F.col("reference_time") < F.lit(latest_ref)))
+                .distinct()
+                .collect()
+            }
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("Unable to derive missing FG-B windows: %s", exc)
+            return []
+
+        missing: List[Dict[str, Any]] = []
+        cursor = earliest_ref.date()
+        while cursor < latest_ref.date():
+            key = cursor.isoformat()
+            if key not in available:
+                missing.append(
+                    {
+                        "reference_time_iso": f"{key}T00:00:00Z",
+                        "horizons": [f"{h['horizon_days']}d" for h in horizons],
+                    }
+                )
+            cursor = cursor + timedelta(days=1)
+        return missing
+
+    def _write_history_plan(self, history_plan: Dict[str, Any]) -> None:
+        """Persist planner artifact in report storage."""
+        import boto3
+
+        bucket, key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
+        key = f"{key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/history_planner.json"
+        _put_json(boto3.client("s3"), bucket, key, history_plan)
+
     def _run_remediation_stage(self) -> None:
         """Run bounded remediation stage for missing windows."""
         import boto3
 
         verification = self._load_latest_verification_status()
+        history_plan = self._load_stage_status("history_planner", default={})
         raw_override = (self.runtime_config.missing_windows_override or "[]").strip()
         try:
             parsed_override = json.loads(raw_override)
@@ -96,6 +285,8 @@ class IFTrainingJob(BaseProcessingJobRunner):
             raise ValueError("MissingWindowsOverride must be encoded as a JSON list")
 
         missing_windows = list(parsed_override) if parsed_override else verification.get("missing_windows", [])
+        missing_15m_manifest = (history_plan.get("manifests") or {}).get("missing_15m_windows", [])
+        missing_fgb_manifest = (history_plan.get("manifests") or {}).get("missing_fgb_windows", [])
         if not verification.get("needs_remediation", False) and not parsed_override:
             self._write_stage_status(
                 stage="remediation",
@@ -106,24 +297,55 @@ class IFTrainingJob(BaseProcessingJobRunner):
             )
             return
 
-        max_attempts = 2
+        max_attempts = max(1, int(self.training_spec.remediation.max_retries))
         attempts = min(max(len(missing_windows), 1), max_attempts)
         windows_to_process = missing_windows[:attempts]
 
         report_bucket, report_key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
         client = boto3.client("s3")
         remediation_records: List[Dict[str, Any]] = []
+        sfn = boto3.client("stepfunctions")
+        sagemaker = boto3.client("sagemaker")
         for index, window in enumerate(windows_to_process, start=1):
             key = (
                 f"{report_key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/"
                 f"remediation/attempt_{index}.json"
             )
+            backfill_enabled = bool(missing_15m_manifest) and self._resolve_toggle(
+                self.runtime_config.enable_auto_remediate_15m,
+                self.training_spec.toggles.enable_auto_remediate_15m and self.training_spec.remediation.enable_backfill_15m,
+            )
+            fgb_enabled = bool(missing_fgb_manifest) and self._resolve_toggle(
+                self.runtime_config.enable_auto_remediate_fgb,
+                self.training_spec.toggles.enable_auto_remediate_fgb and self.training_spec.remediation.enable_fgb_rebuild,
+            )
+
             payload = {
                 "attempt": index,
                 "window": window,
-                "mode": "bounded-remediation",
+                "mode": "orchestrated-remediation",
                 "execution_ts": self.runtime_config.execution_ts_iso,
+                "actions": {
+                    "backfill_15m_invoked": backfill_enabled,
+                    "fgb_rebuild_invoked": fgb_enabled,
+                },
+                "orchestrators": {
+                    "backfill_15m": "sfn_ndr_backfill_reprocessing",
+                    "fg_b_baseline": "pipeline_fg_b_baseline",
+                },
             }
+            if backfill_enabled:
+                payload["backfill_execution"] = self._invoke_backfill_reprocessing(
+                    sfn_client=sfn,
+                    missing_15m=missing_15m_manifest,
+                    attempt=index,
+                )
+            if fgb_enabled:
+                payload["fgb_execution"] = self._invoke_fgb_baseline_rebuild(
+                    sagemaker_client=sagemaker,
+                    missing_fgb=missing_fgb_manifest,
+                    attempt=index,
+                )
             _put_json(client, report_bucket, key, payload)
             remediation_records.append(payload)
 
@@ -134,6 +356,8 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 "attempts": attempts,
                 "max_attempts": max_attempts,
                 "missing_windows": missing_windows,
+                "missing_15m_manifest_count": len(missing_15m_manifest),
+                "missing_fgb_manifest_count": len(missing_fgb_manifest),
                 "processed_windows": windows_to_process,
                 "records": remediation_records,
             },
@@ -142,6 +366,105 @@ class IFTrainingJob(BaseProcessingJobRunner):
             "Executing bounded remediation stage",
             extra={"attempts": attempts, "max_attempts": max_attempts, "missing_windows": missing_windows},
         )
+
+    def _invoke_backfill_reprocessing(self, sfn_client, missing_15m: List[Dict[str, str]], attempt: int) -> Dict[str, Any]:
+        """Invoke backfill Step Functions execution for required 15m windows."""
+        state_machine_arn = os.environ.get(DEFAULT_BACKFILL_STATE_MACHINE_ENV)
+        if not state_machine_arn:
+            return {"status": "skipped", "reason": f"missing env {DEFAULT_BACKFILL_STATE_MACHINE_ENV}"}
+
+        start_ts = min(window["window_start_ts"] for window in missing_15m)
+        end_ts = max(window["window_end_ts"] for window in missing_15m)
+        signature = hashlib.sha1(
+            f"{self.runtime_config.project_name}|{self.runtime_config.feature_spec_version}|{self.runtime_config.run_id}|{attempt}|{start_ts}|{end_ts}".encode("utf-8")
+        ).hexdigest()[:16]
+        name = f"if-remediate-{self.runtime_config.run_id}-a{attempt}-{signature}"[:80]
+        payload = {
+            "project_name": self.runtime_config.project_name,
+            "feature_spec_version": self.runtime_config.feature_spec_version,
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+            "source": "if_training_remediation",
+            "run_id": self.runtime_config.run_id,
+        }
+        try:
+            response = sfn_client.start_execution(
+                stateMachineArn=state_machine_arn,
+                name=name,
+                input=json.dumps(payload),
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            if "ExecutionAlreadyExists" in str(exc):
+                return {
+                    "status": "Skipped",
+                    "execution_name": name,
+                    "requested_range": {"start_ts": start_ts, "end_ts": end_ts},
+                    "failure_reason": "ExecutionAlreadyExists",
+                }
+            raise
+        final = self._wait_for_stepfunctions_execution(sfn_client, response["executionArn"])
+        return {
+            "status": final["status"],
+            "execution_arn": response["executionArn"],
+            "requested_range": {"start_ts": start_ts, "end_ts": end_ts},
+            "failure_reason": final.get("cause") or final.get("error"),
+        }
+
+    def _invoke_fgb_baseline_rebuild(self, sagemaker_client, missing_fgb: List[Dict[str, Any]], attempt: int) -> Dict[str, Any]:
+        """Invoke FG-B baseline pipeline for missing baseline references."""
+        pipeline_name = os.environ.get(DEFAULT_FGB_PIPELINE_ENV, DEFAULT_FGB_PIPELINE_NAME)
+        references = sorted({entry["reference_time_iso"] for entry in missing_fgb})
+        runs: List[Dict[str, Any]] = []
+        for idx, reference_time_iso in enumerate(references, start=1):
+            params = [
+                {"Name": "ProjectName", "Value": self.runtime_config.project_name},
+                {"Name": "FeatureSpecVersion", "Value": self.runtime_config.feature_spec_version},
+                {"Name": "ReferenceTimeIso", "Value": reference_time_iso},
+                {"Name": "Mode", "Value": "baseline"},
+            ]
+            started = sagemaker_client.start_pipeline_execution(
+                PipelineName=pipeline_name,
+                PipelineExecutionDescription=f"if_training remediation run_id={self.runtime_config.run_id} attempt={attempt} reference={reference_time_iso} idx={idx}",
+                PipelineParameters=params,
+            )
+            final = self._wait_for_pipeline_execution(sagemaker_client, started["PipelineExecutionArn"])
+            runs.append(
+                {
+                    "reference_time_iso": reference_time_iso,
+                    "pipeline_execution_arn": started["PipelineExecutionArn"],
+                    "status": final["status"],
+                    "failure_reason": final.get("failure_reason", ""),
+                }
+            )
+        status = "Succeeded" if runs and all(item["status"] == "Succeeded" for item in runs) else ("Skipped" if not runs else "Failed")
+        return {"status": status, "pipeline_name": pipeline_name, "executions": runs}
+
+    def _wait_for_stepfunctions_execution(self, sfn_client, execution_arn: str, max_polls: int = 120, interval_seconds: int = 10) -> Dict[str, Any]:
+        """Poll stepfunctions execution until terminal status."""
+        for _ in range(max_polls):
+            response = sfn_client.describe_execution(executionArn=execution_arn)
+            status = response.get("status", "RUNNING")
+            if status not in {"RUNNING"}:
+                return {
+                    "status": "Succeeded" if status == "SUCCEEDED" else status,
+                    "error": response.get("error", ""),
+                    "cause": response.get("cause", ""),
+                }
+            time.sleep(interval_seconds)
+        raise TimeoutError(f"StepFunctions execution did not complete in time: {execution_arn}")
+
+    def _wait_for_pipeline_execution(self, sagemaker_client, execution_arn: str, max_polls: int = 120, interval_seconds: int = 15) -> Dict[str, Any]:
+        """Poll SageMaker pipeline execution until terminal status."""
+        for _ in range(max_polls):
+            response = sagemaker_client.describe_pipeline_execution(PipelineExecutionArn=execution_arn)
+            status = response.get("PipelineExecutionStatus", "Executing")
+            if status not in {"Executing", "Stopping"}:
+                return {
+                    "status": status,
+                    "failure_reason": response.get("FailureReason", ""),
+                }
+            time.sleep(interval_seconds)
+        raise TimeoutError(f"Pipeline execution did not complete in time: {execution_arn}")
 
     def _run_publish_stage(self) -> None:
         """Persist deterministic model publication metadata."""
@@ -229,6 +552,143 @@ class IFTrainingJob(BaseProcessingJobRunner):
         client = boto3.client("s3")
         _put_json(client, bucket, key, payload)
 
+    def _run_post_training_evaluation(self, evaluation_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Emit per-window evaluation replay/join artifacts using reuse-first orchestration metadata."""
+        import boto3
+
+        if not self._resolve_toggle(
+            self.runtime_config.enable_post_training_evaluation,
+            self.training_spec.toggles.enable_post_training_evaluation,
+        ):
+            return []
+
+        bucket, key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
+        client = boto3.client("s3")
+        sagemaker = boto3.client("sagemaker")
+        inference_pipeline_name = os.environ.get(DEFAULT_INFERENCE_PIPELINE_ENV, DEFAULT_INFERENCE_PIPELINE_NAME)
+        join_pipeline_name = os.environ.get(DEFAULT_PREDICTION_JOIN_PIPELINE_ENV, DEFAULT_PREDICTION_JOIN_PIPELINE_NAME)
+        manifests: List[Dict[str, Any]] = []
+        for window in evaluation_windows:
+            window_id = window["window_id"]
+            base = f"{key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/evaluation/{window_id}"
+            inference_run = self._invoke_evaluation_pipeline(
+                sagemaker_client=sagemaker,
+                pipeline_name=inference_pipeline_name,
+                window_id=window_id,
+                start_ts=window["start_ts"],
+                end_ts=window["end_ts"],
+                mode="inference",
+            )
+            join_publication_enabled = self._resolve_toggle(
+                self.runtime_config.enable_eval_join_publication,
+                self.training_spec.toggles.enable_eval_join_publication,
+            )
+            if join_publication_enabled:
+                join_run = self._invoke_evaluation_pipeline(
+                    sagemaker_client=sagemaker,
+                    pipeline_name=join_pipeline_name,
+                    window_id=window_id,
+                    start_ts=window["start_ts"],
+                    end_ts=window["end_ts"],
+                    mode="join",
+                )
+            else:
+                join_run = {
+                    "status": "Skipped",
+                    "pipeline_execution_arn": "",
+                    "failure_reason": "EnableEvalJoinPublication disabled",
+                }
+
+            records_scored = self._count_inference_records_for_window(
+                start_ts=window["start_ts"],
+                end_ts=window["end_ts"],
+            )
+            predictions = {
+                "window_id": window_id,
+                "orchestrator": inference_pipeline_name,
+                "start_ts": window["start_ts"],
+                "end_ts": window["end_ts"],
+                "status": inference_run["status"],
+                "pipeline_execution_arn": inference_run["pipeline_execution_arn"],
+                "failure_reason": inference_run.get("failure_reason", ""),
+            }
+            join_manifest = {
+                "window_id": window_id,
+                "orchestrator": join_pipeline_name,
+                "publish_enabled": join_publication_enabled,
+                "status": join_run["status"],
+                "pipeline_execution_arn": join_run["pipeline_execution_arn"],
+                "failure_reason": join_run.get("failure_reason", ""),
+            }
+            metrics = {
+                "window_id": window_id,
+                "status": "Succeeded" if inference_run["status"] == "Succeeded" and join_run["status"] in {"Succeeded", "Skipped"} else "Failed",
+                "records_scored": records_scored,
+                "inference_pipeline_status": inference_run["status"],
+                "join_pipeline_status": join_run["status"],
+            }
+            _put_json(client, bucket, f"{base}/predictions_manifest.json", predictions)
+            _put_json(client, bucket, f"{base}/join_manifest.json", join_manifest)
+            _put_json(client, bucket, f"{base}/metrics.json", metrics)
+            manifests.append({"window_id": window_id, "predictions_manifest": predictions, "join_manifest": join_manifest, "metrics": metrics})
+        return manifests
+
+    def _invoke_evaluation_pipeline(
+        self,
+        sagemaker_client,
+        pipeline_name: str,
+        window_id: str,
+        start_ts: str,
+        end_ts: str,
+        mode: str,
+    ) -> Dict[str, Any]:
+        """Invoke evaluation pipeline execution and wait for completion."""
+        params = [
+            {"Name": "ProjectName", "Value": self.runtime_config.project_name},
+            {"Name": "FeatureSpecVersion", "Value": self.runtime_config.feature_spec_version},
+            {"Name": "MiniBatchId", "Value": f"eval-{self.runtime_config.run_id}-{window_id}"},
+            {"Name": "BatchStartTsIso", "Value": start_ts},
+            {"Name": "BatchEndTsIso", "Value": end_ts},
+        ]
+        started = sagemaker_client.start_pipeline_execution(
+            PipelineName=pipeline_name,
+            PipelineExecutionDescription=f"if_training {mode} evaluation run_id={self.runtime_config.run_id} window={window_id}",
+            PipelineParameters=params,
+        )
+        final = self._wait_for_pipeline_execution(sagemaker_client, started["PipelineExecutionArn"])
+        return {
+            "status": final["status"],
+            "pipeline_execution_arn": started["PipelineExecutionArn"],
+            "failure_reason": final.get("failure_reason", ""),
+        }
+
+    def _count_inference_records_for_window(self, start_ts: str, end_ts: str) -> int:
+        """Best-effort count of persisted inference records for one evaluation window."""
+        from ndr.config.job_spec_loader import load_job_spec
+        from pyspark.sql import functions as F
+
+        try:
+            inference_spec = load_job_spec(
+                project_name=self.runtime_config.project_name,
+                job_name="inference_predictions",
+                feature_spec_version=self.runtime_config.feature_spec_version,
+            )
+            output = inference_spec.get("output") or {}
+            s3_prefix = output.get("s3_prefix")
+            if not s3_prefix:
+                return 0
+            start_dt = self._parse_iso_ts(start_ts)
+            end_dt = self._parse_iso_ts(end_ts)
+            df = self.spark.read.option("mergeSchema", "true").parquet(s3_prefix)
+            if "window_end_ts" not in df.columns:
+                return 0
+            return int(
+                df.where((F.col("window_end_ts") >= F.lit(start_dt)) & (F.col("window_end_ts") < F.lit(end_dt))).count()
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("Unable to compute evaluation records_scored: %s", exc)
+            return 0
+
     def _load_stage_status(
         self,
         stage: str,
@@ -277,6 +737,14 @@ class IFTrainingJob(BaseProcessingJobRunner):
             return
 
         train_start, train_end = self._resolve_training_window()
+        evaluation_windows = self._resolve_evaluation_windows()
+        history_plan: Dict[str, Any] | None = None
+        if self._resolve_toggle(
+            self.runtime_config.enable_history_planner,
+            self.training_spec.toggles.enable_history_planner,
+        ):
+            history_plan = self._compute_history_plan(train_start, train_end, evaluation_windows)
+            self._write_history_plan(history_plan)
         stage = "read_inputs"
         try:
             fg_a_df = self._read_windowed_input("fg_a", train_start, train_end)
@@ -368,6 +836,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 latest_model_path = self._promote_latest_model_pointer(artifact_ctx)
 
             stage = "final_report"
+            evaluation_manifests = self._run_post_training_evaluation(evaluation_windows)
             report_s3_uri = self._write_final_report_and_success(
                 train_start=train_start,
                 train_end=train_end,
@@ -383,6 +852,8 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 selection_meta=selection_meta,
                 artifact_ctx=artifact_ctx,
                 latest_model_path=latest_model_path,
+                history_planner=history_plan,
+                evaluation_manifests=evaluation_manifests,
             )
 
             stage = "experiment_tracking"
@@ -394,6 +865,8 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 report_s3_uri=report_s3_uri,
                 selected_feature_count=len(selected_features),
                 all_feature_count=len(feature_columns),
+                history_planner=history_plan,
+                evaluation_windows=evaluation_windows,
             )
         except Exception as exc:  # pylint: disable=broad-except
             self._write_failure_report(
@@ -1140,6 +1613,8 @@ class IFTrainingJob(BaseProcessingJobRunner):
         selection_meta: Dict[str, Any],
         artifact_ctx: Dict[str, str],
         latest_model_path: str | None,
+        history_planner: Dict[str, Any] | None,
+        evaluation_manifests: List[Dict[str, Any]],
     ) -> str:
         """Execute the write final report and success stage of the workflow."""
         import boto3
@@ -1167,6 +1642,11 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 "end": train_end.isoformat(),
                 "lookback_months": self.training_spec.window.lookback_months,
                 "gap_months": self.training_spec.window.gap_months,
+            },
+            "history_planner": history_planner,
+            "evaluation": {
+                "windows": self._resolve_evaluation_windows(),
+                "manifests": evaluation_manifests,
             },
             "schema_and_join": {
                 "fg_a_manifest": "build_fg_a_manifest",
@@ -1357,6 +1837,8 @@ class IFTrainingJob(BaseProcessingJobRunner):
         report_s3_uri: str,
         selected_feature_count: int,
         all_feature_count: int,
+        history_planner: Dict[str, Any] | None,
+        evaluation_windows: List[Dict[str, Any]],
     ) -> None:
         """Execute the log sagemaker experiments stage of the workflow."""
         if not self.training_spec.experiments.enabled:
@@ -1378,6 +1860,29 @@ class IFTrainingJob(BaseProcessingJobRunner):
             for component_name in (preprocessing_component, tuning_component, final_component):
                 _safe_create_trial_component(sm, component_name)
                 sm.associate_trial_component(TrialComponentName=component_name, TrialName=trial_name)
+
+            planner_component = f"{trial_name}-history-planner"
+            _safe_create_trial_component(sm, planner_component)
+            sm.associate_trial_component(TrialComponentName=planner_component, TrialName=trial_name)
+            sm.update_trial_component(
+                TrialComponentName=planner_component,
+                Parameters={
+                    "history_planner_artifact_present": {"StringValue": str(bool(history_planner))},
+                    "history_required_start": {"StringValue": str(((history_planner or {}).get('computed', {}).get('w_required', {}) or {}).get('start', ''))},
+                },
+            )
+
+            for window in evaluation_windows:
+                component_name = f"{trial_name}-eval-{window['window_id']}"
+                _safe_create_trial_component(sm, component_name)
+                sm.associate_trial_component(TrialComponentName=component_name, TrialName=trial_name)
+                sm.update_trial_component(
+                    TrialComponentName=component_name,
+                    Parameters={
+                        "evaluation_window_start": {"StringValue": window["start_ts"]},
+                        "evaluation_window_end": {"StringValue": window["end_ts"]},
+                    },
+                )
 
             sm.update_trial_component(
                 TrialComponentName=preprocessing_component,

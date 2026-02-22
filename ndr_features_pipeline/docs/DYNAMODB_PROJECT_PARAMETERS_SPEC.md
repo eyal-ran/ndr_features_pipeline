@@ -174,6 +174,17 @@ Recommended optional keys:
 - `experiments`: `{ experiment_name?, trial_prefix?, capture_artifacts? }`
 - `deployment`: `{ deploy_on_success?, endpoint_name?, endpoint_config_name?, strategy? }`
 - `output.model_image_prefix` (S3 prefix for frozen final model image/package copy)
+- `evaluation.windows`: `[ { window_id, start_ts, end_ts } ]` for post-training replay
+- `history_planner`: `{ derive_from_training_and_evaluation?, fg_a_max_lookback_minutes? }`
+- `remediation`: `{ enable_backfill_15m?, enable_fgb_rebuild?, max_retries? }`
+- `evaluation_output`: `{ predictions_s3_prefix?, join_output_s3_prefix?, publish_join_output?, redshift? }`
+- `toggles`: `{ enable_history_planner?, enable_auto_remediate_15m?, enable_auto_remediate_fgb?, enable_post_training_evaluation?, enable_eval_join_publication?, enable_eval_experiments_logging? }`
+
+For `project_parameters#<feature_spec_version>.spec.defaults`, IF training orchestration supports:
+- `TrainingStartTs`, `TrainingEndTs`
+- `EvaluationWindowsJson` (preferred)
+- compatibility fallback: `EvalStartTs`, `EvalEndTs`
+- optional rollout toggles: `EnableHistoryPlanner`, `EnableAutoRemediate15m`, `EnableAutoRemediateFgb`, `EnablePostTrainingEvaluation`, `EnableEvalJoinPublication`, `EnableEvalExperimentsLogging`
 
 Example (abbreviated):
 ```json

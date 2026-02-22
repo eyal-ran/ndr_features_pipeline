@@ -79,6 +79,13 @@ Step Functions JSONata definitions should:
 - Resolve runtime parameters using the precedence described above.
 - Pass resolved values to SageMaker pipelines via `PipelineParameters`.
 
+For `pipeline_if_training`, required runtime params now include:
+- `TrainingStartTs`, `TrainingEndTs`
+- `EvaluationWindowsJson` (preferred multi-window contract)
+- fallback compatibility: `EvalStartTs`, `EvalEndTs`
+- `MissingWindowsOverride`
+- `EnableHistoryPlanner`, `EnableAutoRemediate15m`, `EnableAutoRemediateFgb`, `EnablePostTrainingEvaluation`, `EnableEvalJoinPublication`, `EnableEvalExperimentsLogging`
+
 This ensures project scoping and runtime parameter behavior are table-driven and consistent across 15m features/inference, monthly baselines, publication, backfill, and training orchestrators.
 
 ## Runtime parameter validation contract (item 23)

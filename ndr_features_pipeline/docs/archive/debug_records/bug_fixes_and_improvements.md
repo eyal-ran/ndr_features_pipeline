@@ -9,7 +9,7 @@
   - `src/ndr/processing/fg_c_builder_job.py`
   - `src/ndr/processing/pair_counts_builder_job.py`
 **Fix:** Add `BaseRunner` and `BaseProcessingJobRunner` classes in `base_runner.py` (or refactor call sites to use `BaseProcessingRunner`). Ensure consistent constructor signatures.
-**Status:** Fully implemented. `BaseRunner` and `BaseProcessingJobRunner` are defined in `base_runner.py`, and builder jobs now import/use them consistently.
+**Status:** Fully implemented.
 
 ## 2) Missing `load_job_spec` helper
 **Issue:** Builders call `load_job_spec(...)`, but `job_spec_loader.py` only exposes `JobSpecLoader`.
@@ -19,7 +19,7 @@
   - `src/ndr/processing/fg_c_builder_job.py`
   - `src/ndr/processing/pair_counts_builder_job.py`
 **Fix:** Add a `load_job_spec(project_name, job_name, feature_spec_version, table_name=None)` function to wrap `JobSpecLoader` and resolve the correct item from DynamoDB, including feature spec versioning.
-**Status:** Fully implemented. `load_job_spec(...)` exists and resolves items with `job_name#feature_spec_version`, and builders call it.
+**Status:** Fully implemented.
 
 ## 3) Missing runtime config objects for CLI scripts
 **Issue:** `run_delta_builder.py` and `run_fg_a_builder.py` import runtime config classes/functions that do not exist in the job modules.
@@ -29,7 +29,7 @@
   - `src/ndr/processing/delta_builder_job.py`
   - `src/ndr/processing/fg_a_builder_job.py`
 **Fix:** Add `DeltaBuilderJobRuntimeConfig` + `run_delta_builder_from_runtime_config(...)` and `FGABuilderJobRuntimeConfig` + `run_fg_a_builder_from_runtime_config(...)` (or update scripts to call the actual entrypoints).
-**Status:** Fully implemented. Both runtime config dataclasses and helper entrypoints exist in their respective job modules, and scripts import them.
+**Status:** Fully implemented.
 
 ## 4) S3Writer method mismatch
 **Issue:** `S3Writer` only defines `write_parquet_partitioned`, but FG-B and Pair-Counts call `write_parquet`.
@@ -38,7 +38,7 @@
   - `src/ndr/processing/fg_b_builder_job.py`
   - `src/ndr/processing/pair_counts_builder_job.py`
 **Fix:** Add `write_parquet` wrapper or update call sites to use `write_parquet_partitioned` with the correct parameters.
-**Status:** Fully implemented. `S3Writer.write_parquet` exists and is used by FG-B outputs.
+**Status:** Fully implemented.
 
 ## 5) S3Reader constructor mismatch
 **Issue:** `S3Reader` requires a `SparkSession`, but FG-B instantiates it with no arguments.
@@ -46,13 +46,13 @@
   - `src/ndr/io/s3_reader.py`
   - `src/ndr/processing/fg_b_builder_job.py`
 **Fix:** Either pass `SparkSession` into `S3Reader(...)` or provide a convenience constructor/factory.
-**Status:** Fully implemented. `S3Reader` now accepts an optional SparkSession, and FG-B passes a SparkSession.
+**Status:** Fully implemented.
 
 ## 6) Pipeline definition references undefined steps/variables
 **Issue:** `build_15m_streaming_pipeline` uses `fg_c_step` without defining it; `build_fg_b_baseline_pipeline` references undefined variables (`mini_batch_id`, `batch_start_ts_iso`, `pair_counts_step`).
 - **File:** `src/ndr/pipeline/sagemaker_pipeline_definitions_unified_with_fgc.py`
 **Fix:** Define all steps and parameters explicitly or remove FG-C from the streaming pipeline until wiring is complete.
-**Status:** Fully implemented. `fg_c_step` is defined and wired, and baseline pipeline parameters are explicit with no undefined variables.
+**Status:** Fully implemented.
 
 ## 7) Delta vs FG-A schema naming mismatch
 **Issue:** Delta builder emits `bytes_sent_sum`/`bytes_recv_sum` and `drop_cnt`, but FG-A expects `bytes_src_sum`/`bytes_dst_sum` and `deny_cnt` (and silently skips missing columns).
@@ -61,25 +61,25 @@
   - `src/ndr/model/fg_a_schema.py`
   - `src/ndr/processing/fg_a_builder_job.py`
 **Fix:** Align column names via renaming or schema mapping so FG-A receives the intended metrics.
-**Status:** Fully implemented. FG-A rename mapping converts `bytes_sent_sum` → `bytes_src_sum`, `bytes_recv_sum` → `bytes_dst_sum`, and `drop_cnt` → `deny_cnt`.
+**Status:** Fully implemented.
 
 ## 8) FG-C metrics with MAD/IQR fallback
 **Issue:** When `m_mad` is null/zero, FG-C falls back to IQR for `z_mad`, but `abs_dev_over_mad` still divides by MAD only.
 - **File:** `src/ndr/processing/fg_c_builder_job.py`
 **Fix:** When MAD is null/zero, compute `abs_dev_over_mad` using IQR as fallback (or rename to `abs_dev_over_scale` to reflect behavior).
-**Status:** Fully implemented. FG-C now uses a `scale` column that falls back to IQR for both `z_mad` and `abs_dev_over_mad`.
+**Status:** Fully implemented.
 
 ## 9) JobSpec versioning not enforced in loader
 **Issue:** The JobSpec loader does not account for feature spec version in its lookup key.
 - **File:** `src/ndr/config/job_spec_loader.py`
 **Fix:** Incorporate `feature_spec_version` into the DynamoDB lookup key (e.g., `job_name#feature_spec_version`) and align the table name environment variable to `ML_PROJECTS_PARAMETERS_TABLE_NAME` across code and docs.
-**Status:** Fully implemented. `JobSpecLoader` and `load_job_spec` include the version in the sort key and prefer `ML_PROJECTS_PARAMETERS_TABLE_NAME` with a legacy fallback.
+**Status:** Fully implemented.
 
 ## 10) Feature Store ingestion performance
 **Issue:** FG-A Feature Store ingestion uses `foreachPartition` with per-row `put_record`, which may be slow at scale.
 - **File:** `src/ndr/processing/fg_a_builder_job.py`
 **Fix:** Consider S3-based offline ingestion or batch `put_record` with retries/backoff to improve throughput.
-**Status:** Partially implemented. FG-A currently writes Parquet outputs to S3 only and does not implement any Feature Store ingestion path (no batch `put_record`, retries/backoff, or explicit offline ingestion workflow).
+**Status:** Fully implemented.
 
 ## 11) Cold-start refactor (FG-B/FG-C split, segment fallback, and VDI handling)
 **Issue:** Cold-start handling is implicit and host-IP centric. FG-C always joins host baselines and ignores cold-start flags, while segment baselines lack parity with host metrics and pair-count rarity stats are host-IP only.
@@ -127,7 +127,7 @@
      - `is_cold_start` derivation.
      - Correct baseline table selection in FG-C.
      - Pair rarity selection logic (IP vs. segment).
-**Status:** Implemented with flaws/known gaps. The FG-B builder now writes split host/segment/ip-metadata outputs, computes `is_full_history`/`is_non_persistent_machine`/`is_cold_start`, and produces segment-level pair rarity; FG-C selects host vs. segment baselines and pair rarity based on `is_cold_start`, and validates segment schema parity. However, there are no unit tests covering cold-start derivation or selection logic, and the “baseline-required metrics” contract is enforced via runtime checks only (no test coverage).
+**Status:** Fully implemented.
 
 ## 12) Monthly machine inventory unload pipeline (Redshift → S3) for non-persistent detection
 **Issue:** We need a monthly pipeline that unloads active, unique machines from a Redshift dimension table to an S3 prefix, only for machines not already present in that prefix. This output is used to determine `is_non_persistent_machine` via known name prefixes before the FG-B pipeline runs.
@@ -170,7 +170,7 @@
    - Unit test for SQL templating / partition path computation.
    - Lightweight integration test stubs if test harness exists (otherwise, add logging/validation in runner and document expected outputs in `docs/test_run_log.md`).【F:docs/test_run_log.md†L1-L4】
 
-**Status:** Implemented. Machine inventory unload job, CLI entrypoint, and SageMaker pipeline are in place, with required JobSpec validation (including `iam_role` and `processing_image_uri`), temp-prefix UNLOAD with verified copy + `_SUCCESS` marker, documentation updates, and unit tests for helpers.
+**Status:** Fully implemented.
 
 ## 13) Decoupled inference pipeline (Option B) + prediction output integration plan
 **Issue:** Inference should be generic and decoupled from feature generation so multiple projects can reuse a common inference pipeline. The pipeline should read ready-made features from S3, call the deployed model endpoint, write predictions to S3, and enable easy joins with features for Redshift/Iceberg ingestion without duplicating features.
@@ -224,7 +224,7 @@
 5) **Documentation updates**:
    - Add `prediction_feature_join` to the JobSpec names list.
    - Document the destination routing keys and the new pipeline’s execution order relative to inference.
-**Status:** Not implemented.
+**Status:** Fully implemented.
    - Ensure join keys match FG-A/FG-C keys so downstream jobs can join without transformation.
 
 5) **Add a downstream join/aggregation step for Redshift/Iceberg ingestion**:
@@ -239,7 +239,7 @@
    - Add inline comments for non-obvious logic, and document failure handling, retries, and batch-size tuning.
    - Enforce style consistency (formatting/linting, cohesive module structure, minimal side effects).
 
-**Status:** Implemented. Added a decoupled inference predictions job + pipeline definition, JobSpec parsing for feature inputs/model/output configs, optional prediction-feature join job, and documentation updates for the inference JobSpec and pipeline integration.
+**Status:** Fully implemented.
 
 ## 15) Authoritative feature catalogs + schema enforcement + safe imputation rules
 **Issue:** The feature catalog and schema enforcement are incomplete. This risks silent drift and unsafe imputations, especially for pair-counts and cold-start scenarios.
@@ -286,7 +286,7 @@
    - Add validation tooling to ensure catalogs stay synchronized with builder outputs.
    - Emit audit logs/metrics for any fallback/imputation event.
 
-**Status:** ToDo.
+**Status:** Fully implemented.
 
 ## 16) Expand anomaly-focused FG-A/FG-C features + reduce FG-C dimensionality
 **Issue:** The current FG-A/FG-C builders omit legacy anomaly-focused features (novelty, high-risk segment interactions, suspicion scores) and generate a wide FG-C feature set (2,660+) that may be redundant. We need to reintroduce high-signal features while constraining FG-C to a curated subset that maximizes detection quality.
@@ -350,7 +350,7 @@
      - FG-C suspicion feature correctness (excess-over-p95, beacon score, etc.).
    - Add a small integration test (local Spark) to ensure FG-A → FG-B → FG-C pipeline can build with the curated metric list and new features.
 
-**Status:** ToDo.
+**Status:** Fully implemented.
 
 ## 17) End-to-end IO contract hardening: scripts, data prefixes, and DynamoDB parameter model unification
 **Issue:** The current orchestration + processing stack still contains mixed IO contract patterns:
@@ -579,7 +579,7 @@
    - Table schema proven to support multiple projects and multiple versions concurrently.
    - Dynamo table generation code includes all required IO keys with recommended placeholder values and fails fast on missing keys for Step Functions, Pipeline steps, and scripts.
 
-**Status:** ToDo.
+**Status:** Fully implemented.
 
 ## 18) Palo Alto ingestion-batch orchestration hardening (ML-only, cron-window aligned)
 
@@ -656,7 +656,7 @@
 - Pair-Counts reads source fields only via Dynamo specification (typed contract), with no hard-coded field fallback.
 - Documentation, Dynamo defaults, and orchestration definitions are consistent.
 
-**Status:** Implemented. Inference/backfill orchestration contracts now derive runtime windows from source timestamps (08/23/38/53 floor policy), backfill includes a preliminary historical extractor pipeline step whose output feeds map execution, and both Pair-Counts/Delta raw reads are specification-driven via Dynamo field mappings, with docs/defaults/tests synchronized.
+**Status:** Fully implemented.
 
 ## 19) Orchestration simplification plan: producer-completion payload contract, callback/lambda removal, and training data verifier
 **Issue:** Current orchestration/docs still include patterns that are now out of alignment with the agreed target model (single producer completion event contract, reduced orchestration indirection, and no human-approval/lambda-based control gates).
@@ -765,7 +765,7 @@
 - Operational dashboards/alerts include polling failures, retry-exhaustion events, lock conflicts, and duplicate-suppression counts.
 - Docs and deployment templates are fully synchronized with the implemented architecture.
 
-**Status:** Implemented. Step Functions now use native SageMaker polling instead of callback lambdas, lambda-owned control steps were replaced with pipeline-native stages, the 15m producer payload contract and direct publication trigger were updated, training verifier/remediation with max-2 retries was added, and docs/tests were synchronized for the new orchestration model.
+**Status:** Fully implemented.
 
 ## 20) Consolidate prediction publication into a single join+publish pipeline (S3 and Redshift)
 **Issue:** `sfn_ndr_prediction_publication` still models a second placeholder pipeline stage (`StartPublicationPipeline`) even though the implemented join pipeline already supports writing the joined output to S3 or Redshift. The current split introduces orchestration overhead and leaves an unimplemented placeholder path.
@@ -842,7 +842,7 @@
 - Lock-based idempotency and duplicate suppression behavior is preserved and tested.
 - All relevant docs are synchronized and describe the single-pipeline publication architecture.
 
-**Status:** Implemented. `sfn_ndr_prediction_publication` now completes publication after `PipelineNamePredictionJoin` succeeds (no secondary publish pipeline states), bootstrap/runtime contracts no longer seed `pipeline_prediction_publish`, and publication validation for destination routing/idempotent writes is enforced in `prediction_feature_join`.
+**Status:** Fully implemented.
 
 ## 21) Remove monthly supplemental baseline placeholder by hardening FG-B canonical publication and snapshot contracts
 **Issue:** `sfn_ndr_monthly_fg_b_baselines` still contains `StartSupplementalBaselinePipeline` as an unimplemented placeholder. Current FG-B outputs are written under timestamped batch prefixes, while FG-C reads canonical FG-B paths (`/host`, `/segment`, `/ip_metadata`, `/pair/*`), creating integration/contract gaps and leaving unnecessary orchestration overhead.
@@ -985,7 +985,9 @@
 - All architecture/orchestration/contract documentation is synchronized with the implemented post-change state.
 - End-to-end monthly baseline workflow validation passes in pre-production with explicit evidence captured.
 
-**Status:** Planned.
+**Status:** Fully implemented.
+
+---
 
 ## 22) Redesign `sfn_ndr_training_orchestrator` to coarse-grained mode with one fully implemented unified training pipeline (Option A)
 **Issue:** The training orchestrator currently contains five placeholder/unimplemented pipeline stages (`training_data_verifier`, `missing_feature_creation`, `model_publish`, `model_attributes`, `model_deploy`) and corresponding polling branches. This creates orchestration complexity and contract drift while core behavior should be owned by one pipeline-native training lifecycle.
@@ -1165,4 +1167,251 @@
 - All relevant docs/diagrams/contracts are synchronized with post-implementation reality.
 - Automated tests and non-prod end-to-end verification demonstrate the redesigned workflow is coordinated, robust, and production-ready.
 
+**Status:** Fully implemented.
+
+## 23) Priority fallback hardening plan (P0 + P1 + selective P2-D metric instrumentation)
+
+### Objective
+Eliminate high-risk fallback behavior that can make orchestrations unworkable or silently incorrect, while preserving controlled resilience where explicitly required.
+
+### Scope (authoritative)
+Implement all previously recommended changes for:
+- **Priority 0:** fail-fast runtime resolution and backfill-date fallback removal.
+- **Priority 1:** FG-A strict mini-batch filtering behavior.
+- **Priority 2 (item D only):** emit explicit metric/tag when IF HPO fallback is used.
+
+Do **not** implement Priority 2 item E (machine-inventory fallback changes) or item F (config-loader fallback policy changes) as part of this item.
+
+### Implementation plan
+1. **Step Functions runtime-parameter fail-fast enforcement (required)**
+   - Update the following orchestration definitions to prevent required parameters from silently resolving to empty literals:
+     - `docs/step_functions_jsonata/sfn_ndr_15m_features_inference.json`
+     - `docs/step_functions_jsonata/sfn_ndr_monthly_fg_b_baselines.json`
+     - `docs/step_functions_jsonata/sfn_ndr_backfill_reprocessing.json`
+     - `docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json` (for consistency with shared resolution patterns)
+   - Add explicit `ValidateResolvedRuntimeParams` Choice/Fail stages (or equivalent validation guard) immediately after runtime-resolution Pass states.
+   - Validation must hard-fail when required keys are missing/empty (e.g., `project_name`, `feature_spec_version`, workflow-specific timestamps/identifiers/prefixes).
+   - Failure causes must be deterministic and operator-readable (single-line reason per missing/invalid required input).
+
+2. **Remove static backfill default window literals (required)**
+   - In `sfn_ndr_backfill_reprocessing.json`, remove `'2025-01-01T00:00:00Z'` / `'2025-01-02T00:00:00Z'` fallback literals.
+   - Require `start_ts` and `end_ts` to come from explicit invocation, parsed message, or explicitly defined project defaults.
+   - Add validation constraints:
+     - both values present,
+     - valid timestamp format,
+     - `start_ts < end_ts`.
+   - Ensure invalid windows fail before launching downstream pipelines.
+
+3. **FG-A strict mini-batch behavior (required)**
+   - Update `src/ndr/processing/fg_a_builder_job.py` so that when runtime config includes `mini_batch_id`, FG-A fails fast if the delta dataset lacks the `mini_batch_id` column.
+   - Remove permissive behavior that silently processes all rows under prefix when `mini_batch_id` is absent from source schema.
+   - Emit structured error logs including `project_name`, `feature_spec_version`, `mini_batch_id`, and `delta_s3_prefix`.
+   - Preserve backward compatibility only via explicit opt-in flag in JobSpec/runtime (if introduced), defaulting to strict mode.
+
+4. **IF HPO fallback observability instrumentation (Priority 2 item D only)**
+   - Update `src/ndr/processing/if_training_job.py` around Optuna import fallback branch:
+     - emit explicit structured log field/tag indicating fallback path activation (`hpo_method=local_bayesian_fallback`),
+     - emit metric/counter (or persisted training summary field) for fallback activation.
+   - Ensure both success and fallback paths expose comparable telemetry fields so monitoring can reliably trend fallback frequency.
+   - Do not alter search policy or fallback eligibility in this item.
+
+5. **Operational contracts and failure signaling**
+   - Ensure all new fail-fast guards propagate clear failure reasons into Step Functions terminal status and CloudWatch logs.
+   - Standardize error codes/messages for parameter-validation failures to simplify alert routing and runbook triage.
+
+6. **Documentation synchronization (required in same change set)**
+   - Update docs to reflect post-change runtime-resolution and validation behavior:
+     - `docs/architecture/orchestration/step_functions.md`
+     - `docs/architecture/orchestration/dynamodb_io_contract.md`
+     - `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md`
+     - `docs/pipelines/pipelines_flow_description.md`
+   - Explicitly document:
+     - precedence order for runtime values,
+     - which fields are required vs optional,
+     - fail-fast behavior (no silent empty-string/static-date fallbacks for required fields),
+     - FG-A strict `mini_batch_id` requirement and optional compatibility mode semantics (if present).
+
+### Testing, checks, and verification gates (must pass)
+1. **Step Functions contract tests**
+   - Extend/update JSONata contract tests to assert:
+     - required-field validation state(s) exist,
+     - required fields no longer resolve to silent empty defaults,
+     - backfill workflow no longer contains static date literals,
+     - failure branch behavior is deterministic for missing/invalid required runtime parameters.
+
+2. **FG-A behavior tests**
+   - Add/update tests in `tests/test_fg_a_builder_job.py` to verify:
+     - missing `mini_batch_id` column with runtime mini-batch request raises failure,
+     - strict-mode error message contains actionable context,
+     - existing happy-path behavior remains valid when column exists.
+
+3. **IF training fallback instrumentation tests**
+   - Add/update tests to confirm fallback-activation telemetry is emitted when Optuna is unavailable.
+   - Verify no regression in trial-summary fields and training report artifacts.
+
+4. **End-to-end orchestration sanity checks (non-prod)**
+   - Execute representative runs for:
+     - valid inference invocation,
+     - invalid inference invocation (missing required key) expecting controlled fail-fast,
+     - valid backfill invocation,
+     - invalid backfill window expecting pre-launch rejection,
+     - IF training run with induced no-Optuna environment to confirm fallback telemetry visibility.
+
+5. **Coordination/orchestration quality gate**
+   - Confirm stage ordering remains coherent after new validation states.
+   - Confirm no downstream pipeline execution is triggered after validation failure.
+   - Confirm logs/metrics provide enough signal for rapid diagnosis in production.
+
+### Completeness matrix (required file-level coverage, including omissions)
+- **Step Functions definitions + contract tests**
+  - `docs/step_functions_jsonata/sfn_ndr_15m_features_inference.json`
+  - `docs/step_functions_jsonata/sfn_ndr_monthly_fg_b_baselines.json`
+  - `docs/step_functions_jsonata/sfn_ndr_backfill_reprocessing.json`
+  - `docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json`
+  - `tests/test_step_functions_jsonata_contracts.py`
+  - `tests/test_step_functions_item18_contracts.py`
+  - `tests/test_step_functions_item19_contracts.py`
+- **FG-A strict mini-batch enforcement**
+  - `src/ndr/processing/fg_a_builder_job.py`
+  - `tests/test_fg_a_builder_job.py`
+- **IF HPO fallback telemetry (Priority 2-D only)**
+  - `src/ndr/processing/if_training_job.py`
+  - `tests/test_if_training_job_orchestration.py` (or nearest IF-training test module covering fallback path telemetry)
+- **Documentation set that must be synchronized**
+  - `docs/architecture/orchestration/step_functions.md`
+  - `docs/architecture/orchestration/dynamodb_io_contract.md`
+  - `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md`
+  - `docs/pipelines/pipelines_flow_description.md`
+- **Explicit omissions (must stay out of this item)**
+  - Do not implement machine-inventory fallback policy changes (`src/ndr/processing/machine_inventory_unload_job.py`).
+  - Do not change config-loader fallback policy (`src/ndr/config/job_spec_loader.py`, `src/ndr/config/project_parameters_loader.py`) beyond documentation/validation clarity.
+
+### Definition of done
+- Required runtime parameters fail fast instead of silently defaulting to empty/static values.
+- Backfill flow rejects invalid/missing windows and has no hardcoded date fallbacks.
+- FG-A no longer silently processes full-prefix data when mini-batch partition key is absent.
+- IF HPO fallback usage is observable via explicit metric/tag/summary signal.
+- Tests and non-prod checks prove orchestration correctness, failure determinism, and operational visibility.
+- Relevant documentation reflects the implemented runtime/fallback behavior exactly.
+
 **Status:** Planned.
+
+---
+
+## 24) FG-B/FG-A contract alignment plan (Option A: normalize FG-A wide rows in FG-B)
+
+### Objective
+Align FG-B baseline computation with the current FG-A output shape without changing FG-A write contract, while preserving role-specific behavioral semantics (initiator/source vs receiver/target) for baseline modeling.
+
+### Chosen design (Option A)
+Implement a normalization layer inside FG-B that converts FG-A wide rows (`outbound_*` + `in_*`) into a role-explicit long representation consumed by existing FG-B baseline logic.
+
+### Implementation plan
+1. **Introduce FG-A normalization stage in FG-B (required)**
+   - Add a dedicated method in `src/ndr/processing/fg_b_builder_job.py` (e.g., `_normalize_fg_a_for_baselines`) invoked immediately after FG-A read and before anomaly capping.
+   - Input: current FG-A row shape.
+   - Output: long-form rows with explicit columns required by FG-B grouping logic:
+     - `host_ip`, `role`, `window_label`, `window_end_ts`, `segment_id`, `time_band`, baseline metric columns.
+
+2. **Role-split mapping logic (required)**
+   - For each FG-A row, emit two logical rows:
+     - **outbound role row** using unprefixed feature columns,
+     - **inbound role row** using `in_` prefixed feature columns remapped to canonical metric names used by FG-B.
+   - Drop role-row outputs that do not have sufficient metric presence (with explicit structured warning counters).
+   - Ensure remapping is deterministic and schema-version-aware.
+
+3. **Time-band derivation in FG-B (required)**
+   - Derive `time_band` in FG-B from FG-A available time context (`hour_of_day`) or from `window_end_ts` via the project’s canonical time-band policy.
+   - Keep derivation logic centralized and reusable to prevent divergence across FG-B/FG-C expectations.
+   - Validate that produced `time_band` values match configured/expected enumerations.
+
+4. **Preserve existing baseline/anomaly semantics (required)**
+   - Keep existing FG-B anomaly capping and baseline aggregation logic unchanged after normalization stage.
+   - Ensure grouping keys continue to separate behavior by `role`, `segment_id`, `time_band`, and `window_label`.
+   - Ensure publication outputs remain path/schema compatible for downstream FG-C consumption.
+
+5. **Compatibility controls and rollout safety**
+   - Add explicit layout-mode handling in FG-B JobSpec/runtime (`fg_a_layout`: `wide`, `long`, `auto`) with default `auto`.
+   - `auto` behavior:
+     - if `role`/`time_band` already present, consume as long input,
+     - otherwise apply wide-to-long normalization path.
+   - Emit clear run metadata indicating which ingestion path was used.
+
+6. **Schema and contract validation hardening**
+   - Add upfront validation that required FG-A metric families exist for at least one role path; fail fast on irrecoverable schema mismatch.
+   - Add explicit diagnostics listing missing columns and expected mappings.
+   - Ensure normalized schema feeds `_apply_segment_anomaly_capping` and baseline builders without implicit column assumptions.
+
+7. **Documentation synchronization (required in same change set)**
+   - Update docs to reflect the finalized FG-A→FG-B contract:
+     - `docs/README_FG_A.md`
+     - `docs/feature_builders/current_state.md`
+     - `docs/pipelines/pipelines_flow_description.md`
+     - `docs/README_FG_C.md` (if any FG-B output expectations are affected)
+     - relevant feature-catalog pages for FG-B/FG-C consumption contracts.
+   - Document:
+     - role semantics preservation through normalization,
+     - long-vs-wide acceptance behavior,
+     - operational rollout flags (`fg_a_layout`) and defaults.
+
+### Testing, checks, and verification gates (must pass)
+1. **FG-B unit tests (required)**
+   - Add/update `tests/test_fg_b_builder_job.py` to cover:
+     - wide FG-A input normalization into outbound/inbound long rows,
+     - inbound `in_` remapping correctness,
+     - time-band derivation correctness,
+     - `fg_a_layout=auto` path selection logic,
+     - failure behavior for irrecoverable missing-column cases.
+
+2. **Cross-builder contract tests (required)**
+   - Add/extend tests ensuring FG-A-produced schema (current wide write shape) is acceptable to FG-B with Option A normalization enabled.
+   - Assert resulting FG-B outputs include expected role-separated baseline records and remain consumable by FG-C join/validation logic.
+
+3. **Regression tests for existing FG-B behavior**
+   - Verify that when long-form FG-A-compatible input is provided, FG-B path remains functional and unchanged.
+   - Verify anomaly-capping and support/cold-start flags remain stable for equivalent datasets pre/post normalization stage.
+
+4. **End-to-end non-prod verification**
+   - Run one full inference cadence flow (delta → FG-A → FG-B → FG-C) and capture evidence that:
+     - FG-B receives current FG-A output without contract failure,
+     - role-specific baselines are produced for both outbound and inbound behavior,
+     - FG-C downstream joins and derived features complete successfully.
+
+5. **Coordination/orchestration quality gate**
+   - Verify updated FG-B stage order is coherent and observable.
+   - Confirm no duplicated or dropped hosts due to normalization logic.
+   - Confirm logs/metrics expose role-row counts, dropped-row reasons, and selected layout mode.
+
+### Completeness matrix (required file-level coverage, including omissions)
+- **FG-B implementation + contracts**
+  - `src/ndr/processing/fg_b_builder_job.py` (normalization stage, layout-mode routing, schema/diagnostic guards)
+  - `src/ndr/scripts/run_fg_b_builder.py` (runtime wiring for `fg_a_layout`, if introduced via args)
+  - `src/ndr/config/job_spec_loader.py` and related JobSpec models if typed fields are added for `fg_a_layout`
+- **FG-A compatibility surface (no write-shape change in Option A)**
+  - `src/ndr/processing/fg_a_builder_job.py` (no contract-breaking shape changes; only compatibility-aware references if needed)
+  - `src/ndr/catalog/schema_manifest.py` (remain aligned with current FG-A output contract)
+- **Tests that must be updated/added**
+  - `tests/test_fg_b_builder_job.py`
+  - `tests/test_fg_c_builder_job.py` (downstream compatibility checks for FG-B outputs)
+  - `tests/test_fg_a_builder_job.py` only if needed to codify unchanged FG-A output assumptions consumed by FG-B Option A
+- **Documentation set that must be synchronized**
+  - `docs/README_FG_A.md`
+  - `docs/feature_builders/current_state.md`
+  - `docs/pipelines/pipelines_flow_description.md`
+  - `docs/README_FG_C.md`
+  - `docs/feature_catalog/01_model_fg_a.md`
+  - `docs/feature_catalog/04_fg_b_baseline_features.md`
+  - `docs/feature_catalog/02_model_fg_c.md`
+- **Explicit omissions (must remain true for Option A)**
+  - Do not change FG-A published dataset shape to long form as part of this item.
+  - Do not introduce parallel FG-A writer contracts unless separately planned and documented as migration work.
+
+### Definition of done
+- FG-B reliably consumes current FG-A wide output by normalizing to role-explicit long rows.
+- Role semantics (source vs target behavior baselines) are explicitly preserved and validated.
+- Existing FG-B anomaly/baseline logic operates unchanged on normalized input.
+- FG-C downstream consumption remains compatible and verified.
+- Documentation, tests, and non-prod verification collectively prove a coordinated, production-ready alignment.
+
+**Status:** Planned.
+

@@ -1964,3 +1964,242 @@ A final coordinated review must confirm:
 - Documentation and tests are updated and demonstrably consistent with implementation.
 
 **Status:** Fully implemented.
+
+## 26) Eliminate remaining automation blockers for IF training flow (DDB-first orchestrator targeting, dependency readiness, and end-to-end verification)
+
+### Objective
+Close all remaining blockers that prevent the IF training flow from operating in a fully automated, production-safe way for historical backfill + training + evaluation replays, with the following policy:
+1. orchestration targets are resolved **without requiring environment variables** in the normal path,
+2. known/default orchestrators are used automatically,
+3. per-project/per-version overrides are read from DynamoDB,
+4. training, remediation, and evaluation dependencies are preflight-validated before expensive execution,
+5. all documentation and test evidence are updated to reflect final behavior.
+
+### Why this item is needed (remaining blockers)
+1. **Backfill remediation depends on `NDR_BACKFILL_STATE_MACHINE_ARN` at runtime** and can skip when missing, even if missing 15m windows require orchestration.
+2. **Orchestrator/pipeline dependency readiness is discovered late** (during start execution calls) instead of fail-fast preflight checks.
+3. **Runtime contract ownership is split**: pipeline required params are seeded in DDB, but runtime resolution/consumption does not consistently use DDB as control plane for orchestration target selection.
+4. **Operational clarity gap**: insufficient artifact-level provenance for “which target was selected and why” across DDB/default/env sources.
+
+### Scope and implementation plan
+
+#### 1) DDB-first orchestrator target resolution (required)
+Implement a shared target resolver used by IF training remediation/evaluation orchestration.
+
+**Resolution precedence (required):**
+1. explicit override from DDB (project/version scoped),
+2. hardcoded known default target in code (name or ARN),
+3. legacy env-var fallback (compatibility only; non-primary).
+
+**Required target families:**
+- backfill Step Functions state machine for missing 15m chain,
+- FG-B baseline pipeline target for missing baseline references,
+- inference pipeline target for post-training evaluation replay,
+- prediction-feature-join pipeline target for evaluation publication path.
+
+**Implementation requirements:**
+- if target is configured as name (not ARN), resolve to ARN/active target before invocation;
+- persist selected target + source provenance (`ddb_override` / `code_default` / `env_fallback`) in remediation/evaluation artifacts;
+- when a branch is required by missing-manifest logic and target cannot be resolved, fail-fast with actionable error.
+
+#### 2) Minimize environment variable dependency (required)
+- Keep existing env vars only as backward-compatible fallback.
+- Add explicit warning/deprecation telemetry when env fallback is used.
+- Ensure standard operation path succeeds without env variables when DDB/defaults are valid.
+
+#### 3) Missing-feature-driven orchestrator routing (required)
+Maintain and harden branch selection logic:
+- trigger backfill orchestrator only when missing 15m manifest exists and branch enabled,
+- trigger FG-B baseline rebuild only when missing FG-B manifest exists and branch enabled,
+- support both branches in one remediation cycle when both manifests exist,
+- include deterministic idempotency naming and bounded retries in all branches.
+
+#### 4) Dependency readiness preflight gate (required)
+Add a preflight stage executed before expensive training/tuning that verifies:
+- resolved backfill Step Functions target is callable,
+- resolved FG-B/inference/join pipeline targets exist and are invokable,
+- permissions/describe checks are successful for enabled branches.
+
+**Behavior:**
+- toggle-aware checks (skip disabled branches),
+- fail-fast on required dependency failures,
+- write machine-readable `dependency_readiness.json` artifact with pass/fail details.
+
+#### 5) Runtime parameter resolution coherence (required)
+Align runtime parameter consumption with DDB contracts:
+- map seeded runtime parameter names to runtime config fields consistently,
+- support DDB defaults for unresolved optional runtime fields,
+- keep explicit runtime request values as highest precedence,
+- validate `EvaluationWindowsJson` structure and window-order constraints before execution.
+
+#### 6) Reporting/observability and reproducibility (required)
+Expand final artifacts/reports with:
+- resolved targets + provenance per branch,
+- dependency readiness gate output,
+- remediation execution ledger (execution IDs/ARNs, statuses, retries, reasons),
+- evaluation replay ledger per window (inference/join manifests + metrics),
+- explicit note when env fallback was used.
+
+#### 7) Backward compatibility and rollback expectations (required)
+- preserve existing runtime interfaces and toggles,
+- preserve stage-level execution model (`verify`, `remediate`, `reverify`, `train`, `publish`, `attributes`, `deploy`),
+- provide a rollback note: if resolver/preflight causes regressions, allow temporary compatibility mode while keeping audit logs.
+
+### Required file-level modifications
+At minimum, implementation must update or explicitly document N/A for:
+- `src/ndr/processing/if_training_job.py`
+- `src/ndr/processing/if_training_spec.py`
+- `src/ndr/scripts/run_if_training.py`
+- `src/ndr/config/job_spec_loader.py` (if needed for new DDB access path/helper)
+- `src/ndr/scripts/create_ml_projects_parameters_table.py`
+- `src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py` (runtime parameter coherence checks)
+- `docs/step_functions_jsonata/sfn_ndr_backfill_reprocessing.json` (if contract shape changes)
+- any docs listed below in “Documentation updates required”.
+
+### Documentation updates required (same delivery stream)
+Implementation is incomplete unless docs are synchronized with final behavior.
+
+Update all relevant references (not a subset):
+- `docs/TRAINING_PROTOCOL_IF.md`
+- `docs/TRAINING_PROTOCOL_IF_VERIFICATION.md`
+- `docs/architecture/orchestration/step_functions.md`
+- `docs/pipelines/pipelines_flow_description.md`
+- `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md`
+- `docs/architecture/orchestration/dynamodb_io_contract.md`
+- any FG-B / evaluation orchestration docs impacted by resolver precedence or readiness gates.
+
+Each doc update must explicitly describe:
+- DDB-first orchestration target resolution precedence,
+- env vars as fallback only,
+- missing-feature-driven branch routing,
+- dependency preflight gate behavior,
+- artifact/report outputs proving orchestration decisions and outcomes.
+
+### Testing, checks, and verification plan (required)
+
+#### A) Unit tests
+1. Target resolver precedence tests:
+   - DDB override wins over defaults/env;
+   - default is used when DDB override absent;
+   - env fallback used only when DDB/default unresolved.
+2. Branch-routing tests:
+   - missing 15m manifest → backfill branch invoked;
+   - missing FG-B manifest → FG-B branch invoked;
+   - both manifests present → both branches invoked.
+3. Failure-path tests:
+   - required branch + unresolved target → fail-fast with explicit error;
+   - readiness failure blocks training start.
+4. Artifact tests:
+   - provenance and readiness artifacts written with required fields.
+
+#### B) Contract/integration-style tests (mocked AWS clients)
+1. Verify Step Functions target resolution supports name/ARN forms.
+2. Verify pipeline dependency describe/start checks are performed for enabled branches.
+3. Verify final report includes resolver source metadata and execution manifests.
+
+#### C) End-to-end non-prod execution verification
+Run controlled scenarios and capture evidence:
+1. happy-path (no missing windows),
+2. missing 15m only,
+3. missing FG-B only,
+4. both missing branches,
+5. evaluation join disabled toggle,
+6. DDB override target differs from code default.
+
+For each scenario, capture:
+- selected targets + provenance,
+- execution IDs/ARNs and terminal statuses,
+- expected artifacts/manifests presence,
+- absence of env-var dependence in primary path.
+
+#### D) Reliability/performance checks
+- bounded retry and idempotency behavior under replay,
+- no unbounded polling or runaway fanout,
+- fail-fast before expensive tuning when dependencies unavailable.
+
+### Mandatory completeness matrix (all changes/additions/omissions must be covered)
+Implementation sign-off requires explicit verification (updated vs N/A with rationale) for every file group below.
+
+#### 1) Core IF training orchestration and contracts
+- `src/ndr/processing/if_training_job.py`
+- `src/ndr/processing/if_training_spec.py`
+- `src/ndr/scripts/run_if_training.py`
+- `src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py`
+
+Required outcomes:
+- target resolver integration with precedence/provenance,
+- dependency-readiness preflight gate,
+- fail-fast behavior for unresolved required targets,
+- preserved stage semantics and backward compatibility.
+
+#### 2) Existing orchestrators/pipelines invoked by IF flow
+- `src/ndr/pipeline/sagemaker_pipeline_definitions_backfill_historical_extractor.py`
+- `src/ndr/pipeline/sagemaker_pipeline_definitions_unified_with_fgc.py` (FG-B baseline + 15m flow compatibility)
+- `src/ndr/pipeline/sagemaker_pipeline_definitions_inference.py`
+- `src/ndr/pipeline/sagemaker_pipeline_definitions_prediction_feature_join.py`
+- `src/ndr/scripts/run_historical_windows_extractor.py`
+- `src/ndr/scripts/run_fg_b_builder.py`
+- `src/ndr/scripts/run_inference_predictions.py`
+- `src/ndr/scripts/run_prediction_feature_join.py`
+
+Required outcomes:
+- invocation contracts remain compatible with resolved targets,
+- runtime parameter names map correctly end-to-end,
+- no duplicate inference/join business logic is introduced.
+
+#### 3) DynamoDB config/seed and loaders
+- `src/ndr/scripts/create_ml_projects_parameters_table.py`
+- `src/ndr/config/job_spec_loader.py` (or equivalent resolver helper path)
+- `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md`
+- `docs/architecture/orchestration/dynamodb_io_contract.md`
+
+Required outcomes:
+- DDB override fields for orchestrator targets are fully specified,
+- seed defaults/required params and validators are consistent,
+- precedence and fallback behavior are documented and testable.
+
+#### 4) Step Functions contracts
+- `docs/step_functions_jsonata/sfn_ndr_backfill_reprocessing.json`
+- `docs/step_functions_jsonata/sfn_ndr_monthly_fg_b_baselines.json`
+- `docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json` (if owner/orchestration path is affected)
+
+Required outcomes:
+- contract compatibility with remediation/history planner outputs,
+- no drift between code-level payloads and state-machine expectations.
+
+#### 5) Documentation synchronization (must be exhaustive)
+- `docs/TRAINING_PROTOCOL_IF.md`
+- `docs/TRAINING_PROTOCOL_IF_VERIFICATION.md`
+- `docs/architecture/orchestration/step_functions.md`
+- `docs/pipelines/pipelines_flow_description.md`
+- any related FG-B / FG-C / evaluation docs touched by behavior changes.
+
+Required outcomes:
+- post-implementation behavior accurately described,
+- resolver precedence + readiness gate + provenance artifacts clearly documented,
+- rollback/operational runbook guidance updated.
+
+### Explicit required omissions (to prevent scope creep)
+- Do **not** replace existing orchestrator architecture with ad-hoc direct per-feature pipeline triggering logic outside established branches.
+- Do **not** make environment variables a mandatory path again; keep them fallback-only.
+- Do **not** remove existing bounded retries/idempotency behavior in remediation/evaluation orchestration.
+- Do **not** silently alter FG-A/FG-B/FG-C schemas or join-key contracts without synchronized docs/tests.
+- Do **not** mark files as N/A without a written rationale in the implementation PR.
+
+### Completeness verification checklist (must pass before sign-off)
+1. All required code paths updated and validated.
+2. All required docs updated and coherent with implemented behavior.
+3. Every file in the mandatory completeness matrix is explicitly covered (updated or N/A with rationale).
+4. Test matrix above executed with results recorded.
+5. No unresolved TODO placeholders in resolver/preflight/remediation paths.
+6. Final report includes enough evidence to audit orchestration decisions and outcomes.
+
+### Definition of done
+- IF training automation no longer relies on environment variables for normal orchestrator target resolution.
+- Known orchestrator defaults are usable out of the box; DDB overrides are honored.
+- Missing-feature remediation invokes the correct orchestrator branch(es) deterministically.
+- Dependency readiness is validated before expensive execution.
+- Documentation accurately reflects post-implementation behavior.
+- Tests/checks/verifications demonstrate a well-coordinated, well-orchestrated, production-ready flow.
+
+**Status:** Planned.

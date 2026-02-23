@@ -123,6 +123,7 @@ def test_run_orchestrates_artifact_before_deploy(monkeypatch):
     monkeypatch.setattr(job, "_maybe_deploy", _deploy)
     monkeypatch.setattr(job, "_promote_latest_model_pointer", lambda *_args, **_kwargs: "s3://b/latest")
     monkeypatch.setattr(job, "_write_history_plan", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(job, "_run_dependency_readiness_gate", lambda **_kwargs: {"status": "passed", "checks": []})
     monkeypatch.setattr(job, "_log_sagemaker_experiments", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(job, "_write_final_report_and_success", lambda *_args, **_kwargs: call_order.append("report"))
 
@@ -148,6 +149,7 @@ def test_run_failure_writes_failure_artifacts(monkeypatch):
 
     calls = []
     monkeypatch.setattr(job, "_write_history_plan", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(job, "_run_dependency_readiness_gate", lambda **_kwargs: {"status": "passed", "checks": []})
 
     def _boom(*_args, **_kwargs):
         raise ValueError("forced preflight failure")
@@ -536,6 +538,16 @@ def test_post_training_evaluation_writes_manifests(monkeypatch):
         raise AssertionError(name)
 
     monkeypatch.setattr(sys.modules["boto3"], "client", _client, raising=False)
+    monkeypatch.setattr(
+        job,
+        "_run_dependency_readiness_gate",
+        lambda **_kwargs: {
+            "checks": [
+                {"family": "inference", "resolved_target": "pipeline_inference_predictions"},
+                {"family": "prediction_feature_join", "resolved_target": "pipeline_prediction_feature_join"},
+            ]
+        },
+    )
     windows = [{"window_id": "eval_1", "start_ts": "2024-04-03T00:00:00Z", "end_ts": "2024-04-04T00:00:00Z"}]
     manifests = job._run_post_training_evaluation(windows)
     assert manifests[0]["window_id"] == "eval_1"
@@ -569,6 +581,16 @@ def test_post_training_evaluation_skips_join_when_publication_disabled(monkeypat
         raise AssertionError(name)
 
     monkeypatch.setattr(sys.modules["boto3"], "client", _client, raising=False)
+    monkeypatch.setattr(
+        job,
+        "_run_dependency_readiness_gate",
+        lambda **_kwargs: {
+            "checks": [
+                {"family": "inference", "resolved_target": "pipeline_inference_predictions"},
+                {"family": "prediction_feature_join", "resolved_target": "pipeline_prediction_feature_join"},
+            ]
+        },
+    )
     manifests = job._run_post_training_evaluation([
         {"window_id": "eval_1", "start_ts": "2024-04-03T00:00:00Z", "end_ts": "2024-04-04T00:00:00Z"}
     ])
@@ -601,6 +623,19 @@ def test_remediation_stage_invokes_orchestrators(monkeypatch):
             return None
 
     class _SFN:
+        def list_state_machines(self, **_kwargs):
+            return {
+                "stateMachines": [
+                    {
+                        "name": "sfn_ndr_backfill_reprocessing",
+                        "stateMachineArn": "arn:aws:states:region:acct:stateMachine:ndr-backfill",
+                    }
+                ]
+            }
+
+        def describe_state_machine(self, **_kwargs):
+            return {"name": "sfn_ndr_backfill_reprocessing"}
+
         def start_execution(self, **_kwargs):
             return {"executionArn": "arn:aws:states:region:acct:execution:sm:1"}
 
@@ -608,6 +643,9 @@ def test_remediation_stage_invokes_orchestrators(monkeypatch):
             return {"status": "SUCCEEDED"}
 
     class _SM:
+        def describe_pipeline(self, **_kwargs):
+            return {"PipelineArn": "arn:aws:sagemaker:region:acct:pipeline/x"}
+
         def start_pipeline_execution(self, **_kwargs):
             return {"PipelineExecutionArn": "arn:aws:sagemaker:region:acct:pipeline/execution/2"}
 
@@ -649,6 +687,7 @@ def test_backfill_execution_already_exists_is_handled_as_idempotent_skip(monkeyp
         sfn_client=_SFN(),
         missing_15m=[{"window_start_ts": "2024-04-01T00:00:00Z", "window_end_ts": "2024-04-01T00:15:00Z"}],
         attempt=1,
+        target={"resolved_target": "arn:aws:states:region:acct:stateMachine:ndr-backfill", "family": "backfill_15m"},
     )
     assert result["status"] == "Skipped"
     assert result["failure_reason"] == "ExecutionAlreadyExists"
@@ -671,6 +710,169 @@ def test_fgb_rebuild_not_capped_to_ten_references(monkeypatch):
     sm = _SM()
     monkeypatch.setattr("ndr.processing.if_training_job.time.sleep", lambda *_args, **_kwargs: None)
     payload = [{"reference_time_iso": f"2024-04-{i:02d}T00:00:00Z", "horizons": ["7d"]} for i in range(1, 13)]
-    result = job._invoke_fgb_baseline_rebuild(sm, payload, attempt=1)
+    result = job._invoke_fgb_baseline_rebuild(
+        sm,
+        payload,
+        attempt=1,
+        target={"resolved_target": "pipeline_fg_b_baseline", "family": "fg_b_baseline"},
+    )
     assert sm.started == 12
     assert result["status"] == "Succeeded"
+
+
+def test_resolve_orchestration_target_prefers_ddb_over_env(monkeypatch):
+    runtime = _runtime_with_stage("train")
+    spec = _make_spec()
+    job = IFTrainingJob(
+        _DummyDF(),
+        runtime,
+        spec,
+        resolved_spec_payload={"orchestration_targets": {"fg_b_baseline": "pipeline_fg_b_override"}},
+    )
+
+    monkeypatch.setenv("NDR_PIPELINE_FG_B_BASELINE", "pipeline_env_fallback")
+    resolved = job._resolve_orchestration_target(
+        family="fg_b_baseline",
+        sfn_client=object(),
+        sagemaker_client=object(),
+        required=True,
+    )
+    assert resolved["resolution_source"] == "ddb_override"
+    assert resolved["resolved_target"] == "pipeline_fg_b_override"
+
+
+def test_dependency_readiness_fails_fast_for_required_branch(monkeypatch):
+    runtime = _runtime_with_stage("train")
+    runtime.enable_auto_remediate_15m = True
+    spec = _make_spec()
+    spec.toggles.enable_auto_remediate_15m = True
+    spec.remediation.enable_backfill_15m = True
+    job = IFTrainingJob(_DummyDF(), runtime, spec)
+
+    class _SFN:
+        def describe_state_machine(self, **_kwargs):
+            raise RuntimeError("AccessDenied")
+
+        def list_state_machines(self, **_kwargs):
+            return {"stateMachines": [{"name": "sfn_ndr_backfill_reprocessing", "stateMachineArn": "arn:sm"}]}
+
+    class _SM:
+        def describe_pipeline(self, **_kwargs):
+            return {"PipelineArn": "arn:pipeline"}
+
+    def _client(name):
+        if name == "stepfunctions":
+            return _SFN()
+        if name == "sagemaker":
+            return _SM()
+        raise AssertionError(name)
+
+    monkeypatch.setattr(sys.modules["boto3"], "client", _client, raising=False)
+    monkeypatch.setattr(job, "_write_stage_status", lambda *_args, **_kwargs: None)
+    with pytest.raises(ValueError, match="Dependency readiness failed"):
+        job._run_dependency_readiness_gate(
+            stage="train",
+            missing_15m_manifest=[{"window_start_ts": "2024-01-01T00:00:00Z", "window_end_ts": "2024-01-01T00:15:00Z"}],
+            missing_fgb_manifest=[],
+        )
+
+
+def test_evaluation_windows_runtime_json_must_be_sorted_non_overlapping():
+    runtime = _runtime_with_stage("train")
+    runtime.evaluation_windows_json = (
+        '[{"window_id":"w1","start_ts":"2024-04-03T00:00:00Z","end_ts":"2024-04-04T00:00:00Z"},'
+        '{"window_id":"w2","start_ts":"2024-04-03T12:00:00Z","end_ts":"2024-04-05T00:00:00Z"}]'
+    )
+    job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+    with pytest.raises(ValueError, match="non-overlapping and sorted"):
+        job._resolve_evaluation_windows()
+
+
+def test_remediation_routes_backfill_only_when_only_15m_missing(monkeypatch):
+    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("remediate"), _make_spec())
+
+    monkeypatch.setattr(job, "_load_latest_verification_status", lambda: {"needs_remediation": True, "missing_windows": ["2024-04-01"]})
+    monkeypatch.setattr(
+        job,
+        "_load_stage_status",
+        lambda *_args, **_kwargs: {
+            "manifests": {
+                "missing_15m_windows": [
+                    {"window_start_ts": "2024-04-01T00:00:00Z", "window_end_ts": "2024-04-01T00:15:00Z"}
+                ],
+                "missing_fgb_windows": [],
+            }
+        },
+    )
+
+    monkeypatch.setattr(
+        job,
+        "_run_dependency_readiness_gate",
+        lambda **_kwargs: {
+            "checks": [
+                {"family": "backfill_15m", "resolved_target": "arn:sm"},
+                {"family": "fg_b_baseline", "resolved_target": "pipeline_fg_b_baseline"},
+            ]
+        },
+    )
+    monkeypatch.setattr(job, "_invoke_backfill_reprocessing", lambda **_kwargs: {"status": "Succeeded"})
+    monkeypatch.setattr(job, "_invoke_fgb_baseline_rebuild", lambda **_kwargs: {"status": "Succeeded"})
+    monkeypatch.setattr("ndr.processing.if_training_job._put_json", lambda *_args, **_kwargs: None)
+
+    observed = {}
+    monkeypatch.setattr(job, "_write_stage_status", lambda stage, payload: observed.update({"stage": stage, "payload": payload}))
+
+    class _DummyClient:
+        def put_object(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(sys.modules["boto3"], "client", lambda _name: _DummyClient(), raising=False)
+    job.run()
+
+    record = observed["payload"]["records"][0]
+    assert record["actions"]["backfill_15m_invoked"] is True
+    assert record["actions"]["fgb_rebuild_invoked"] is False
+
+
+def test_remediation_routes_fgb_only_when_only_fgb_missing(monkeypatch):
+    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("remediate"), _make_spec())
+
+    monkeypatch.setattr(job, "_load_latest_verification_status", lambda: {"needs_remediation": True, "missing_windows": ["2024-04-01"]})
+    monkeypatch.setattr(
+        job,
+        "_load_stage_status",
+        lambda *_args, **_kwargs: {
+            "manifests": {
+                "missing_15m_windows": [],
+                "missing_fgb_windows": [{"reference_time_iso": "2024-04-01T00:00:00Z", "horizons": ["7d"]}],
+            }
+        },
+    )
+
+    monkeypatch.setattr(
+        job,
+        "_run_dependency_readiness_gate",
+        lambda **_kwargs: {
+            "checks": [
+                {"family": "backfill_15m", "resolved_target": "arn:sm"},
+                {"family": "fg_b_baseline", "resolved_target": "pipeline_fg_b_baseline"},
+            ]
+        },
+    )
+    monkeypatch.setattr(job, "_invoke_backfill_reprocessing", lambda **_kwargs: {"status": "Succeeded"})
+    monkeypatch.setattr(job, "_invoke_fgb_baseline_rebuild", lambda **_kwargs: {"status": "Succeeded"})
+    monkeypatch.setattr("ndr.processing.if_training_job._put_json", lambda *_args, **_kwargs: None)
+
+    observed = {}
+    monkeypatch.setattr(job, "_write_stage_status", lambda stage, payload: observed.update({"stage": stage, "payload": payload}))
+
+    class _DummyClient:
+        def put_object(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(sys.modules["boto3"], "client", lambda _name: _DummyClient(), raising=False)
+    job.run()
+
+    record = observed["payload"]["records"][0]
+    assert record["actions"]["backfill_15m_invoked"] is False
+    assert record["actions"]["fgb_rebuild_invoked"] is True

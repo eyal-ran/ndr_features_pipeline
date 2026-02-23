@@ -101,3 +101,24 @@ Backfill-specific contract:
 - `start_ts` and `end_ts` cannot use static hardcoded defaults.
 - Allowed sources are invocation input, parsed message content, or explicit project defaults in DynamoDB parameters.
 - Both timestamps must match ISO-8601 UTC (`YYYY-MM-DDThh:mm:ssZ`) and satisfy `start_ts < end_ts` before downstream pipeline start.
+
+
+### IF training target-resolution contract (item 26)
+
+For `if_training#<feature_spec_version>.spec`, the following optional fields are now part of the runtime-control plane:
+
+- `orchestration_targets.backfill_15m`
+- `orchestration_targets.fg_b_baseline`
+- `orchestration_targets.inference`
+- `orchestration_targets.prediction_feature_join`
+- `runtime_defaults.EvaluationWindowsJson`
+- `runtime_defaults.MissingWindowsOverride`
+- `runtime_defaults.EvalStartTs`
+- `runtime_defaults.EvalEndTs`
+
+Runtime precedence for orchestrator target selection is:
+1. DDB override in `if_training.spec.orchestration_targets`,
+2. code-known default target,
+3. legacy env fallback (compatibility path, warning telemetry emitted).
+
+Dependency readiness checks are required before expensive IF stages and are persisted in run-scoped artifacts for audit reproducibility.

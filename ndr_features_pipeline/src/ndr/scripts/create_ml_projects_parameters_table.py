@@ -840,6 +840,16 @@ def _build_bootstrap_items(
                     "artifacts_s3_prefix": "s3://REPLACE_ME/if_training/",
                     "report_s3_prefix": "s3://REPLACE_ME/if_training/reports/",
                 },
+                "runtime_defaults": {
+                    "EvaluationWindowsJson": "[]",
+                    "MissingWindowsOverride": "[]",
+                },
+                "orchestration_targets": {
+                    "backfill_15m": "sfn_ndr_backfill_reprocessing",
+                    "fg_b_baseline": "pipeline_fg_b_baseline",
+                    "inference": "pipeline_inference_predictions",
+                    "prediction_feature_join": "pipeline_prediction_feature_join",
+                },
             },
             "feature_spec_version": feature_spec_version,
             "updated_at": now,

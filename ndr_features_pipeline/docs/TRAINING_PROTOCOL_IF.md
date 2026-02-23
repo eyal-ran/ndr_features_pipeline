@@ -84,6 +84,16 @@ Before expensive processing/tuning starts, validate:
   minimum data coverage thresholds)
 - minimum row counts per horizon/window are met
 - FG-A/FG-C join-key cardinality sanity checks (unexpected key explosion/duplication)
+- orchestration dependency readiness for enabled remediation/evaluation branches:
+  - backfill Step Functions target,
+  - FG-B baseline pipeline,
+  - inference pipeline,
+  - prediction-feature-join pipeline.
+
+Target resolution precedence for these dependencies is:
+1. `if_training.spec.orchestration_targets` override from DynamoDB,
+2. code-known defaults,
+3. environment variable fallback (compatibility only; emits warning telemetry).
 
 If any hard guardrail fails, stop the run and write failure context to the trial component
 and reproducibility report.
@@ -97,6 +107,8 @@ and reproducibility report.
 - Write all outputs under a run-scoped prefix keyed by run ID.
 - Use a `SUCCESS`/manifest marker file only after all required artifacts are present.
 - Never overwrite “last-known-good” pointers until validation gates pass.
+- Persist machine-readable orchestration provenance and readiness artifacts so each run can be audited
+  for selected targets and source (`ddb_override`, `code_default`, `env_fallback`).
 
 ### D) Promotion Gates (model acceptance)
 Promote/deploy model only if all are true:

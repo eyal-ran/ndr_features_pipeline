@@ -10,7 +10,7 @@ import logging
 import os
 import tarfile
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Tuple
 
@@ -106,7 +106,200 @@ class IFTrainingJob(BaseProcessingJobRunner):
                     "end_ts": end_dt.isoformat().replace("+00:00", "Z"),
                 }
             )
+        for idx in range(1, len(normalized)):
+            prior_end = self._parse_iso_ts(normalized[idx - 1]["end_ts"])
+            current_start = self._parse_iso_ts(normalized[idx]["start_ts"])
+            if current_start < prior_end:
+                raise ValueError("Evaluation windows must be non-overlapping and sorted by time")
         return normalized
+
+    def _get_orchestration_target_overrides(self) -> Dict[str, str]:
+        """Read orchestration target overrides from resolved IF-training JobSpec payload."""
+        payload_candidates = [
+            self.resolved_spec_payload.get("orchestration_targets"),
+            (self.resolved_spec_payload.get("runtime") or {}).get("orchestration_targets"),
+            (self.resolved_spec_payload.get("pipeline_defaults") or {}).get("orchestration_targets"),
+            (self.resolved_spec_payload.get("orchestrators") or {}),
+        ]
+        for candidate in payload_candidates:
+            if isinstance(candidate, dict):
+                return {str(k): str(v) for k, v in candidate.items() if v}
+        return {}
+
+    def _resolve_state_machine_arn_from_name(self, sfn_client, state_machine_name: str) -> str | None:
+        """Resolve a Step Functions state machine ARN from a state machine name."""
+        next_token = None
+        while True:
+            kwargs = {"maxResults": 100}
+            if next_token:
+                kwargs["nextToken"] = next_token
+            response = sfn_client.list_state_machines(**kwargs)
+            for item in response.get("stateMachines", []):
+                if item.get("name") == state_machine_name:
+                    return item.get("stateMachineArn")
+            next_token = response.get("nextToken")
+            if not next_token:
+                break
+        return None
+
+    def _resolve_orchestration_target(
+        self,
+        *,
+        family: str,
+        sfn_client,
+        sagemaker_client,
+        required: bool,
+    ) -> Dict[str, Any]:
+        """Resolve orchestrator target with DDB-first precedence and provenance."""
+        family_defaults = {
+            "backfill_15m": {
+                "env": DEFAULT_BACKFILL_STATE_MACHINE_ENV,
+                "default": DEFAULT_BACKFILL_STATE_MACHINE_NAME,
+                "type": "stepfunctions",
+            },
+            "fg_b_baseline": {
+                "env": DEFAULT_FGB_PIPELINE_ENV,
+                "default": DEFAULT_FGB_PIPELINE_NAME,
+                "type": "sagemaker_pipeline",
+            },
+            "inference": {
+                "env": DEFAULT_INFERENCE_PIPELINE_ENV,
+                "default": DEFAULT_INFERENCE_PIPELINE_NAME,
+                "type": "sagemaker_pipeline",
+            },
+            "prediction_feature_join": {
+                "env": DEFAULT_PREDICTION_JOIN_PIPELINE_ENV,
+                "default": DEFAULT_PREDICTION_JOIN_PIPELINE_NAME,
+                "type": "sagemaker_pipeline",
+            },
+        }
+        if family not in family_defaults:
+            raise ValueError(f"Unknown orchestration target family: {family}")
+
+        defaults = family_defaults[family]
+        overrides = self._get_orchestration_target_overrides()
+        ddb_value = overrides.get(family)
+        env_value = os.environ.get(defaults["env"])
+        if ddb_value:
+            selected, source = ddb_value, "ddb_override"
+        elif defaults["default"]:
+            selected, source = defaults["default"], "code_default"
+        else:
+            selected, source = env_value, "env_fallback"
+
+        if source != "env_fallback" and env_value and env_value != selected:
+            logger.info(
+                "Ignoring env orchestrator value because DDB/code precedence won",
+                extra={"family": family, "env_var": defaults["env"], "env_value": env_value, "selected": selected},
+            )
+        if source == "env_fallback":
+            logger.warning(
+                "Using deprecated env fallback for orchestration target resolution",
+                extra={"family": family, "env_var": defaults["env"]},
+            )
+
+        resolved_value = selected
+        resolved_kind = "name"
+        if defaults["type"] == "stepfunctions" and selected and not selected.startswith("arn:"):
+            resolved_arn = self._resolve_state_machine_arn_from_name(sfn_client, selected)
+            if resolved_arn:
+                resolved_value = resolved_arn
+                resolved_kind = "arn"
+            elif required:
+                raise ValueError(f"Unable to resolve required Step Functions target '{selected}' for {family}")
+        elif selected and selected.startswith("arn:"):
+            resolved_kind = "arn"
+
+        result = {
+            "family": family,
+            "target_type": defaults["type"],
+            "requested_target": selected,
+            "resolved_target": resolved_value,
+            "resolved_target_kind": resolved_kind,
+            "resolution_source": source,
+            "env_var": defaults["env"],
+            "required": required,
+        }
+        if required and not resolved_value:
+            raise ValueError(f"Missing required orchestration target for {family}")
+        return result
+
+    def _run_dependency_readiness_gate(
+        self,
+        *,
+        stage: str,
+        missing_15m_manifest: List[Dict[str, Any]] | None = None,
+        missing_fgb_manifest: List[Dict[str, Any]] | None = None,
+    ) -> Dict[str, Any]:
+        """Validate external orchestration dependencies before expensive execution."""
+        import boto3
+
+        missing_15m_manifest = missing_15m_manifest or []
+        missing_fgb_manifest = missing_fgb_manifest or []
+        sfn = boto3.client("stepfunctions")
+        sagemaker = boto3.client("sagemaker")
+
+        checks: List[Dict[str, Any]] = []
+
+        backfill_required = bool(missing_15m_manifest) and self._resolve_toggle(
+            self.runtime_config.enable_auto_remediate_15m,
+            self.training_spec.toggles.enable_auto_remediate_15m and self.training_spec.remediation.enable_backfill_15m,
+        )
+        fgb_required = bool(missing_fgb_manifest) and self._resolve_toggle(
+            self.runtime_config.enable_auto_remediate_fgb,
+            self.training_spec.toggles.enable_auto_remediate_fgb and self.training_spec.remediation.enable_fgb_rebuild,
+        )
+        evaluation_enabled = self._resolve_toggle(
+            self.runtime_config.enable_post_training_evaluation,
+            self.training_spec.toggles.enable_post_training_evaluation,
+        )
+        join_required = evaluation_enabled and self._resolve_toggle(
+            self.runtime_config.enable_eval_join_publication,
+            self.training_spec.toggles.enable_eval_join_publication,
+        )
+
+        families = [
+            ("backfill_15m", backfill_required),
+            ("fg_b_baseline", fgb_required),
+            ("inference", evaluation_enabled),
+            ("prediction_feature_join", join_required),
+        ]
+
+        for family, required in families:
+            target = self._resolve_orchestration_target(
+                family=family,
+                sfn_client=sfn,
+                sagemaker_client=sagemaker,
+                required=required,
+            )
+            check = dict(target)
+            if not required:
+                check.update({"status": "skipped", "reason": "branch_disabled_or_not_required"})
+                checks.append(check)
+                continue
+            try:
+                if target["target_type"] == "stepfunctions":
+                    sfn.describe_state_machine(stateMachineArn=target["resolved_target"])
+                else:
+                    sagemaker.describe_pipeline(PipelineName=target["resolved_target"])
+                check["status"] = "passed"
+            except Exception as exc:  # pylint: disable=broad-except
+                check.update({"status": "failed", "reason": str(exc)})
+            checks.append(check)
+
+        readiness = {
+            "stage": stage,
+            "run_id": self.runtime_config.run_id,
+            "project_name": self.runtime_config.project_name,
+            "feature_spec_version": self.runtime_config.feature_spec_version,
+            "checks": checks,
+            "status": "passed" if all(c["status"] in {"passed", "skipped"} for c in checks) else "failed",
+        }
+        self._write_stage_status("dependency_readiness", readiness)
+        failures = [c for c in checks if c["status"] == "failed"]
+        if failures:
+            raise ValueError(f"Dependency readiness failed for required dependencies: {[f['family'] for f in failures]}")
+        return readiness
 
     def _run_verification_stage(self, stage_name: str) -> None:
         """Run deterministic data verification for verify/reverify stages."""
@@ -301,6 +494,12 @@ class IFTrainingJob(BaseProcessingJobRunner):
         attempts = min(max(len(missing_windows), 1), max_attempts)
         windows_to_process = missing_windows[:attempts]
 
+        dependency_readiness = self._run_dependency_readiness_gate(
+            stage="remediate",
+            missing_15m_manifest=missing_15m_manifest,
+            missing_fgb_manifest=missing_fgb_manifest,
+        )
+
         report_bucket, report_key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
         client = boto3.client("s3")
         remediation_records: List[Dict[str, Any]] = []
@@ -330,8 +529,8 @@ class IFTrainingJob(BaseProcessingJobRunner):
                     "fgb_rebuild_invoked": fgb_enabled,
                 },
                 "orchestrators": {
-                    "backfill_15m": "sfn_ndr_backfill_reprocessing",
-                    "fg_b_baseline": "pipeline_fg_b_baseline",
+                    "backfill_15m": next((c for c in dependency_readiness["checks"] if c["family"] == "backfill_15m"), {}),
+                    "fg_b_baseline": next((c for c in dependency_readiness["checks"] if c["family"] == "fg_b_baseline"), {}),
                 },
             }
             if backfill_enabled:
@@ -339,12 +538,14 @@ class IFTrainingJob(BaseProcessingJobRunner):
                     sfn_client=sfn,
                     missing_15m=missing_15m_manifest,
                     attempt=index,
+                    target=next((c for c in dependency_readiness["checks"] if c["family"] == "backfill_15m"), {}),
                 )
             if fgb_enabled:
                 payload["fgb_execution"] = self._invoke_fgb_baseline_rebuild(
                     sagemaker_client=sagemaker,
                     missing_fgb=missing_fgb_manifest,
                     attempt=index,
+                    target=next((c for c in dependency_readiness["checks"] if c["family"] == "fg_b_baseline"), {}),
                 )
             _put_json(client, report_bucket, key, payload)
             remediation_records.append(payload)
@@ -367,11 +568,11 @@ class IFTrainingJob(BaseProcessingJobRunner):
             extra={"attempts": attempts, "max_attempts": max_attempts, "missing_windows": missing_windows},
         )
 
-    def _invoke_backfill_reprocessing(self, sfn_client, missing_15m: List[Dict[str, str]], attempt: int) -> Dict[str, Any]:
+    def _invoke_backfill_reprocessing(self, sfn_client, missing_15m: List[Dict[str, str]], attempt: int, target: Dict[str, Any]) -> Dict[str, Any]:
         """Invoke backfill Step Functions execution for required 15m windows."""
-        state_machine_arn = os.environ.get(DEFAULT_BACKFILL_STATE_MACHINE_ENV)
+        state_machine_arn = target.get("resolved_target")
         if not state_machine_arn:
-            return {"status": "skipped", "reason": f"missing env {DEFAULT_BACKFILL_STATE_MACHINE_ENV}"}
+            raise ValueError("Backfill remediation branch required but no Step Functions target was resolved")
 
         start_ts = min(window["window_start_ts"] for window in missing_15m)
         end_ts = max(window["window_end_ts"] for window in missing_15m)
@@ -408,11 +609,14 @@ class IFTrainingJob(BaseProcessingJobRunner):
             "execution_arn": response["executionArn"],
             "requested_range": {"start_ts": start_ts, "end_ts": end_ts},
             "failure_reason": final.get("cause") or final.get("error"),
+            "target_resolution": target,
         }
 
-    def _invoke_fgb_baseline_rebuild(self, sagemaker_client, missing_fgb: List[Dict[str, Any]], attempt: int) -> Dict[str, Any]:
+    def _invoke_fgb_baseline_rebuild(self, sagemaker_client, missing_fgb: List[Dict[str, Any]], attempt: int, target: Dict[str, Any]) -> Dict[str, Any]:
         """Invoke FG-B baseline pipeline for missing baseline references."""
-        pipeline_name = os.environ.get(DEFAULT_FGB_PIPELINE_ENV, DEFAULT_FGB_PIPELINE_NAME)
+        pipeline_name = target.get("resolved_target")
+        if not pipeline_name:
+            raise ValueError("FG-B remediation branch required but no pipeline target was resolved")
         references = sorted({entry["reference_time_iso"] for entry in missing_fgb})
         runs: List[Dict[str, Any]] = []
         for idx, reference_time_iso in enumerate(references, start=1):
@@ -437,7 +641,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 }
             )
         status = "Succeeded" if runs and all(item["status"] == "Succeeded" for item in runs) else ("Skipped" if not runs else "Failed")
-        return {"status": status, "pipeline_name": pipeline_name, "executions": runs}
+        return {"status": status, "pipeline_name": pipeline_name, "executions": runs, "target_resolution": target}
 
     def _wait_for_stepfunctions_execution(self, sfn_client, execution_arn: str, max_polls: int = 120, interval_seconds: int = 10) -> Dict[str, Any]:
         """Poll stepfunctions execution until terminal status."""
@@ -565,8 +769,11 @@ class IFTrainingJob(BaseProcessingJobRunner):
         bucket, key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
         client = boto3.client("s3")
         sagemaker = boto3.client("sagemaker")
-        inference_pipeline_name = os.environ.get(DEFAULT_INFERENCE_PIPELINE_ENV, DEFAULT_INFERENCE_PIPELINE_NAME)
-        join_pipeline_name = os.environ.get(DEFAULT_PREDICTION_JOIN_PIPELINE_ENV, DEFAULT_PREDICTION_JOIN_PIPELINE_NAME)
+        dependency_readiness = self._run_dependency_readiness_gate(stage="evaluation")
+        inference_target = next((c for c in dependency_readiness["checks"] if c["family"] == "inference"), {})
+        join_target = next((c for c in dependency_readiness["checks"] if c["family"] == "prediction_feature_join"), {})
+        inference_pipeline_name = inference_target.get("resolved_target")
+        join_pipeline_name = join_target.get("resolved_target")
         manifests: List[Dict[str, Any]] = []
         for window in evaluation_windows:
             window_id = window["window_id"]
@@ -611,6 +818,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 "status": inference_run["status"],
                 "pipeline_execution_arn": inference_run["pipeline_execution_arn"],
                 "failure_reason": inference_run.get("failure_reason", ""),
+                "target_resolution": inference_target,
             }
             join_manifest = {
                 "window_id": window_id,
@@ -619,6 +827,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 "status": join_run["status"],
                 "pipeline_execution_arn": join_run["pipeline_execution_arn"],
                 "failure_reason": join_run.get("failure_reason", ""),
+                "target_resolution": join_target,
             }
             metrics = {
                 "window_id": window_id,
@@ -745,6 +954,14 @@ class IFTrainingJob(BaseProcessingJobRunner):
         ):
             history_plan = self._compute_history_plan(train_start, train_end, evaluation_windows)
             self._write_history_plan(history_plan)
+
+        missing_15m_manifest = ((history_plan or {}).get("manifests") or {}).get("missing_15m_windows", [])
+        missing_fgb_manifest = ((history_plan or {}).get("manifests") or {}).get("missing_fgb_windows", [])
+        self._run_dependency_readiness_gate(
+            stage="train",
+            missing_15m_manifest=missing_15m_manifest,
+            missing_fgb_manifest=missing_fgb_manifest,
+        )
         stage = "read_inputs"
         try:
             fg_a_df = self._read_windowed_input("fg_a", train_start, train_end)
@@ -2044,6 +2261,14 @@ def run_if_training_from_runtime_config(runtime_config: IFTrainingRuntimeConfig)
         project_name=runtime_config.project_name,
         job_name="if_training",
         feature_spec_version=runtime_config.feature_spec_version,
+    )
+    runtime_defaults = (job_spec.get("runtime_defaults") or {}) if isinstance(job_spec, dict) else {}
+    runtime_config = replace(
+        runtime_config,
+        evaluation_windows_json=runtime_config.evaluation_windows_json or runtime_defaults.get("EvaluationWindowsJson"),
+        missing_windows_override=runtime_config.missing_windows_override or runtime_defaults.get("MissingWindowsOverride", "[]"),
+        eval_start_ts=runtime_config.eval_start_ts or runtime_defaults.get("EvalStartTs"),
+        eval_end_ts=runtime_config.eval_end_ts or runtime_defaults.get("EvalEndTs"),
     )
     training_spec = parse_if_training_spec(job_spec)
     spark = SparkSession.builder.getOrCreate()

@@ -29,6 +29,9 @@ The review is code-level (no end-to-end AWS execution), consistent with expected
 | 14) Preflight fail-fast validation | ✅ Implemented | `_preflight_validation` checks join keys, counts, partition coverage, join coverage, and overlap; failures write context artifact and stop run. |
 | 15) Promotion gates + rollback policy | ✅ Implemented | Validation gates are computed; deployment only when all pass; rollback attempts to previous endpoint config on failure. |
 | 16) Run-scoped idempotent writes + success marker | ✅ Implemented | Artifacts/report paths are run-scoped by `run_id`; `SUCCESS` marker is written after report/artifact completion; latest pointer promoted only after gates pass. |
+| 17) DDB-first orchestration target resolver with provenance | ✅ Implemented | IF training remediation/evaluation resolve targets via `if_training.spec.orchestration_targets` first, then code defaults, then env fallback with warning telemetry; selected target metadata is persisted into remediation/evaluation artifacts. |
+| 18) Dependency readiness gate before expensive execution | ✅ Implemented | Dependency preflight checks are executed before training/remediation/evaluation and persisted in `dependency_readiness.json`; required dependency failures fail-fast. |
+| 19) Evaluation windows ordering/overlap contract validation | ✅ Implemented | Runtime/JobSpec windows are validated for ISO parseability, start<end, and non-overlapping sorted order before execution. |
 
 ## Additional Protocol Coverage
 
@@ -66,3 +69,9 @@ The protocol is **substantially implemented to a fine standard** with strong orc
 - Verify join execution is skipped (with explicit manifest status) when `EnableEvalJoinPublication=false`.
 - Verify `records_scored` reflects persisted inference output row counts for the evaluation window.
 - Verify final training report includes planner outputs and evaluation manifests.
+
+## Item 26 strict closure evidence
+Detailed closure matrix + non-prod scenario mapping are recorded in:
+- `docs/archive/debug_records/item26_closure_evidence.md`
+
+This includes explicit coverage for: happy-path, missing-15m-only, missing-FG-B-only, both-branches, join-disabled, and DDB-override-different-from-default scenarios via deterministic mocked-AWS tests.

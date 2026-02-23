@@ -179,6 +179,13 @@ Recommended optional keys:
 - `remediation`: `{ enable_backfill_15m?, enable_fgb_rebuild?, max_retries? }`
 - `evaluation_output`: `{ predictions_s3_prefix?, join_output_s3_prefix?, publish_join_output?, redshift? }`
 - `toggles`: `{ enable_history_planner?, enable_auto_remediate_15m?, enable_auto_remediate_fgb?, enable_post_training_evaluation?, enable_eval_join_publication?, enable_eval_experiments_logging? }`
+- `runtime_defaults`: `{ EvaluationWindowsJson?, MissingWindowsOverride?, EvalStartTs?, EvalEndTs? }`
+- `orchestration_targets`: `{ backfill_15m?, fg_b_baseline?, inference?, prediction_feature_join? }`
+
+Orchestration target resolution precedence for IF training remediation/evaluation:
+1. `if_training.spec.orchestration_targets` (DynamoDB override),
+2. code defaults,
+3. env-var fallback (compatibility path only).
 
 For `project_parameters#<feature_spec_version>.spec.defaults`, IF training orchestration supports:
 - `TrainingStartTs`, `TrainingEndTs`

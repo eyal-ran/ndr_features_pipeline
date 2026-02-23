@@ -110,3 +110,11 @@ The training orchestrator now resolves and passes additional IF training runtime
 - `EnableEvalExperimentsLogging`
 
 Validation remains fail-fast before pipeline start.
+
+
+## Item 26 closure notes
+
+- IF training runtime now resolves orchestration targets with precedence: DDB override (`if_training.spec.orchestration_targets`) -> code default -> env fallback compatibility path.
+- Dependency readiness is validated before expensive IF training/remediation/evaluation execution and recorded as machine-readable `dependency_readiness.json` under run-scoped report paths.
+- Required remediation/evaluation branches fail fast when a required target cannot be resolved/described; disabled branches are recorded as skipped with reasons.
+- Resolver source provenance (`ddb_override`, `code_default`, `env_fallback`) is persisted in remediation/evaluation artifacts to support audit and replay diagnostics.

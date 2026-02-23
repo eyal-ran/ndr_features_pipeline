@@ -239,6 +239,11 @@ It includes:
    - Runs: `python -m ndr.scripts.run_if_training --stage deploy`
    - Purpose: perform deployment gate evaluation + deployment call and persist rollout status artifact.
 
+### Item 26 runtime behavior (strict closure)
+- All IF training stages execute through the same runtime resolver path in `run_if_training`/`if_training_job`, ensuring DDB-first target selection and dependency-readiness preflight checks before expensive train/remediate/evaluation operations.
+- Remediation and evaluation artifacts now include per-branch target provenance and selected target details for auditability.
+- Runtime `EvaluationWindowsJson` is validated for JSON shape, time ordering, and non-overlap before execution proceeds.
+
 ## 5) Triggering source: `sfn_ndr_backfill_reprocessing` (backfill and reprocessing)
 
 - **Trigger source name:** backfill and reprocessing state machine.

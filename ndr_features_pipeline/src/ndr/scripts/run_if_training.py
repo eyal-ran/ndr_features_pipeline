@@ -22,7 +22,7 @@ def parse_args(argv=None):
     parser.add_argument("--eval-start-ts")
     parser.add_argument("--eval-end-ts")
     parser.add_argument("--evaluation-windows-json")
-    parser.add_argument("--missing-windows-override", default="[]")
+    parser.add_argument("--missing-windows-override")
     parser.add_argument("--enable-history-planner", choices=["true", "false"])
     parser.add_argument("--enable-auto-remediate-15m", choices=["true", "false"])
     parser.add_argument("--enable-auto-remediate-fgb", choices=["true", "false"])

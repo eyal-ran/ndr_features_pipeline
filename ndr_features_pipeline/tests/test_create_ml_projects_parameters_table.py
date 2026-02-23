@@ -143,11 +143,22 @@ def test_item19_pipeline_seed_items_present_with_expected_runtime_params():
         "ExecutionTsIso",
         "TrainingStartTs",
         "TrainingEndTs",
+        "EvaluationWindowsJson",
         "EvalStartTs",
         "EvalEndTs",
         "MissingWindowsOverride",
+        "EnableHistoryPlanner",
+        "EnableAutoRemediate15m",
+        "EnableAutoRemediateFgb",
+        "EnablePostTrainingEvaluation",
+        "EnableEvalJoinPublication",
+        "EnableEvalExperimentsLogging",
     ]
 
     assert "pipeline_prediction_publish" not in by_job
     assert "pipeline_supplemental_baseline" not in by_job
     assert {"TrainingDataVerifierStep", "MissingFeatureCreationStep", "PostRemediationVerificationStep", "IFTrainingStep", "ModelPublishStep", "ModelAttributesStep", "ModelDeployStep"}.issubset(unified_spec["scripts"]["steps"])
+
+    if_training_spec = by_job["if_training"]["spec"]
+    assert if_training_spec["runtime_defaults"]["EvaluationWindowsJson"] == "[]"
+    assert if_training_spec["orchestration_targets"]["backfill_15m"] == "sfn_ndr_backfill_reprocessing"

@@ -33,7 +33,6 @@ from ndr.processing.raw_traffic_fields import (
     normalize_raw_traffic_fields,
     REQUIRED_CANONICAL_TRAFFIC_FIELDS,
 )
-from ndr.orchestration.palo_alto_batch_utils import is_migration_toggle_enabled
 
 
 LOGGER = get_logger(__name__)
@@ -146,30 +145,17 @@ class PairCountsBuilderJob(BaseRunner):
     def _read_traffic_for_batch(self) -> DataFrame:
         """Read parsed Palo Alto traffic logs for this mini-batch.
 
-        This implementation assumes:
-
-        - Parsed integration logs live under traffic_input.s3_prefix
-        - Each mini-batch has its own prefix:
-              s3_prefix / mini_batch_id / *.gz
-        - Files are JSON Lines, compressed with gzip, as per your integration bucket.
+        This implementation reads from the authoritative runtime pointer
+        ``mini_batch_s3_prefix`` and expects JSON Lines gzip data.
         """
         traffic_cfg = self.job_spec.traffic_input
-        base_prefix = traffic_cfg.s3_prefix
-        layout = traffic_cfg.layout
-
         mini_batch_id = self.runtime_config.mini_batch_id
 
         runtime_prefix = (self.runtime_config.mini_batch_s3_prefix or "").strip()
         if runtime_prefix:
             path = runtime_prefix
-        elif is_migration_toggle_enabled("enable_legacy_input_prefix_fallback"):
-            if layout != "batch_folder":
-                raise ValueError(f"Unsupported traffic_input.layout: {layout}")
-            path = f"{base_prefix.rstrip('/')}/{mini_batch_id}/"
         else:
-            raise ValueError(
-                "mini_batch_s3_prefix is required when enable_legacy_input_prefix_fallback is disabled"
-            )
+            raise ValueError("mini_batch_s3_prefix is required")
 
         LOGGER.info(
             "Reading traffic logs for pair-counts.",

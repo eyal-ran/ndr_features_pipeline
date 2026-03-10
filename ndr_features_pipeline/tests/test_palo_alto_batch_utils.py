@@ -22,14 +22,9 @@ def test_parse_batch_path_from_batch_folder_path_and_s3_uri():
     assert uri.mini_batch_id == "mb-3"
 
 
-def test_parse_batch_path_legacy_order_requires_toggle(monkeypatch):
-    monkeypatch.setenv("NDR_ENV", "stage")
-    with pytest.raises(ValueError):
+def test_parse_batch_path_rejects_legacy_order():
+    with pytest.raises(ValueError, match="Invalid canonical Palo Alto batch key"):
         parse_batch_path_from_s3_key("org1/org2/fw_paloalto/2025/01/31/mb-2/")
-
-    monkeypatch.setenv("ENABLE_LEGACY_PATH_PARSER", "true")
-    parsed = parse_batch_path_from_s3_key("org1/org2/fw_paloalto/2025/01/31/mb-2/")
-    assert parsed.project_name == "fw_paloalto"
 
 
 def test_floor_to_window_minute_uses_08_23_38_53():
@@ -45,15 +40,8 @@ def test_derive_window_bounds_returns_iso_start_and_end():
     assert end_iso == "2025-01-01T10:40:05Z"
 
 
-def test_migration_toggle_default_matrix(monkeypatch):
-    monkeypatch.delenv("ENABLE_LEGACY_INPUT_PREFIX_FALLBACK", raising=False)
-    monkeypatch.delenv("enable_legacy_input_prefix_fallback", raising=False)
-
+def test_migration_toggle_helper_is_hard_disabled_for_task7(monkeypatch):
     monkeypatch.setenv("NDR_ENV", "dev")
-    assert is_migration_toggle_enabled("enable_legacy_input_prefix_fallback") is True
-
-    monkeypatch.setenv("NDR_ENV", "stage")
-    assert is_migration_toggle_enabled("enable_legacy_input_prefix_fallback") is False
-
-    monkeypatch.setenv("NDR_ENV", "prod")
+    monkeypatch.setenv("ENABLE_LEGACY_INPUT_PREFIX_FALLBACK", "true")
+    monkeypatch.setenv("enable_legacy_input_prefix_fallback", "true")
     assert is_migration_toggle_enabled("enable_legacy_input_prefix_fallback") is False

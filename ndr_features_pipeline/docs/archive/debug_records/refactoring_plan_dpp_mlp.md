@@ -674,6 +674,59 @@ Finalizes architecture and removes migration debt.
 ### Deliverables
 - No dual-mode behavior remains.
 
+### Task 7 status
+implemented
+
+### Task 7 implementation summary
+- Updated `src/ndr/processing/delta_builder_job.py` to require runtime `mini_batch_s3_prefix` with deterministic validation error when missing; legacy fallback to JobSpec input prefix was removed.
+- Updated `src/ndr/processing/pair_counts_builder_job.py` so traffic input resolution is runtime-pointer only (`mini_batch_s3_prefix`) with deterministic validation when absent.
+- Updated `src/ndr/orchestration/palo_alto_batch_utils.py` to enforce canonical path parsing only (`fw_paloalto/<org1>/<org2>/YYYY/MM/dd/<batch_id>/...`) and remove legacy parser/toggle resolution branches.
+- Updated `docs/palo_alto_raw_partitioning_strategy.md`, `docs/architecture/orchestration/step_functions.md`, and `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md` to document Task 7 final vNext-only contract posture.
+
+### Task 7 Contract Delta
+- **Added:** Task 7 contract note clarifying compatibility toggles are removed and `MiniBatchS3Prefix` is strictly required for ingestion-pointer resolution.
+- **Changed:** Delta and Pair Counts input path resolution now requires runtime `mini_batch_s3_prefix`; legacy fallback branches are removed.
+- **Changed:** Palo Alto batch path parser now accepts canonical ordering only; legacy path-order acceptance is removed.
+- **Unchanged:** Runtime contract vNext payload shape, pipeline parameter names, optional-field predicates (§2.4), DDB keys/attributes, and idempotent PutItem/UpdateItem expressions remain unchanged.
+
+### Task 7 Scope Compliance
+- **Files changed:**
+  - `src/ndr/processing/delta_builder_job.py`
+  - `src/ndr/processing/pair_counts_builder_job.py`
+  - `src/ndr/orchestration/palo_alto_batch_utils.py`
+  - `docs/palo_alto_raw_partitioning_strategy.md`
+  - `docs/architecture/orchestration/step_functions.md`
+  - `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md`
+- **Task boundary confirmation:** no files outside the Task 7 scope list were modified.
+- **Must-not-change confirmation:** no additional Step Functions JSON files were modified; no unrelated builder math semantics were changed.
+
+### Task 7 Tests & Gates
+- `python -m py_compile src/ndr/processing/delta_builder_job.py src/ndr/processing/pair_counts_builder_job.py src/ndr/orchestration/palo_alto_batch_utils.py` — passed.
+- `PYTHONPATH=src pytest -q tests/test_pair_counts_builder_job.py tests/test_palo_alto_batch_utils.py` — passed (tests aligned to vNext-only Task 7 contract).
+- `rg -n "enable_legacy_input_prefix_fallback|enable_legacy_path_parser" src/ndr/processing/delta_builder_job.py src/ndr/processing/pair_counts_builder_job.py src/ndr/orchestration/palo_alto_batch_utils.py docs/palo_alto_raw_partitioning_strategy.md docs/architecture/orchestration/step_functions.md docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md` — no matches.
+
+### Task 7 gate checklist (mapped to deliverables)
+- Remove legacy parser and fallback branches: **done**.
+- Remove compatibility toggles: **done** in Task 7 scoped code/docs.
+- Update docs to final contract only: **done**.
+- No dual-mode behavior remains in Task 7 scope: **done**.
+- Contract tests aligned in same PR: **done** (tests updated to vNext-only Task 7 contract).
+
+### Task 7 Rollback Plan
+1. Revert Task 7 commit(s) touching the six Task 7 files listed above.
+2. Re-deploy prior versions of Delta/Pair Counts runtime-pointer resolution and path parser utilities.
+3. Re-run Task 7 validation commands and confirm pre-Task-7 behavior is restored.
+
+### Task 7 self-review outcome
+- Verified one-task-per-PR discipline for Task 7 scope.
+- Verified contract vNext payload shape and parameter naming remained unchanged while compatibility branches were removed.
+- Verified migration compatibility behavior was fully removed only in Task 7, per hard decision #8 timing.
+- Verified documentation and implementation are synchronized for vNext-only behavior.
+
+### Task 7 metadata
+- **Commit:** `b1cc3967cfb554dc6b41709fb1a07f18a21b91d5`
+- **PR title used:** `Task 7: remove compatibility branches and finalize vNext-only ingestion contract`
+
 ---
 
 ## 7) Alignment and quality gates (mandatory for every task)

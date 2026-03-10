@@ -115,6 +115,7 @@ class TestPairCountsBuilderJob(unittest.TestCase):
                 project_name="ndr_project",
                 feature_spec_version="v1",
                 mini_batch_id="batch_20251231T0000Z",
+                mini_batch_s3_prefix="s3://integration/parsed/runtime-batch/",
                 batch_start_ts_iso="2025-12-31T00:00:00Z",
                 batch_end_ts_iso="2025-12-31T00:15:00Z",
             )
@@ -127,8 +128,40 @@ class TestPairCountsBuilderJob(unittest.TestCase):
             self.assertIs(df_out, df_mock)
             spark.read.json.assert_called_once()
             args, _ = spark.read.json.call_args
-            self.assertIn("batch_20251231T0000Z", args[0])
+            self.assertEqual("s3://integration/parsed/runtime-batch/", args[0])
 
+    @patch("ndr.processing.pair_counts_builder_job.load_pair_counts_job_spec")
+    def test_read_traffic_for_batch_requires_runtime_prefix(self, mock_load_job_spec):
+        mock_load_job_spec.return_value = PairCountsJobSpec(
+            traffic_input=PairCountsTrafficInputSpec(
+                s3_prefix="s3://integration/parsed/",
+                layout="batch_folder",
+                field_mapping={
+                    "source_ip": "source_ip",
+                    "destination_ip": "destination_ip",
+                    "destination_port": "destination_port",
+                    "event_start": "event_start",
+                    "event_end": "event_end",
+                },
+            ),
+            pair_counts_output=PairCountsOutputSpec(
+                s3_prefix="s3://ndr-features/pair_counts/"
+            ),
+        )
+
+        cfg = PairCountsJobRuntimeConfig(
+            project_name="ndr_project",
+            feature_spec_version="v1",
+            mini_batch_id="batch_20251231T0000Z",
+            batch_start_ts_iso="2025-12-31T00:00:00Z",
+            batch_end_ts_iso="2025-12-31T00:15:00Z",
+        )
+        job = PairCountsBuilderJob(runtime_config=cfg)
+        job.job_spec = mock_load_job_spec.return_value
+        job.spark = MagicMock()
+
+        with self.assertRaisesRegex(ValueError, "mini_batch_s3_prefix is required"):
+            job._read_traffic_for_batch()
 
 if __name__ == "__main__":
     unittest.main()

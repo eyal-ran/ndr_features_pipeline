@@ -29,7 +29,7 @@ For 15m ingestion:
 
 - Delta Builder primary input: `mini_batch_s3_prefix` (runtime pointer).
 - Pair Counts Builder primary input: `mini_batch_s3_prefix` (runtime pointer for batch data selection).
-- Compatibility fallback remains controlled by `enable_legacy_input_prefix_fallback` until Task 7.
+- `mini_batch_s3_prefix` is required; no legacy input-prefix fallback is supported.
 
 ## Slot derivation policy
 
@@ -52,8 +52,8 @@ This enables:
 
 ## Compatibility and migration
 
-Toggles remain until Task 7 and defaults are unchanged:
+Task 7 finalization removes dual-mode behavior:
 
-- dev: legacy fallback/parser/listing enabled,
-- stage: fallback/parser disabled, listing enabled,
-- prod: all disabled.
+- canonical path parsing is required,
+- `mini_batch_s3_prefix` is always required,
+- no compatibility toggles are used in this contract.

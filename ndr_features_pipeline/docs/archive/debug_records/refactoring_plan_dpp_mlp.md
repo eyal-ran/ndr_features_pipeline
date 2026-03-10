@@ -279,6 +279,55 @@ Moves runtime truth to orchestration boundary and records replay/recovery index.
 - Deterministic pre-pipeline batch-index write.
 - Contract tests proving write state and parameter passing.
 
+### Task 2 status
+- **implemented**
+
+### Task 2 implementation summary
+- Updated `docs/step_functions_jsonata/sfn_ndr_15m_features_inference.json` to parse `batch_id` and `batch_s3_prefix` directly from payload, derive `slot15` from the payload timestamp minute bucket (`00-14=>1`, `15-29=>2`, `30-44=>3`, `45-59=>4`), and enforce vNext payload validation for DPP identity matching and field-shape constraints.
+- Added deterministic pre-pipeline batch-index persistence states in the same state machine:
+  - `WriteBatchIndexRecord` uses `PutItem` with `ConditionExpression = attribute_not_exists(pk) AND attribute_not_exists(sk)`.
+  - `UpdateBatchIndexRecord` uses `UpdateItem` with `ConditionExpression = attribute_exists(pk) AND attribute_exists(sk)` and exact `UpdateExpression` from §4.
+- Added `MiniBatchS3Prefix`, `MlProjectName`, and `MlProjectNamesJson` into 15m/inference SageMaker `PipelineParameters`.
+- Updated seed contract source `src/ndr/scripts/create_ml_projects_parameters_table.py` so `pipeline_15m_streaming` required runtime params include `MiniBatchS3Prefix`.
+- Added/updated contract tests in:
+  - `tests/test_step_functions_item19_contracts.py`
+  - `tests/test_create_ml_projects_parameters_table.py`
+
+### Task 2 Contract Delta
+- **Added:** runtime resolution and validation for `data_source_name`, `ml_project_name` / `ml_project_names`, `ml_project_names_json`, `date_utc`, `hour_utc`, `slot15`, batch-index PK/SK/GSI identity fields, and pre-pipeline batch-index writer states.
+- **Changed:** `pipeline_15m_streaming` required runtime params now include `MiniBatchS3Prefix`; 15m/orchestration path now passes `MiniBatchS3Prefix`, `MlProjectName`, `MlProjectNamesJson` downstream.
+- **Unchanged:** migration toggles and defaults from §8 remain unchanged; compatibility flags remain required through Task 7.
+
+### Task 2 Scope Compliance
+- **Files changed:**
+  - `docs/step_functions_jsonata/sfn_ndr_15m_features_inference.json`
+  - `src/ndr/scripts/create_ml_projects_parameters_table.py`
+  - `tests/test_step_functions_item19_contracts.py`
+  - `tests/test_create_ml_projects_parameters_table.py`
+- **Forbidden files touched:** none.
+- **Task boundary confirmation:** no Task 3+ implementation files changed.
+
+### Task 2 Tests & Gates
+- `PYTHONPATH=src pytest -q tests/test_step_functions_item19_contracts.py tests/test_create_ml_projects_parameters_table.py tests/test_step_functions_jsonata_contracts.py`
+- Result: `21 passed`.
+
+### Task 2 gate checklist (mapped to deliverables)
+- Deterministic pre-pipeline batch-index write: **done**.
+- Idempotent `PutItem`/`UpdateItem` contract with exact expressions from §4: **done**.
+- `MiniBatchS3Prefix`/`MlProjectName`/`MlProjectNamesJson` propagation to pipeline start: **done**.
+- Contract tests for write state and parameter passing: **done**.
+
+### Task 2 Rollback Plan
+1. Revert the Task 2 commit(s) touching the four Task 2 files listed above.
+2. Re-deploy the previous `sfn_ndr_15m_features_inference.json` definition.
+3. Re-run the same Task 2 targeted tests and verify baseline behavior is restored.
+
+### Task 2 self-review outcome
+- Verified one-task-per-PR discipline for Task 2 scope.
+- Verified §4 idempotent expressions are implemented exactly.
+- Verified contract tests were updated in the same Task 2 change set.
+- Verified no must-not-change constraints were violated.
+
 ---
 
 ## Task 3 — Pipeline/runtime arg propagation

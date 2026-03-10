@@ -126,3 +126,37 @@ def test_item23_validation_failures_use_deterministic_error_code():
         for state in fail_states:
             assert isinstance(state.get("Cause"), str)
             assert state["Cause"]
+
+
+def test_15m_flow_writes_batch_index_with_idempotent_contract_and_vnext_pipeline_params():
+    doc = _load("sfn_ndr_15m_features_inference.json")
+    states = doc["States"]
+
+    assert states["AcquireMiniBatchLock"]["Next"] == "WriteBatchIndexRecord"
+
+    put_state = states["WriteBatchIndexRecord"]
+    assert put_state["Resource"] == "arn:aws:states:::aws-sdk:dynamodb:putItem"
+    assert put_state["Arguments"]["ConditionExpression"] == "attribute_not_exists(pk) AND attribute_not_exists(sk)"
+
+    update_state = states["UpdateBatchIndexRecord"]
+    assert update_state["Resource"] == "arn:aws:states:::aws-sdk:dynamodb:updateItem"
+    assert update_state["Arguments"]["ConditionExpression"] == "attribute_exists(pk) AND attribute_exists(sk)"
+    assert update_state["Arguments"]["UpdateExpression"] == (
+        "SET batch_s3_prefix = :batch_s3_prefix, event_ts_utc = :event_ts_utc, ingested_at_utc = :ingested_at_utc, "
+        "#status = :status, ml_project_name = if_not_exists(ml_project_name, :ml_project_name), "
+        "ml_project_names_json = if_not_exists(ml_project_names_json, :ml_project_names_json), GSI1PK = :gsi1pk, GSI1SK = :gsi1sk"
+    )
+
+    for state_name in ["Start15mFeaturesPipeline", "StartInferencePipeline"]:
+        params = {entry["Name"] for entry in states[state_name]["Arguments"]["PipelineParameters"]}
+        assert {"MiniBatchS3Prefix", "MlProjectName", "MlProjectNamesJson"}.issubset(params)
+
+
+def test_15m_flow_derives_slot15_from_timestamp_minute_buckets():
+    doc = _load("sfn_ndr_15m_features_inference.json")
+    slot_expr = doc["States"]["ResolvePipelineRuntimeParams"]["Assign"]["slot15"]
+
+    assert "minute_utc <= 14 ? 1" in slot_expr
+    assert "minute_utc <= 29 ? 2" in slot_expr
+    assert "minute_utc <= 44 ? 3" in slot_expr
+    assert ": 4" in slot_expr

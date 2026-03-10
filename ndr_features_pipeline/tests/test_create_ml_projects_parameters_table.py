@@ -83,6 +83,7 @@ def test_pipeline_seed_items_have_runtime_and_script_contracts():
         "MiniBatchId",
         "BatchStartTsIso",
         "BatchEndTsIso",
+        "MiniBatchS3Prefix",
     ]
 
     delta_step = pipeline_spec["scripts"]["steps"]["DeltaBuilderStep"]

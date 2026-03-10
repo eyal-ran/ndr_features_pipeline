@@ -419,6 +419,54 @@ Applies contract at raw ingestion readers.
 ### Deliverables
 - Both builders ingest from per-run pointer deterministically.
 
+### Task 4 status
+- **implemented**
+
+### Task 4 implementation summary
+- Updated `src/ndr/processing/delta_builder_job.py` so `mini_batch_s3_prefix` is the primary runtime input pointer, with deterministic failure when missing while `enable_legacy_input_prefix_fallback=false`; legacy fallback to JobSpec input prefix is preserved only behind the compatibility toggle.
+- Updated `src/ndr/processing/pair_counts_builder_job.py` so input-path resolution uses runtime `mini_batch_s3_prefix` first, then optional legacy fallback to `traffic_input.s3_prefix/<mini_batch_id>/` only when `enable_legacy_input_prefix_fallback=true`, else raises deterministic validation error.
+- Updated `src/ndr/orchestration/palo_alto_batch_utils.py` to parse canonical batch path order `fw_paloalto/<org1>/<org2>/YYYY/MM/dd/<batch_id>/...` as primary behavior, retain legacy parser branch only behind `enable_legacy_path_parser`, and centralize migration toggle default resolution per fixed env defaults (dev/stage/prod) with explicit env override support.
+- Updated `tests/test_palo_alto_batch_utils.py` with Task 4 contract tests validating canonical parser behavior, legacy parser gating, and migration-toggle default matrix behavior.
+
+### Task 4 Contract Delta
+- **Added:** toggle-resolution helpers to enforce fixed migration defaults and explicit override handling for `enable_legacy_input_prefix_fallback`, `enable_legacy_path_parser`, `enable_s3_listing_fallback_for_backfill`.
+- **Changed:** Delta and Pair Counts raw-reader input resolution now prioritizes runtime pointer (`mini_batch_s3_prefix`) and applies deterministic compatibility fallback only through `enable_legacy_input_prefix_fallback`.
+- **Changed:** Palo Alto path parser primary contract now uses canonical ordering `fw_paloalto/<org1>/<org2>/YYYY/MM/dd/<batch_id>/...`; legacy order remains gated by `enable_legacy_path_parser`.
+- **Unchanged:** no runtime payload fields added; no Step Functions JSON modified; migration toggles remain present (not removed before Task 7); Task 5+ index-first behavior not started.
+
+### Task 4 Scope Compliance
+- **Files changed:**
+  - `src/ndr/processing/delta_builder_job.py`
+  - `src/ndr/processing/pair_counts_builder_job.py`
+  - `src/ndr/orchestration/palo_alto_batch_utils.py`
+  - `tests/test_palo_alto_batch_utils.py`
+- **Forbidden files touched:** none.
+- **Task boundary confirmation:** no Task 5+ implementation files changed.
+
+### Task 4 Tests & Gates
+- `PYTHONPATH=src pytest -q tests/test_palo_alto_batch_utils.py tests/test_pair_counts_builder_job.py`
+- `PYTHONPATH=src pytest -q tests/test_io_contract.py`
+- Result: targeted checks passed from repository root layout used by project tests.
+
+### Task 4 gate checklist (mapped to deliverables)
+- Runtime `mini_batch_s3_prefix` precedence in Delta builder: **done**.
+- Runtime `mini_batch_s3_prefix` precedence in Pair Counts builder: **done**.
+- Compatibility fallback behind `enable_legacy_input_prefix_fallback`: **done**.
+- Canonical parser update to `fw_paloalto/<org1>/<org2>/YYYY/MM/dd/<batch_id>/...`: **done**.
+- Contract tests updated in same task PR: **done**.
+- Deliverable “both builders ingest from per-run pointer deterministically”: **done**.
+
+### Task 4 Rollback Plan
+1. Revert Task 4 commit(s) touching the four Task 4 files listed above.
+2. Restore pre-Task-4 parser/input-resolution behavior.
+3. Re-run Task 4 targeted tests to confirm baseline behavior is restored.
+
+### Task 4 self-review outcome
+- Confirmed one-task-per-PR discipline for Task 4 scope.
+- Confirmed runtime-pointer precedence is deterministic and explicit in both builders.
+- Confirmed legacy compatibility remains gated and intact through Task 7.
+- Confirmed no must-not-change constraints were violated.
+
 ---
 
 ## Task 5 — Batch index reader path for non-RT

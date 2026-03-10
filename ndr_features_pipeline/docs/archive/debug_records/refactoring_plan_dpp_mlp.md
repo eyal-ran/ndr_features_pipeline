@@ -238,6 +238,20 @@ Creates stable, shared definitions so implementation tasks cannot drift.
 ### Gate
 - Documentation consistency review complete.
 
+### Task 1 status
+- **implemented**
+
+### Task 1 implementation summary
+- Added `docs/architecture/data_projects_vs_ml_projects.md` to define DPP (`project_name`) vs MLP (`ml_project_name`, `ml_project_names`) semantics and to include exact runtime contract vNext payload examples from §2.
+- Updated `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md` to document the fixed 3-table schema (`ndr_dpp_config`, `ndr_mlp_config`, `ndr_batch_index`) including exact keys, attributes, GSI mapping, and idempotent PutItem/UpdateItem expressions from §4.
+- Updated `docs/architecture/orchestration/step_functions.md` with vNext payload validation rules, orchestration-resolved runtime fields, required/conditional pipeline parameter contract, and fixed migration-toggle defaults/switch-over criteria.
+- Updated `docs/palo_alto_raw_partitioning_strategy.md` to align canonical path contract, authoritative `batch_id`/`batch_s3_prefix` runtime pointer behavior, slot15 derivation policy, and deterministic `ndr_batch_index` usage.
+
+### Task 1 contract delta
+- **Added:** explicit DPP/MLP identity semantics and deterministic optional-field predicates (`MlProjectName`, `MlProjectNamesJson`, `ml_project_name`, `ml_project_names_json`, `ttl_epoch`).
+- **Changed:** 15m contract documentation to require `MiniBatchS3Prefix` and to codify exact `ndr_batch_index` key shapes and idempotent write expressions.
+- **Unchanged:** migration toggles/defaults and switch-over criteria remain exactly as defined in §8; compatibility flags remain required through Task 7.
+
 ---
 
 ## Task 2 — 15m SF ingestion + batch-index writer
@@ -435,3 +449,17 @@ Refactor is complete when:
 5. Multi-MLP fan-out executes per-ML branch with correct identity propagation.
 6. Compatibility toggles removed in Task 7.
 7. All affected docs/tests are aligned with vNext.
+
+---
+
+## 10) Version bump and changelog
+
+- **Plan version:** `vNext-task1-docs-baseline`
+- **Task 1 status:** implemented (contract/docs/schema foundation only)
+
+### Task 1 changelog
+
+1. Canonical DPP/MLP semantics were documented with explicit field-role separation (`project_name`, `ml_project_name`, `ml_project_names`).
+2. Runtime contract vNext ingestion payload examples from §2 were replicated into architecture docs without shape changes.
+3. DynamoDB table schemas (`ndr_dpp_config`, `ndr_mlp_config`, `ndr_batch_index`) and batch-index idempotent write contract (§4) were aligned in docs.
+4. Optional-field predicates from §2.4 were propagated into docs with deterministic wording.

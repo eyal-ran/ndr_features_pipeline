@@ -9,10 +9,12 @@ from urllib.parse import urlparse
 
 import boto3
 
+from ndr.config.batch_index_loader import BatchIndexLoader
 from ndr.config.project_parameters_loader import resolve_feature_spec_version
 from ndr.orchestration.palo_alto_batch_utils import (
     parse_batch_path_from_s3_key,
     derive_window_bounds,
+    is_migration_toggle_enabled,
     to_iso_z,
 )
 
@@ -33,12 +35,73 @@ class HistoricalWindowsExtractorJob:
     def __init__(self, runtime_config: HistoricalWindowsExtractorRuntimeConfig) -> None:
         self.runtime_config = runtime_config
         self._s3 = boto3.client("s3")
+        self._batch_index_loader: BatchIndexLoader | None = None
 
     def run(self) -> str:
         rows = self._extract_rows()
         return self._write_rows(rows)
 
     def _extract_rows(self) -> list[dict[str, str]]:
+        index_lookup_error: Exception | None = None
+        try:
+            index_rows = self._extract_rows_from_batch_index()
+        except Exception as exc:  # index path is best-effort before optional S3 fallback
+            index_rows = []
+            index_lookup_error = exc
+        if index_rows:
+            return index_rows
+
+        if not is_migration_toggle_enabled("enable_s3_listing_fallback_for_backfill"):
+            raise RuntimeError(
+                "No batch-index rows resolved for historical window and "
+                "enable_s3_listing_fallback_for_backfill is disabled"
+            ) from index_lookup_error
+
+        rows = self._extract_rows_from_s3_listing()
+        if rows:
+            return rows
+        raise RuntimeError(
+            "No historical batches resolved from batch index, and optional S3 listing fallback returned no rows"
+        )
+
+    def _extract_rows_from_batch_index(self) -> list[dict[str, str]]:
+        start_ts = _parse_iso8601(self.runtime_config.start_ts_iso)
+        end_ts = _parse_iso8601(self.runtime_config.end_ts_iso)
+        project_name = self._infer_project_name_from_input_prefix()
+        if not project_name:
+            return []
+        feature_spec_version = resolve_feature_spec_version(
+            project_name=project_name,
+            preferred_feature_spec_version=self.runtime_config.preferred_feature_spec_version,
+        )
+        if self._batch_index_loader is None:
+            self._batch_index_loader = BatchIndexLoader()
+        records = self._batch_index_loader.lookup_forward(
+            project_name=project_name,
+            data_source_name=project_name,
+            version=feature_spec_version,
+            start_ts_iso=to_iso_z(start_ts),
+            end_ts_iso=to_iso_z(end_ts),
+        )
+        rows: list[dict[str, str]] = []
+        for record in records:
+            source_ts = _parse_iso8601(record.event_ts_utc)
+            batch_start_ts_iso, batch_end_ts_iso = derive_window_bounds(source_ts, self.runtime_config.window_floor_minutes)
+            rows.append(
+                {
+                    "project_name": project_name,
+                    "feature_spec_version": feature_spec_version,
+                    "mini_batch_id": record.batch_id,
+                    "mini_batch_s3_prefix": record.batch_s3_prefix,
+                    "batch_start_ts_iso": batch_start_ts_iso,
+                    "batch_end_ts_iso": batch_end_ts_iso,
+                    "source_last_modified_ts_iso": to_iso_z(source_ts),
+                }
+            )
+        rows.sort(key=lambda r: (r["project_name"], r["batch_start_ts_iso"], r["mini_batch_id"]))
+        return rows
+
+    def _extract_rows_from_s3_listing(self) -> list[dict[str, str]]:
         in_bucket, in_prefix = _split_s3_uri(self.runtime_config.input_s3_prefix)
         start_ts = _parse_iso8601(self.runtime_config.start_ts_iso)
         end_ts = _parse_iso8601(self.runtime_config.end_ts_iso)
@@ -56,7 +119,7 @@ class HistoricalWindowsExtractorJob:
                 parsed = parse_batch_path_from_s3_key(suffix_key)
                 mini_batch_prefix = (
                     f"s3://{in_bucket}/{in_prefix.rstrip('/')}/"
-                    f"{parsed.org1}/{parsed.org2}/{parsed.project_name}/"
+                    f"{parsed.project_name}/{parsed.org1}/{parsed.org2}/"
                     f"{parsed.year}/{parsed.month}/{parsed.day}/{parsed.mini_batch_id}/"
                 )
                 group_key = (parsed.project_name, parsed.mini_batch_id)
@@ -93,6 +156,14 @@ class HistoricalWindowsExtractorJob:
 
         rows.sort(key=lambda r: (r["project_name"], r["batch_start_ts_iso"], r["mini_batch_id"]))
         return rows
+
+    def _infer_project_name_from_input_prefix(self) -> str | None:
+        _bucket, input_prefix = _split_s3_uri(self.runtime_config.input_s3_prefix)
+        parts = [p for p in input_prefix.strip('/').split('/') if p]
+        for part in parts:
+            if part == "fw_paloalto":
+                return part
+        return None
 
     def _write_rows(self, rows: list[dict[str, str]]) -> str:
         out_bucket, out_prefix = _split_s3_uri(self.runtime_config.output_s3_prefix)

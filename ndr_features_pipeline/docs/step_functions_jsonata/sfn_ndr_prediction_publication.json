@@ -46,225 +46,329 @@
         "mini_batch_id": "{% $exists($states.input.mini_batch_id) ? $states.input.mini_batch_id : ($contains($raw_message,'mini_batch_id=') ? $split($split($raw_message,'mini_batch_id=')[1],';')[0] : ($exists($project_defaults.MiniBatchId.S) ? $project_defaults.MiniBatchId.S : '')) %}",
         "batch_start_ts_iso": "{% $exists($states.input.batch_start_ts_iso) ? $states.input.batch_start_ts_iso : ($contains($raw_message,'batch_start_ts_iso=') ? $split($split($raw_message,'batch_start_ts_iso=')[1],';')[0] : ($exists($project_defaults.BatchStartTsIso.S) ? $project_defaults.BatchStartTsIso.S : '')) %}",
         "batch_end_ts_iso": "{% $exists($states.input.batch_end_ts_iso) ? $states.input.batch_end_ts_iso : ($contains($raw_message,'batch_end_ts_iso=') ? $split($split($raw_message,'batch_end_ts_iso=')[1],';')[0] : ($exists($project_defaults.BatchEndTsIso.S) ? $project_defaults.BatchEndTsIso.S : '')) %}",
-        "lock_ttl_epoch": "{% $exists($states.input.lock_ttl_epoch) ? $states.input.lock_ttl_epoch : ($exists($project_defaults.LockTtlEpoch.N) ? $number($project_defaults.LockTtlEpoch.N) : 1893456000) %}",
-        "publication_identity": "{% $project_name & '#' & $feature_spec_version & '#' & $mini_batch_id & '#' & $batch_start_ts_iso & '#' & $batch_end_ts_iso %}"
+        "ml_project_name": "{% $exists($states.input.ml_project_name) ? $states.input.ml_project_name : ($exists($project_defaults.MlProjectName.S) ? $project_defaults.MlProjectName.S : '') %}",
+        "ml_project_names": "{% $exists($states.input.ml_project_names) ? $states.input.ml_project_names : [] %}",
+        "lock_ttl_epoch": "{% $exists($states.input.lock_ttl_epoch) ? $states.input.lock_ttl_epoch : ($exists($project_defaults.LockTtlEpoch.N) ? $number($project_defaults.LockTtlEpoch.N) : 1893456000) %}"
       },
-      "Next": "AcquirePublicationLock"
+      "Next": "ValidateResolvedRuntimeParams"
     },
-    "AcquirePublicationLock": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:dynamodb:putItem",
-      "Arguments": {
-        "TableName": "${PublicationLockTableName}",
-        "Item": {
-          "pk": {
-            "S": "{% $publication_identity %}"
-          },
-          "sk": {
-            "S": "PUBLICATION"
-          },
-          "state": {
-            "S": "IN_PROGRESS"
-          },
-          "ttl_epoch": {
-            "N": "{% $string($lock_ttl_epoch) %}"
-          }
-        },
-        "ConditionExpression": "attribute_not_exists(pk)"
-      },
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "DynamoDB.ConditionalCheckFailedException"
-          ],
-          "Next": "DuplicatePublicationSuppressed"
-        }
-      ],
-      "Next": "StartPredictionJoinPipeline"
-    },
-    "StartPredictionJoinPipeline": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
-      "Arguments": {
-        "PipelineName": "${PipelineNamePredictionJoin}",
-        "PipelineParameters": [
-          {
-            "Name": "ProjectName",
-            "Value": "{% $project_name %}"
-          },
-          {
-            "Name": "FeatureSpecVersion",
-            "Value": "{% $feature_spec_version %}"
-          },
-          {
-            "Name": "MiniBatchId",
-            "Value": "{% $mini_batch_id %}"
-          },
-          {
-            "Name": "BatchStartTsIso",
-            "Value": "{% $batch_start_ts_iso %}"
-          },
-          {
-            "Name": "BatchEndTsIso",
-            "Value": "{% $batch_end_ts_iso %}"
-          }
-        ]
-      },
-      "Assign": {
-        "prediction_join_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
-        "join_poll_attempt": 0
-      },
-      "Retry": [
-        {
-          "ErrorEquals": [
-            "SageMaker.AmazonSageMakerException",
-            "ThrottlingException",
-            "States.TaskFailed"
-          ],
-          "IntervalSeconds": 5,
-          "MaxAttempts": 4,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "MarkPublicationFailed"
-        }
-      ],
-      "Next": "DescribeJoinPipeline"
-    },
-    "DescribeJoinPipeline": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
-      "Arguments": {
-        "PipelineExecutionArn": "{% $prediction_join_pipeline_execution_arn %}"
-      },
-      "Assign": {
-        "prediction_join_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"
-      },
-      "Retry": [
-        {
-          "ErrorEquals": [
-            "SageMaker.AmazonSageMakerException",
-            "ThrottlingException",
-            "States.TaskFailed"
-          ],
-          "IntervalSeconds": 5,
-          "MaxAttempts": 6,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "MarkPublicationFailed"
-        }
-      ],
-      "Next": "JoinPipelineStatusChoice"
-    },
-    "JoinPipelineStatusChoice": {
+    "ValidateResolvedRuntimeParams": {
       "Type": "Choice",
       "Choices": [
         {
-          "Condition": "{% $prediction_join_pipeline_status = 'Succeeded' %}",
-          "Next": "MarkPublicationSucceeded"
+          "Condition": "{% $project_name = \"\" %}",
+          "Next": "FailMissingProjectName"
         },
         {
-          "Condition": "{% ($prediction_join_pipeline_status = 'Executing' or $prediction_join_pipeline_status = 'Stopping') and $join_poll_attempt < 120 %}",
-          "Next": "WaitBeforeJoinDescribe"
+          "Condition": "{% $feature_spec_version = \"\" %}",
+          "Next": "FailMissingFeatureSpecVersion"
+        },
+        {
+          "Condition": "{% $mini_batch_id = \"\" %}",
+          "Next": "FailMissingMiniBatchId"
+        },
+        {
+          "Condition": "{% $batch_start_ts_iso = \"\" %}",
+          "Next": "FailMissingBatchStartTs"
+        },
+        {
+          "Condition": "{% $batch_end_ts_iso = \"\" %}",
+          "Next": "FailMissingBatchEndTs"
+        },
+        {
+          "Condition": "{% ($ml_project_name = '' and $count($ml_project_names)=0) or ($ml_project_name != '' and $count($ml_project_names)>0) %}",
+          "Next": "FailInvalidMlProjectSelection"
         }
       ],
-      "Default": "MarkPublicationFailed"
+      "Default": "NormalizeMlProjectBranches"
     },
-    "WaitBeforeJoinDescribe": {
-      "Type": "Wait",
-      "Seconds": 30,
-      "Next": "IncrementJoinPollAttempt"
-    },
-    "IncrementJoinPollAttempt": {
+    "NormalizeMlProjectBranches": {
       "Type": "Pass",
       "Assign": {
-        "join_poll_attempt": "{% $join_poll_attempt + 1 %}"
+        "ml_project_branches": "{% $count($ml_project_names) > 0 ? $ml_project_names : [$ml_project_name] %}"
       },
-      "Next": "DescribeJoinPipeline"
+      "Next": "RunPublicationPerMlProject"
     },
-    "MarkPublicationSucceeded": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
-      "Arguments": {
-        "TableName": "${PublicationLockTableName}",
-        "Key": {
-          "pk": {
-            "S": "{% $publication_identity %}"
+    "RunPublicationPerMlProject": {
+      "Type": "Map",
+      "Items": "{% $ml_project_branches %}",
+      "ItemSelector": {
+        "project_name": "{% $project_name %}",
+        "feature_spec_version": "{% $feature_spec_version %}",
+        "mini_batch_id": "{% $mini_batch_id %}",
+        "batch_start_ts_iso": "{% $batch_start_ts_iso %}",
+        "batch_end_ts_iso": "{% $batch_end_ts_iso %}",
+        "ml_project_name": "{% $states.context.Map.Item.Value %}",
+        "lock_ttl_epoch": "{% $lock_ttl_epoch %}"
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "ResolvePublicationIdentity",
+        "States": {
+          "ResolvePublicationIdentity": {
+            "Type": "Pass",
+            "Assign": {
+              "publication_identity": "{% $states.input.project_name & '#' & $states.input.feature_spec_version & '#' & $states.input.mini_batch_id & '#' & $states.input.batch_start_ts_iso & '#' & $states.input.batch_end_ts_iso & '#' & $states.input.ml_project_name %}"
+            },
+            "Next": "AcquirePublicationLock"
           },
-          "sk": {
-            "S": "PUBLICATION"
-          }
-        },
-        "UpdateExpression": "SET #s = :s",
-        "ExpressionAttributeNames": {
-          "#s": "state"
-        },
-        "ExpressionAttributeValues": {
-          ":s": {
-            "S": "SUCCEEDED"
+          "AcquirePublicationLock": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:dynamodb:putItem",
+            "Arguments": {
+              "TableName": "${PublicationLockTableName}",
+              "Item": {
+                "pk": {
+                  "S": "{% $publication_identity %}"
+                },
+                "sk": {
+                  "S": "PUBLICATION"
+                },
+                "state": {
+                  "S": "IN_PROGRESS"
+                },
+                "ttl_epoch": {
+                  "N": "{% $string($states.input.lock_ttl_epoch) %}"
+                }
+              },
+              "ConditionExpression": "attribute_not_exists(pk)"
+            },
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "DynamoDB.ConditionalCheckFailedException"
+                ],
+                "Next": "DuplicatePublicationSuppressed"
+              }
+            ],
+            "Next": "StartPredictionJoinPipeline"
+          },
+          "StartPredictionJoinPipeline": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
+            "Arguments": {
+              "PipelineName": "${PipelineNamePredictionJoin}",
+              "PipelineParameters": [
+                {
+                  "Name": "ProjectName",
+                  "Value": "{% $states.input.project_name %}"
+                },
+                {
+                  "Name": "FeatureSpecVersion",
+                  "Value": "{% $states.input.feature_spec_version %}"
+                },
+                {
+                  "Name": "MiniBatchId",
+                  "Value": "{% $states.input.mini_batch_id %}"
+                },
+                {
+                  "Name": "BatchStartTsIso",
+                  "Value": "{% $states.input.batch_start_ts_iso %}"
+                },
+                {
+                  "Name": "BatchEndTsIso",
+                  "Value": "{% $states.input.batch_end_ts_iso %}"
+                },
+                {
+                  "Name": "MlProjectName",
+                  "Value": "{% $states.input.ml_project_name %}"
+                }
+              ]
+            },
+            "Assign": {
+              "prediction_join_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
+              "join_poll_attempt": 0
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "SageMaker.AmazonSageMakerException",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 4,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "MarkPublicationFailed"
+              }
+            ],
+            "Next": "DescribeJoinPipeline"
+          },
+          "DescribeJoinPipeline": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
+            "Arguments": {
+              "PipelineExecutionArn": "{% $prediction_join_pipeline_execution_arn %}"
+            },
+            "Assign": {
+              "prediction_join_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "SageMaker.AmazonSageMakerException",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "MarkPublicationFailed"
+              }
+            ],
+            "Next": "JoinPipelineStatusChoice"
+          },
+          "JoinPipelineStatusChoice": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Condition": "{% $prediction_join_pipeline_status = 'Succeeded' %}",
+                "Next": "MarkPublicationSucceeded"
+              },
+              {
+                "Condition": "{% ($prediction_join_pipeline_status = 'Executing' or $prediction_join_pipeline_status = 'Stopping') and $join_poll_attempt < 120 %}",
+                "Next": "WaitBeforeJoinDescribe"
+              }
+            ],
+            "Default": "MarkPublicationFailed"
+          },
+          "WaitBeforeJoinDescribe": {
+            "Type": "Wait",
+            "Seconds": 30,
+            "Next": "IncrementJoinPollAttempt"
+          },
+          "IncrementJoinPollAttempt": {
+            "Type": "Pass",
+            "Assign": {
+              "join_poll_attempt": "{% $join_poll_attempt + 1 %}"
+            },
+            "Next": "DescribeJoinPipeline"
+          },
+          "MarkPublicationSucceeded": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+            "Arguments": {
+              "TableName": "${PublicationLockTableName}",
+              "Key": {
+                "pk": {
+                  "S": "{% $publication_identity %}"
+                },
+                "sk": {
+                  "S": "PUBLICATION"
+                }
+              },
+              "UpdateExpression": "SET #s = :s",
+              "ExpressionAttributeNames": {
+                "#s": "state"
+              },
+              "ExpressionAttributeValues": {
+                ":s": {
+                  "S": "SUCCEEDED"
+                }
+              }
+            },
+            "Next": "EmitPublicationEvent"
+          },
+          "MarkPublicationFailed": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+            "Arguments": {
+              "TableName": "${PublicationLockTableName}",
+              "Key": {
+                "pk": {
+                  "S": "{% $publication_identity %}"
+                },
+                "sk": {
+                  "S": "PUBLICATION"
+                }
+              },
+              "UpdateExpression": "SET #s = :s",
+              "ExpressionAttributeNames": {
+                "#s": "state"
+              },
+              "ExpressionAttributeValues": {
+                ":s": {
+                  "S": "FAILED"
+                }
+              }
+            },
+            "Next": "WorkflowFailed"
+          },
+          "DuplicatePublicationSuppressed": {
+            "Type": "Succeed"
+          },
+          "EmitPublicationEvent": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::events:putEvents",
+            "Arguments": {
+              "Entries": [
+                {
+                  "Source": "ndr.orchestration",
+                  "DetailType": "NdrPredictionPublicationCompleted",
+                  "EventBusName": "${EventBusName}",
+                  "Detail": "{% $string({'project_name': $states.input.project_name, 'feature_spec_version': $states.input.feature_spec_version, 'mini_batch_id': $states.input.mini_batch_id, 'batch_start_ts_iso': $states.input.batch_start_ts_iso, 'batch_end_ts_iso': $states.input.batch_end_ts_iso, 'ml_project_name': $states.input.ml_project_name, 'publication_identity': $publication_identity}) %}"
+                }
+              ]
+            },
+            "End": true
+          },
+          "WorkflowFailed": {
+            "Type": "Fail",
+            "Error": "NdrPredictionPublicationFailed",
+            "Cause": "Prediction publication workflow failed"
           }
         }
       },
-      "Next": "EmitPublicationEvent"
+      "Next": "Success"
     },
-    "MarkPublicationFailed": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
-      "Arguments": {
-        "TableName": "${PublicationLockTableName}",
-        "Key": {
-          "pk": {
-            "S": "{% $publication_identity %}"
-          },
-          "sk": {
-            "S": "PUBLICATION"
-          }
-        },
-        "UpdateExpression": "SET #s = :s",
-        "ExpressionAttributeNames": {
-          "#s": "state"
-        },
-        "ExpressionAttributeValues": {
-          ":s": {
-            "S": "FAILED"
-          }
-        }
-      },
-      "Next": "WorkflowFailed"
-    },
-    "DuplicatePublicationSuppressed": {
-      "Type": "Succeed"
-    },
-    "EmitPublicationEvent": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::events:putEvents",
-      "Arguments": {
-        "Entries": [
-          {
-            "Source": "ndr.orchestration",
-            "DetailType": "NdrPredictionPublicationCompleted",
-            "EventBusName": "${EventBusName}",
-            "Detail": "{% $string({'project_name': $project_name, 'feature_spec_version': $feature_spec_version, 'mini_batch_id': $mini_batch_id, 'batch_start_ts_iso': $batch_start_ts_iso, 'batch_end_ts_iso': $batch_end_ts_iso, 'publication_identity': $publication_identity}) %}"
-          }
-        ]
-      },
-      "End": true
-    },
-    "WorkflowFailed": {
+    "FailMissingProjectName": {
       "Type": "Fail",
-      "Error": "NdrPredictionPublicationFailed",
-      "Cause": "Prediction publication workflow failed"
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: project_name"
+    },
+    "FailMissingFeatureSpecVersion": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: feature_spec_version"
+    },
+    "FailMissingMiniBatchId": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: mini_batch_id"
+    },
+    "FailMissingBatchStartTs": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: batch_start_ts_iso"
+    },
+    "FailMissingBatchEndTs": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: batch_end_ts_iso"
+    },
+    "FailInvalidMlProjectSelection": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Exactly one of ml_project_name or ml_project_names must be provided"
+    },
+    "Success": {
+      "Type": "Succeed"
     }
   }
 }

@@ -9,6 +9,19 @@ def _load(name: str):
     return json.loads((STEP_FUNCTIONS_DIR / name).read_text())
 
 
+def _collect_states(state_machine: dict) -> dict:
+    collected = {}
+
+    def _visit(states: dict):
+        for name, state in states.items():
+            collected[name] = state
+            if isinstance(state, dict) and state.get("Type") == "Map" and "ItemProcessor" in state:
+                _visit(state["ItemProcessor"]["States"])
+
+    _visit(state_machine["States"])
+    return collected
+
+
 def test_state_machines_remove_callback_and_approval_lambda_dependencies():
     for path in STEP_FUNCTIONS_DIR.glob("sfn_ndr_*.json"):
         text = path.read_text()
@@ -31,8 +44,10 @@ def test_sagemaker_starts_have_describe_polling_pattern():
         "sfn_ndr_training_orchestrator.json",
     ]:
         doc = _load(name)
-        states = doc["States"]
-        start_tasks = [s for s in states.values() if isinstance(s, dict) and s.get("Resource") == "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution"]
+        states = _collect_states(doc)
+        start_tasks = [
+            s for s in states.values() if isinstance(s, dict) and s.get("Resource") == "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution"
+        ]
         assert start_tasks, f"{name} should start at least one SageMaker pipeline"
         assert any(
             isinstance(s, dict) and s.get("Resource") == "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution"
@@ -51,7 +66,10 @@ def test_15m_flow_uses_batch_completion_payload_and_direct_publication_handoff()
 
 def test_prediction_publication_has_identity_lock_and_duplicate_suppression():
     doc = _load("sfn_ndr_prediction_publication.json")
-    states = doc["States"]
+    states = _collect_states(doc)
+
+    assert "RunPublicationPerMlProject" in doc["States"]
+    assert doc["States"]["RunPublicationPerMlProject"]["Type"] == "Map"
 
     assert "AcquirePublicationLock" in states
     assert "DuplicatePublicationSuppressed" in states
@@ -60,22 +78,19 @@ def test_prediction_publication_has_identity_lock_and_duplicate_suppression():
     assert "attribute_not_exists(pk)" in lock["Arguments"]["ConditionExpression"]
     assert states["DuplicatePublicationSuppressed"]["Type"] == "Succeed"
 
-    assert "StartPublicationPipeline" not in states
-    assert "DescribePublicationPipeline" not in states
-    assert "PublishPipelineStatusChoice" not in states
-    assert "WaitBeforePublishDescribe" not in states
-    assert "IncrementPublishPollAttempt" not in states
-    join_success = next(
-        choice
-        for choice in states["JoinPipelineStatusChoice"]["Choices"]
-        if choice["Condition"] == "{% $prediction_join_pipeline_status = 'Succeeded' %}"
-    )
-    assert join_success["Next"] == "MarkPublicationSucceeded"
+    pipeline_params = {p["Name"] for p in states["StartPredictionJoinPipeline"]["Arguments"]["PipelineParameters"]}
+    assert "MlProjectName" in pipeline_params
+
+    identity_expr = states["ResolvePublicationIdentity"]["Assign"]["publication_identity"]
+    assert "ml_project_name" in identity_expr
 
 
 def test_training_orchestrator_is_coarse_grained_single_training_pipeline():
     doc = _load("sfn_ndr_training_orchestrator.json")
-    states = doc["States"]
+    states = _collect_states(doc)
+
+    assert "RunTrainingPerMlProject" in doc["States"]
+    assert doc["States"]["RunTrainingPerMlProject"]["Type"] == "Map"
 
     assert "StartTrainingPipeline" in states
     assert "DescribeTrainingPipeline" in states
@@ -90,7 +105,7 @@ def test_training_orchestrator_is_coarse_grained_single_training_pipeline():
     args = states["StartTrainingPipeline"]["Arguments"]
     assert args["PipelineName"] == "${PipelineNameIFTraining}"
     names = {p["Name"] for p in args["PipelineParameters"]}
-    assert {"TrainingStartTs", "TrainingEndTs", "EvalStartTs", "EvalEndTs", "MissingWindowsOverride"}.issubset(names)
+    assert {"TrainingStartTs", "TrainingEndTs", "EvalStartTs", "EvalEndTs", "MissingWindowsOverride", "MlProjectName"}.issubset(names)
 
 
 def test_monthly_fg_b_baseline_has_no_supplemental_pipeline_states():

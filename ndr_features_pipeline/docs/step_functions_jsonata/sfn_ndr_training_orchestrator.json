@@ -56,157 +56,11 @@
         "enable_auto_remediate_fgb": "{% $exists($states.input.enable_auto_remediate_fgb) ? $states.input.enable_auto_remediate_fgb : ($exists($project_defaults.EnableAutoRemediateFgb.BOOL) ? $project_defaults.EnableAutoRemediateFgb.BOOL : true) %}",
         "enable_post_training_evaluation": "{% $exists($states.input.enable_post_training_evaluation) ? $states.input.enable_post_training_evaluation : ($exists($project_defaults.EnablePostTrainingEvaluation.BOOL) ? $project_defaults.EnablePostTrainingEvaluation.BOOL : true) %}",
         "enable_eval_join_publication": "{% $exists($states.input.enable_eval_join_publication) ? $states.input.enable_eval_join_publication : ($exists($project_defaults.EnableEvalJoinPublication.BOOL) ? $project_defaults.EnableEvalJoinPublication.BOOL : true) %}",
-        "enable_eval_experiments_logging": "{% $exists($states.input.enable_eval_experiments_logging) ? $states.input.enable_eval_experiments_logging : ($exists($project_defaults.EnableEvalExperimentsLogging.BOOL) ? $project_defaults.EnableEvalExperimentsLogging.BOOL : true) %}"
+        "enable_eval_experiments_logging": "{% $exists($states.input.enable_eval_experiments_logging) ? $states.input.enable_eval_experiments_logging : ($exists($project_defaults.EnableEvalExperimentsLogging.BOOL) ? $project_defaults.EnableEvalExperimentsLogging.BOOL : true) %}",
+        "ml_project_name": "{% $exists($states.input.ml_project_name) ? $states.input.ml_project_name : ($exists($project_defaults.MlProjectName.S) ? $project_defaults.MlProjectName.S : '') %}",
+        "ml_project_names": "{% $exists($states.input.ml_project_names) ? $states.input.ml_project_names : [] %}"
       },
       "Next": "ValidateResolvedRuntimeParams"
-    },
-    "StartTrainingPipeline": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
-      "Arguments": {
-        "PipelineName": "${PipelineNameIFTraining}",
-        "PipelineParameters": [
-          {
-            "Name": "ProjectName",
-            "Value": "{% $project_name %}"
-          },
-          {
-            "Name": "FeatureSpecVersion",
-            "Value": "{% $feature_spec_version %}"
-          },
-          {
-            "Name": "RunId",
-            "Value": "{% $run_id %}"
-          },
-          {
-            "Name": "ExecutionTsIso",
-            "Value": "{% $execution_ts_iso %}"
-          },
-          {
-            "Name": "TrainingStartTs",
-            "Value": "{% $training_start_ts %}"
-          },
-          {
-            "Name": "TrainingEndTs",
-            "Value": "{% $training_end_ts %}"
-          },
-          {
-            "Name": "EvalStartTs",
-            "Value": "{% $eval_start_ts %}"
-          },
-          {
-            "Name": "EvalEndTs",
-            "Value": "{% $eval_end_ts %}"
-          },
-          {
-            "Name": "MissingWindowsOverride",
-            "Value": "{% $string($missing_windows_override) %}"
-          },
-          {
-            "Name": "EvaluationWindowsJson",
-            "Value": "{% $string($evaluation_windows_json) %}"
-          },
-          {
-            "Name": "EnableHistoryPlanner",
-            "Value": "{% $string($enable_history_planner) %}"
-          },
-          {
-            "Name": "EnableAutoRemediate15m",
-            "Value": "{% $string($enable_auto_remediate_15m) %}"
-          },
-          {
-            "Name": "EnableAutoRemediateFgb",
-            "Value": "{% $string($enable_auto_remediate_fgb) %}"
-          },
-          {
-            "Name": "EnablePostTrainingEvaluation",
-            "Value": "{% $string($enable_post_training_evaluation) %}"
-          },
-          {
-            "Name": "EnableEvalJoinPublication",
-            "Value": "{% $string($enable_eval_join_publication) %}"
-          },
-          {
-            "Name": "EnableEvalExperimentsLogging",
-            "Value": "{% $string($enable_eval_experiments_logging) %}"
-          }
-        ]
-      },
-      "Assign": {
-        "training_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
-        "training_poll_attempt": 0
-      },
-      "Retry": [
-        {
-          "ErrorEquals": [
-            "SageMaker.AmazonSageMakerException",
-            "ThrottlingException",
-            "States.TaskFailed"
-          ],
-          "IntervalSeconds": 5,
-          "MaxAttempts": 4,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Next": "DescribeTrainingPipeline"
-    },
-    "DescribeTrainingPipeline": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
-      "Arguments": {
-        "PipelineExecutionArn": "{% $training_pipeline_execution_arn %}"
-      },
-      "Assign": {
-        "training_pipeline_status": "{% $states.result.PipelineExecutionStatus %}",
-        "training_failure_reason": "{% $exists($states.result.FailureReason) ? $states.result.FailureReason : '' %}"
-      },
-      "Retry": [
-        {
-          "ErrorEquals": [
-            "SageMaker.AmazonSageMakerException",
-            "ThrottlingException",
-            "States.TaskFailed"
-          ],
-          "IntervalSeconds": 5,
-          "MaxAttempts": 6,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Next": "TrainingPipelineStatusChoice"
-    },
-    "TrainingPipelineStatusChoice": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Condition": "{% $training_pipeline_status = 'Succeeded' %}",
-          "Next": "Success"
-        },
-        {
-          "Condition": "{% ($training_pipeline_status = 'Executing' or $training_pipeline_status = 'Stopping') and $training_poll_attempt < 120 %}",
-          "Next": "WaitBeforeTrainingDescribe"
-        }
-      ],
-      "Default": "WorkflowFailed"
-    },
-    "WaitBeforeTrainingDescribe": {
-      "Type": "Wait",
-      "Seconds": 30,
-      "Next": "IncrementTrainingPollAttempt"
-    },
-    "IncrementTrainingPollAttempt": {
-      "Type": "Pass",
-      "Assign": {
-        "training_poll_attempt": "{% $training_poll_attempt + 1 %}"
-      },
-      "Next": "DescribeTrainingPipeline"
-    },
-    "WorkflowFailed": {
-      "Type": "Fail",
-      "Error": "NdrUnifiedTrainingPipelineFailed",
-      "Cause": "Unified IF training pipeline failed, was stopped, or exceeded poll budget"
-    },
-    "Success": {
-      "Type": "Succeed"
     },
     "ValidateResolvedRuntimeParams": {
       "Type": "Choice",
@@ -242,9 +96,204 @@
         {
           "Condition": "{% $type($evaluation_windows_json)='string' and $trim($evaluation_windows_json) = '' %}",
           "Next": "FailMissingEvaluationWindowsJson"
+        },
+        {
+          "Condition": "{% ($ml_project_name = '' and $count($ml_project_names)=0) or ($ml_project_name != '' and $count($ml_project_names)>0) %}",
+          "Next": "FailInvalidMlProjectSelection"
         }
       ],
-      "Default": "StartTrainingPipeline"
+      "Default": "NormalizeMlProjectBranches"
+    },
+    "NormalizeMlProjectBranches": {
+      "Type": "Pass",
+      "Assign": {
+        "ml_project_branches": "{% $count($ml_project_names) > 0 ? $ml_project_names : [$ml_project_name] %}"
+      },
+      "Next": "RunTrainingPerMlProject"
+    },
+    "RunTrainingPerMlProject": {
+      "Type": "Map",
+      "Items": "{% $ml_project_branches %}",
+      "ItemSelector": {
+        "project_name": "{% $project_name %}",
+        "feature_spec_version": "{% $feature_spec_version %}",
+        "run_id": "{% $run_id %}",
+        "execution_ts_iso": "{% $execution_ts_iso %}",
+        "training_start_ts": "{% $training_start_ts %}",
+        "training_end_ts": "{% $training_end_ts %}",
+        "eval_start_ts": "{% $eval_start_ts %}",
+        "eval_end_ts": "{% $eval_end_ts %}",
+        "missing_windows_override": "{% $missing_windows_override %}",
+        "evaluation_windows_json": "{% $evaluation_windows_json %}",
+        "enable_history_planner": "{% $enable_history_planner %}",
+        "enable_auto_remediate_15m": "{% $enable_auto_remediate_15m %}",
+        "enable_auto_remediate_fgb": "{% $enable_auto_remediate_fgb %}",
+        "enable_post_training_evaluation": "{% $enable_post_training_evaluation %}",
+        "enable_eval_join_publication": "{% $enable_eval_join_publication %}",
+        "enable_eval_experiments_logging": "{% $enable_eval_experiments_logging %}",
+        "ml_project_name": "{% $states.context.Map.Item.Value %}"
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "StartTrainingPipeline",
+        "States": {
+          "StartTrainingPipeline": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
+            "Arguments": {
+              "PipelineName": "${PipelineNameIFTraining}",
+              "PipelineParameters": [
+                {
+                  "Name": "ProjectName",
+                  "Value": "{% $states.input.project_name %}"
+                },
+                {
+                  "Name": "FeatureSpecVersion",
+                  "Value": "{% $states.input.feature_spec_version %}"
+                },
+                {
+                  "Name": "RunId",
+                  "Value": "{% $states.input.run_id %}"
+                },
+                {
+                  "Name": "ExecutionTsIso",
+                  "Value": "{% $states.input.execution_ts_iso %}"
+                },
+                {
+                  "Name": "TrainingStartTs",
+                  "Value": "{% $states.input.training_start_ts %}"
+                },
+                {
+                  "Name": "TrainingEndTs",
+                  "Value": "{% $states.input.training_end_ts %}"
+                },
+                {
+                  "Name": "EvalStartTs",
+                  "Value": "{% $states.input.eval_start_ts %}"
+                },
+                {
+                  "Name": "EvalEndTs",
+                  "Value": "{% $states.input.eval_end_ts %}"
+                },
+                {
+                  "Name": "MissingWindowsOverride",
+                  "Value": "{% $string($states.input.missing_windows_override) %}"
+                },
+                {
+                  "Name": "EvaluationWindowsJson",
+                  "Value": "{% $string($states.input.evaluation_windows_json) %}"
+                },
+                {
+                  "Name": "EnableHistoryPlanner",
+                  "Value": "{% $string($states.input.enable_history_planner) %}"
+                },
+                {
+                  "Name": "EnableAutoRemediate15m",
+                  "Value": "{% $string($states.input.enable_auto_remediate_15m) %}"
+                },
+                {
+                  "Name": "EnableAutoRemediateFgb",
+                  "Value": "{% $string($states.input.enable_auto_remediate_fgb) %}"
+                },
+                {
+                  "Name": "EnablePostTrainingEvaluation",
+                  "Value": "{% $string($states.input.enable_post_training_evaluation) %}"
+                },
+                {
+                  "Name": "EnableEvalJoinPublication",
+                  "Value": "{% $string($states.input.enable_eval_join_publication) %}"
+                },
+                {
+                  "Name": "EnableEvalExperimentsLogging",
+                  "Value": "{% $string($states.input.enable_eval_experiments_logging) %}"
+                },
+                {
+                  "Name": "MlProjectName",
+                  "Value": "{% $states.input.ml_project_name %}"
+                }
+              ]
+            },
+            "Assign": {
+              "training_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
+              "training_poll_attempt": 0
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "SageMaker.AmazonSageMakerException",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 4,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Next": "DescribeTrainingPipeline"
+          },
+          "DescribeTrainingPipeline": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
+            "Arguments": {
+              "PipelineExecutionArn": "{% $training_pipeline_execution_arn %}"
+            },
+            "Assign": {
+              "training_pipeline_status": "{% $states.result.PipelineExecutionStatus %}",
+              "training_failure_reason": "{% $exists($states.result.FailureReason) ? $states.result.FailureReason : '' %}"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "SageMaker.AmazonSageMakerException",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Next": "TrainingPipelineStatusChoice"
+          },
+          "TrainingPipelineStatusChoice": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Condition": "{% $training_pipeline_status = 'Succeeded' %}",
+                "Next": "Success"
+              },
+              {
+                "Condition": "{% ($training_pipeline_status = 'Executing' or $training_pipeline_status = 'Stopping') and $training_poll_attempt < 120 %}",
+                "Next": "WaitBeforeTrainingDescribe"
+              }
+            ],
+            "Default": "WorkflowFailed"
+          },
+          "WaitBeforeTrainingDescribe": {
+            "Type": "Wait",
+            "Seconds": 30,
+            "Next": "IncrementTrainingPollAttempt"
+          },
+          "IncrementTrainingPollAttempt": {
+            "Type": "Pass",
+            "Assign": {
+              "training_poll_attempt": "{% $training_poll_attempt + 1 %}"
+            },
+            "Next": "DescribeTrainingPipeline"
+          },
+          "WorkflowFailed": {
+            "Type": "Fail",
+            "Error": "NdrUnifiedTrainingPipelineFailed",
+            "Cause": "Unified IF training pipeline failed, was stopped, or exceeded poll budget"
+          },
+          "Success": {
+            "Type": "Succeed"
+          }
+        }
+      },
+      "Next": "Success"
     },
     "FailMissingProjectName": {
       "Type": "Fail",
@@ -285,6 +334,14 @@
       "Type": "Fail",
       "Error": "RuntimeParameterValidationError",
       "Cause": "Missing required runtime parameter: evaluation_windows_json"
+    },
+    "FailInvalidMlProjectSelection": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Exactly one of ml_project_name or ml_project_names must be provided"
+    },
+    "Success": {
+      "Type": "Succeed"
     }
   }
 }

@@ -582,6 +582,75 @@ Allows one DPP batch to trigger N MLP consumer branches.
 ### Deliverables
 - Verified N-consumer execution fan-out for a single DPP batch.
 
+### Task 6 status
+- **implemented**
+
+### Task 6 implementation summary
+- Updated `docs/step_functions_jsonata/sfn_ndr_prediction_publication.json` to support deterministic single-vs-multi MLP selection by resolving `ml_project_name` and `ml_project_names`, validating strict XOR selector semantics, normalizing a canonical `ml_project_branches` list, and executing a `Map` fan-out for per-MLP publication branches.
+- Added per-branch publication identity resolution so `publication_identity` includes `ml_project_name`, preserving idempotent lock isolation across MLP consumers of the same DPP mini-batch.
+- Updated publication branch pipeline invocation to pass `MlProjectName` to `${PipelineNamePredictionJoin}` and preserved deterministic polling/retry/failure transitions inside each branch.
+- Updated `docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json` with the same deterministic XOR validation and `Map` fan-out behavior so one DPP-triggered training execution can run N MLP-scoped branches.
+- Updated training branch pipeline invocation to pass `MlProjectName` to `${PipelineNameIFTraining}` while keeping existing required runtime parameters unchanged.
+- Updated downstream pipeline definitions to accept MLP-scoped pass-through parameter names without changing builder computation semantics:
+  - `src/ndr/pipeline/sagemaker_pipeline_definitions_inference.py`
+  - `src/ndr/pipeline/sagemaker_pipeline_definitions_prediction_feature_join.py`
+  - `src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py`
+- Updated contract tests:
+  - `tests/test_step_functions_item19_contracts.py` now traverses nested `Map` item-processor states and validates Task 6 fan-out contracts.
+  - `tests/test_io_contract.py` asserts `MlProjectName` parameter presence in the three Task 6 pipeline-definition files.
+
+### Task 6 Contract Delta
+- **Added:**
+  - Orchestration support for `ml_project_names` list fan-out path in publication/training state machines.
+  - Deterministic `Map` branch normalization (`ml_project_branches`) and per-branch `ml_project_name` propagation.
+  - Pipeline parameter `MlProjectName` accepted by inference/prediction-join/if-training pipeline definitions.
+- **Changed:**
+  - Publication idempotency identity now includes `ml_project_name` for per-branch dedupe correctness.
+  - Publication/training orchestration execution paths now support both single-MLP and multi-MLP execution modes under strict XOR selection validation.
+- **Unchanged:**
+  - Runtime contract vNext required fields remain unchanged; no new required payload fields were introduced.
+  - Migration toggle defaults and switch-over criteria in §8 remain unchanged.
+  - Compatibility flags remain present (no Task 7 cleanup started).
+
+### Task 6 Scope Compliance
+- **Files changed:**
+  - `docs/step_functions_jsonata/sfn_ndr_prediction_publication.json`
+  - `docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json`
+  - `src/ndr/pipeline/sagemaker_pipeline_definitions_inference.py`
+  - `src/ndr/pipeline/sagemaker_pipeline_definitions_prediction_feature_join.py`
+  - `src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py`
+  - `tests/test_step_functions_item19_contracts.py`
+  - `tests/test_io_contract.py`
+- **Forbidden files touched:** none.
+- **Task boundary confirmation:** Task 7 files were not modified.
+
+### Task 6 Tests & Gates
+- `PYTHONPATH=src pytest -q tests/test_step_functions_item19_contracts.py tests/test_step_functions_jsonata_contracts.py tests/test_io_contract.py`
+- `python -m json.tool docs/step_functions_jsonata/sfn_ndr_prediction_publication.json >/dev/null`
+- `python -m json.tool docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json >/dev/null`
+- Result: `21 passed` in targeted contract suite; JSON structural validation succeeded for both modified state machine files.
+
+### Task 6 gate checklist (mapped to deliverables)
+- Accept `MlProjectName` in downstream orchestration and pass through pipeline params: **done**.
+- For `ml_project_names`, branch via SF `Map` and set per-branch `ml_project_name`: **done**.
+- Include `ml_project_name` in publication/training idempotency identities where appropriate: **done** (publication identity updated).
+- Verified N-consumer execution fan-out for single DPP batch via contract tests: **done**.
+- Contract tests updated in same PR: **done**.
+
+### Task 6 Rollback Plan
+1. Revert Task 6 commit(s) touching the seven Task 6 files listed above.
+2. Re-deploy previous versions of:
+   - `sfn_ndr_prediction_publication.json`
+   - `sfn_ndr_training_orchestrator.json`
+   - the three updated pipeline-definition modules.
+3. Re-run the same Task 6 test commands and confirm baseline behavior is restored.
+
+### Task 6 self-review outcome
+- Verified one-task-per-PR discipline for Task 6 scope.
+- Verified strict XOR selector validation for `ml_project_name` vs `ml_project_names` in both orchestration files.
+- Verified per-branch `MlProjectName` propagation and publication idempotency identity scoping.
+- Verified no Task 7 cleanup was included and no migration-toggle defaults/switch-over criteria were changed.
+
 ---
 
 ## Task 7 — Cleanup and compatibility removal

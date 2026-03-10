@@ -52,6 +52,10 @@ def build_prediction_feature_join_pipeline(
         name="BatchEndTsIso",
         default_value="<required:BatchEndTsIso>",
     )
+    ml_project_name = ParameterString(
+        name="MlProjectName",
+        default_value="",
+    )
 
     processing_image_uri = ParameterString(
         name="ProcessingImageUri",
@@ -115,6 +119,7 @@ def build_prediction_feature_join_pipeline(
             mini_batch_id,
             batch_start_ts_iso,
             batch_end_ts_iso,
+            ml_project_name,
             processing_image_uri,
             processing_instance_type,
             processing_instance_count,

@@ -71,3 +71,18 @@ def test_run_delta_builder_script_contract_includes_mini_batch_s3_prefix_arg():
 def test_run_pair_counts_script_contract_includes_mini_batch_s3_prefix_arg():
     script = Path("src/ndr/scripts/run_pair_counts_builder.py").read_text()
     assert "--mini-batch-s3-prefix" in script
+
+
+def test_inference_pipeline_defines_ml_project_name_parameter():
+    source = Path("src/ndr/pipeline/sagemaker_pipeline_definitions_inference.py").read_text()
+    assert 'name="MlProjectName"' in source
+
+
+def test_prediction_join_pipeline_defines_ml_project_name_parameter():
+    source = Path("src/ndr/pipeline/sagemaker_pipeline_definitions_prediction_feature_join.py").read_text()
+    assert 'name="MlProjectName"' in source
+
+
+def test_if_training_pipeline_defines_ml_project_name_parameter():
+    source = Path("src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py").read_text()
+    assert 'name="MlProjectName"' in source

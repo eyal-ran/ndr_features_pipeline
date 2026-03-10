@@ -88,22 +88,10 @@ Before pipeline start, orchestration writes to `ndr_batch_index` using determini
 
 This behavior is replay-safe and required for recovery/backfill lookup paths.
 
-## 5) Migration toggles and defaults
+## 5) Finalized compatibility posture (Task 7)
 
-Compatibility toggles remain active until Task 7:
+Compatibility toggles are removed and orchestration runs in vNext-only mode:
 
-- `enable_legacy_input_prefix_fallback`
-- `enable_legacy_path_parser`
-- `enable_s3_listing_fallback_for_backfill`
-
-Environment defaults:
-
-- dev: all `true`
-- stage: `false`, `false`, `true`
-- prod: all `false`
-
-Switch-over criteria are unchanged:
-
-1. 7 consecutive days with zero index-write failures,
-2. 0 unresolved non-RT batch lookups,
-3. successful multi-ML fan-out validation in stage.
+- `MiniBatchS3Prefix` is required for the 15m path.
+- Canonical Palo Alto path parsing (`fw_paloalto/<org1>/<org2>/YYYY/MM/dd/<batch_id>/...`) is mandatory.
+- No legacy fallback/parser/listing compatibility flags are part of the contract.

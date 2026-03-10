@@ -110,3 +110,5 @@ Pipeline parameters for 15m path:
 
 - Required: `ProjectName`, `FeatureSpecVersion`, `MiniBatchId`, `MiniBatchS3Prefix`, `BatchStartTsIso`, `BatchEndTsIso`
 - Optional by predicate: `MlProjectName`, `MlProjectNamesJson`
+
+Task 7 note: compatibility toggles are removed; `MiniBatchS3Prefix` is strictly required for runtime ingestion-pointer resolution.

@@ -18,7 +18,6 @@ from ndr.processing.raw_traffic_fields import (
     normalize_raw_traffic_fields,
     REQUIRED_DELTA_TRAFFIC_FIELDS,
 )
-from ndr.orchestration.palo_alto_batch_utils import is_migration_toggle_enabled
 
 
 class DeltaBuilderRunner(BaseProcessingRunner):
@@ -239,11 +238,7 @@ def run_delta_builder_from_runtime_config(runtime_config: DeltaBuilderJobRuntime
 
     runtime_prefix = runtime_config.mini_batch_s3_prefix
     if not runtime_prefix:
-        if not is_migration_toggle_enabled("enable_legacy_input_prefix_fallback"):
-            raise ValueError(
-                "mini_batch_s3_prefix is required when enable_legacy_input_prefix_fallback is disabled"
-            )
-        runtime_prefix = job_spec.input.s3_prefix
+        raise ValueError("mini_batch_s3_prefix is required")
 
     runtime = RuntimeParams(
         project_name=runtime_config.project_name,

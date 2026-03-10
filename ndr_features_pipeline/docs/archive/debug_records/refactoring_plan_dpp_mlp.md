@@ -350,6 +350,54 @@ Ensures runtime contract reaches entry scripts and job runtime configs.
 ### Deliverables
 - Entry points accept and forward batch pointer.
 
+### Task 3 status
+- **implemented**
+
+### Task 3 implementation summary
+- Updated `src/ndr/pipeline/sagemaker_pipeline_definitions_unified_with_fgc.py` to include `MiniBatchS3Prefix` as a required pipeline parameter and to pass `--mini-batch-s3-prefix` into `run_delta_builder` and `run_pair_counts_builder` step arguments.
+- Updated `src/ndr/scripts/run_delta_builder.py` and `src/ndr/scripts/run_pair_counts_builder.py` to accept required CLI argument `--mini-batch-s3-prefix` and to propagate it into typed runtime configs.
+- Updated runtime config models in `src/ndr/processing/delta_builder_job.py` and `src/ndr/processing/pair_counts_builder_job.py` to carry `mini_batch_s3_prefix` and to thread it into runtime execution context.
+- Updated `tests/test_io_contract.py` to include Task 3 contract checks asserting the new CLI argument is present in both entry scripts.
+
+### Task 3 Contract Delta
+- **Added:** pipeline parameter `MiniBatchS3Prefix`; CLI argument `--mini-batch-s3-prefix`; runtime config field `mini_batch_s3_prefix` for Delta and Pair Counts.
+- **Changed:** Delta runtime wiring now forwards runtime `mini_batch_s3_prefix` into `RuntimeParams` with compatibility fallback to existing JobSpec input prefix during migration period.
+- **Unchanged:** Step Functions JSON definitions, DDB schema/idempotent write expressions, migration toggle defaults, and switch-over criteria.
+
+### Task 3 Scope Compliance
+- **Files changed:**
+  - `src/ndr/pipeline/sagemaker_pipeline_definitions_unified_with_fgc.py`
+  - `src/ndr/scripts/run_delta_builder.py`
+  - `src/ndr/scripts/run_pair_counts_builder.py`
+  - `src/ndr/processing/base_runner.py`
+  - `src/ndr/processing/delta_builder_job.py`
+  - `src/ndr/processing/pair_counts_builder_job.py`
+  - `tests/test_io_contract.py`
+- **Forbidden files touched:** none.
+- **Task boundary confirmation:** no Task 4+ implementation files changed in this task.
+
+### Task 3 Tests & Gates
+- `PYTHONPATH=src pytest -q tests/test_io_contract.py tests/test_step_functions_item19_contracts.py tests/test_create_ml_projects_parameters_table.py`
+- Result: `22 passed`.
+
+### Task 3 gate checklist (mapped to deliverables)
+- Add `MiniBatchS3Prefix` pipeline parameter: **done**.
+- Add CLI `--mini-batch-s3-prefix` to both scripts: **done**.
+- Thread value into job runtime configs: **done**.
+- Entry points accept and forward batch pointer: **done**.
+- Contract tests updated in same PR: **done**.
+
+### Task 3 Rollback Plan
+1. Revert the Task 3 commit that introduced runtime pointer propagation changes.
+2. Restore previous pipeline definition artifact without `MiniBatchS3Prefix` parameter wiring.
+3. Re-run Task 3 targeted tests and verify baseline pre-task behavior.
+
+### Task 3 self-review outcome
+- Confirmed one-task-per-PR discipline for Task 3 scope.
+- Confirmed vNext runtime pointer propagation path is deterministic and explicit from pipeline params to CLI to runtime configs.
+- Confirmed no Task 4 behavior (raw reader precedence/parser changes) was implemented prematurely.
+- Confirmed compatibility posture remains intact until Task 7.
+
 ---
 
 ## Task 4 — Delta + Pair Counts input behavior

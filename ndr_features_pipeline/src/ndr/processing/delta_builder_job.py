@@ -222,8 +222,9 @@ class DeltaBuilderJobRuntimeConfig:
     project_name: str
     feature_spec_version: str
     mini_batch_id: str
-    batch_start_ts_iso: str
-    batch_end_ts_iso: str
+    mini_batch_s3_prefix: str = ""
+    batch_start_ts_iso: str = ""
+    batch_end_ts_iso: str = ""
 
 
 def run_delta_builder_from_runtime_config(runtime_config: DeltaBuilderJobRuntimeConfig) -> None:
@@ -238,7 +239,7 @@ def run_delta_builder_from_runtime_config(runtime_config: DeltaBuilderJobRuntime
     runtime = RuntimeParams(
         project_name=runtime_config.project_name,
         job_name="delta_builder",
-        mini_batch_s3_prefix=job_spec.input.s3_prefix,
+        mini_batch_s3_prefix=runtime_config.mini_batch_s3_prefix or job_spec.input.s3_prefix,
         feature_spec_version=runtime_config.feature_spec_version,
         run_id=runtime_config.mini_batch_id,
         slice_start_ts=runtime_config.batch_start_ts_iso,

@@ -21,7 +21,12 @@
         "parsed_date_prefix": "{% $count($split($parsed_s3_key,'/')) >= 7 ? $join([$split($parsed_s3_key,'/')[3],$split($parsed_s3_key,'/')[4],$split($parsed_s3_key,'/')[5]],'/') : '' %}",
         "parsed_batch_folder": "{% $count($split($parsed_s3_key,'/')) >= 7 ? $split($parsed_s3_key,'/')[6] : '' %}",
         "parsed_project_name_from_path": "{% $count($split($parsed_s3_key,'/')) >= 3 ? $split($parsed_s3_key,'/')[2] : '' %}",
-        "parsed_source_ts_iso": "{% $exists($states.input.timestamp) ? $states.input.timestamp : ($exists($states.input.event_ts) ? $states.input.event_ts : ($contains($raw_message,'timestamp=') ? $split($split($raw_message,'timestamp=')[1],';')[0] : $now())) %}"
+        "parsed_source_ts_iso": "{% $exists($states.input.timestamp) ? $states.input.timestamp : ($exists($states.input.event_ts) ? $states.input.event_ts : ($contains($raw_message,'timestamp=') ? $split($split($raw_message,'timestamp=')[1],';')[0] : $now())) %}",
+        "parsed_data_source_name": "{% $exists($states.input.data_source_name) ? $states.input.data_source_name : '' %}",
+        "parsed_ml_project_name": "{% $exists($states.input.ml_project_name) ? $states.input.ml_project_name : '' %}",
+        "parsed_ml_project_names": "{% $exists($states.input.ml_project_names) ? $states.input.ml_project_names : [] %}",
+        "parsed_batch_id": "{% $exists($states.input.batch_id) ? $states.input.batch_id : ($exists($states.input.mini_batch_id) ? $states.input.mini_batch_id : ($parsed_batch_folder != '' ? $parsed_batch_folder : '')) %}",
+        "parsed_batch_s3_prefix": "{% $exists($states.input.batch_s3_prefix) ? $states.input.batch_s3_prefix : ($exists($states.input.mini_batch_s3_prefix) ? $states.input.mini_batch_s3_prefix : '') %}"
       },
       "Next": "BatchCompletionEventChoice"
     },
@@ -94,13 +99,27 @@
       "Assign": {
         "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : ($parsed_project_name_from_path != '' ? $parsed_project_name_from_path : ($routed_project_name != '' ? $routed_project_name : ($exists($project_defaults.ProjectName.S) ? $project_defaults.ProjectName.S : '')))) %}",
         "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : ($exists($project_defaults.FeatureSpecVersion.S) ? $project_defaults.FeatureSpecVersion.S : '${DefaultFeatureSpecVersion}')) %}",
-        "mini_batch_id": "{% $exists($states.input.mini_batch_id) ? $states.input.mini_batch_id : ($parsed_batch_folder != '' ? $parsed_batch_folder : ($contains($raw_message,'mini_batch_id=') ? $split($split($raw_message,'mini_batch_id=')[1],';')[0] : ($exists($project_defaults.MiniBatchId.S) ? $project_defaults.MiniBatchId.S : ''))) %}",
-        "source_timestamp_iso": "{% $exists($states.input.batch_end_ts_iso) ? $states.input.batch_end_ts_iso : $parsed_source_ts_iso %}",
-        "batch_start_ts_iso": "{% $exists($states.input.batch_start_ts_iso) ? $states.input.batch_start_ts_iso : ($exists($source_timestamp_iso) and $source_timestamp_iso != '' ? $fromMillis($toMillis($source_timestamp_iso) - (($number($substring($source_timestamp_iso,14,2)) >= 53 ? $number($substring($source_timestamp_iso,14,2)) - 53 : ($number($substring($source_timestamp_iso,14,2)) >= 38 ? $number($substring($source_timestamp_iso,14,2)) - 38 : ($number($substring($source_timestamp_iso,14,2)) >= 23 ? $number($substring($source_timestamp_iso,14,2)) - 23 : ($number($substring($source_timestamp_iso,14,2)) >= 8 ? $number($substring($source_timestamp_iso,14,2)) - 8 : $number($substring($source_timestamp_iso,14,2)) + 7)))) * 60000)) : ($exists($project_defaults.BatchStartTsIso.S) ? $project_defaults.BatchStartTsIso.S : '')) %}",
+        "mini_batch_id": "{% $parsed_batch_id %}",
+        "source_timestamp_iso": "{% $parsed_source_ts_iso %}",
+        "batch_start_ts_iso": "{% $exists($states.input.batch_start_ts_iso) ? $states.input.batch_start_ts_iso : $source_timestamp_iso %}",
         "batch_end_ts_iso": "{% $source_timestamp_iso %}",
         "execution_ts_iso": "{% $exists($states.input.execution_ts_iso) ? $states.input.execution_ts_iso : ($exists($project_defaults.ExecutionTsIso.S) ? $project_defaults.ExecutionTsIso.S : $now()) %}",
         "lock_ttl_epoch": "{% $exists($states.input.lock_ttl_epoch) ? $states.input.lock_ttl_epoch : ($exists($project_defaults.LockTtlEpoch.N) ? $number($project_defaults.LockTtlEpoch.N) : 1893456000) %}",
-        "mini_batch_s3_prefix": "{% $exists($states.input.mini_batch_s3_prefix) ? $states.input.mini_batch_s3_prefix : ($routed_ingestion_prefix != '' and $parsed_date_prefix != '' and $parsed_batch_folder != '' ? $routed_ingestion_prefix & '/' & $parsed_date_prefix & '/' & $parsed_batch_folder & '/' : ($exists($project_defaults.MiniBatchS3Prefix.S) ? $project_defaults.MiniBatchS3Prefix.S : '')) %}"
+        "mini_batch_s3_prefix": "{% $parsed_batch_s3_prefix %}",
+        "data_source_name": "{% $parsed_data_source_name != '' ? $parsed_data_source_name : $project_name %}",
+        "ml_project_name": "{% $parsed_ml_project_name %}",
+        "ml_project_names": "{% $parsed_ml_project_names %}",
+        "ml_project_names_json": "{% $count($ml_project_names) > 0 ? $string($ml_project_names) : '' %}",
+        "date_utc": "{% $substring($source_timestamp_iso,0,10) %}",
+        "hour_utc": "{% $substring($source_timestamp_iso,11,2) %}",
+        "minute_utc": "{% $number($substring($source_timestamp_iso,14,2)) %}",
+        "slot15": "{% $minute_utc <= 14 ? 1 : ($minute_utc <= 29 ? 2 : ($minute_utc <= 44 ? 3 : 4)) %}",
+        "batch_index_version": "{% $feature_spec_version %}",
+        "org1": "{% $count($split($mini_batch_s3_prefix,'/')) >= 6 ? $split($mini_batch_s3_prefix,'/')[4] : '' %}",
+        "org2": "{% $count($split($mini_batch_s3_prefix,'/')) >= 7 ? $split($mini_batch_s3_prefix,'/')[5] : '' %}",
+        "batch_index_pk": "{% $project_name & '#' & $data_source_name & '#' & $batch_index_version & '#' & $date_utc %}",
+        "batch_index_sk": "{% $hour_utc & '#' & $string($slot15) & '#' & $mini_batch_id %}",
+        "batch_index_gsi1pk": "{% $project_name & '#' & $data_source_name & '#' & $batch_index_version & '#' & $mini_batch_id %}"
       },
       "Next": "ValidateResolvedRuntimeParams"
     },
@@ -133,7 +152,7 @@
           "Next": "DuplicateMiniBatch"
         }
       ],
-      "Next": "Start15mFeaturesPipeline"
+      "Next": "WriteBatchIndexRecord"
     },
     "DuplicateMiniBatch": {
       "Type": "Fail",
@@ -165,6 +184,18 @@
           {
             "Name": "BatchEndTsIso",
             "Value": "{% $batch_end_ts_iso %}"
+          },
+          {
+            "Name": "MiniBatchS3Prefix",
+            "Value": "{% $mini_batch_s3_prefix %}"
+          },
+          {
+            "Name": "MlProjectName",
+            "Value": "{% $ml_project_name %}"
+          },
+          {
+            "Name": "MlProjectNamesJson",
+            "Value": "{% $ml_project_names_json %}"
           }
         ]
       },
@@ -276,6 +307,18 @@
           {
             "Name": "BatchEndTsIso",
             "Value": "{% $batch_end_ts_iso %}"
+          },
+          {
+            "Name": "MiniBatchS3Prefix",
+            "Value": "{% $mini_batch_s3_prefix %}"
+          },
+          {
+            "Name": "MlProjectName",
+            "Value": "{% $ml_project_name %}"
+          },
+          {
+            "Name": "MlProjectNamesJson",
+            "Value": "{% $ml_project_names_json %}"
           }
         ]
       },
@@ -453,6 +496,14 @@
           "Next": "FailMissingProjectName"
         },
         {
+          "Condition": "{% $data_source_name = \"\" %}",
+          "Next": "FailMissingDataSourceName"
+        },
+        {
+          "Condition": "{% $project_name != $data_source_name %}",
+          "Next": "FailProjectDataSourceMismatch"
+        },
+        {
           "Condition": "{% $feature_spec_version = \"\" %}",
           "Next": "FailMissingFeatureSpecVersion"
         },
@@ -471,6 +522,22 @@
         {
           "Condition": "{% $mini_batch_s3_prefix = \"\" %}",
           "Next": "FailMissingMiniBatchS3Prefix"
+        },
+        {
+          "Condition": "{% ($ml_project_name = '' and $count($ml_project_names)=0) or ($ml_project_name != '' and $count($ml_project_names)>0) %}",
+          "Next": "FailInvalidMlProjectSelection"
+        },
+        {
+          "Condition": "{% not($startsWith($mini_batch_s3_prefix,'s3://')) %}",
+          "Next": "FailInvalidMiniBatchS3Prefix"
+        },
+        {
+          "Condition": "{% not($endsWith($mini_batch_s3_prefix, '/' & $mini_batch_id & '/')) %}",
+          "Next": "FailInvalidMiniBatchS3Prefix"
+        },
+        {
+          "Condition": "{% not($endsWith($source_timestamp_iso,'Z')) %}",
+          "Next": "FailInvalidTimestamp"
         }
       ],
       "Default": "AcquireMiniBatchLock"
@@ -504,6 +571,168 @@
       "Type": "Fail",
       "Error": "RuntimeParameterValidationError",
       "Cause": "Missing required runtime parameter: mini_batch_s3_prefix"
+    },
+    "WriteBatchIndexRecord": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${BatchIndexTableName}",
+        "Item": {
+          "pk": {
+            "S": "{% $batch_index_pk %}"
+          },
+          "sk": {
+            "S": "{% $batch_index_sk %}"
+          },
+          "project_name": {
+            "S": "{% $project_name %}"
+          },
+          "data_source_name": {
+            "S": "{% $data_source_name %}"
+          },
+          "version": {
+            "S": "{% $batch_index_version %}"
+          },
+          "date_utc": {
+            "S": "{% $date_utc %}"
+          },
+          "hour_utc": {
+            "S": "{% $hour_utc %}"
+          },
+          "slot15": {
+            "N": "{% $string($slot15) %}"
+          },
+          "batch_id": {
+            "S": "{% $mini_batch_id %}"
+          },
+          "batch_s3_prefix": {
+            "S": "{% $mini_batch_s3_prefix %}"
+          },
+          "event_ts_utc": {
+            "S": "{% $source_timestamp_iso %}"
+          },
+          "org1": {
+            "S": "{% $org1 %}"
+          },
+          "org2": {
+            "S": "{% $org2 %}"
+          },
+          "ml_project_name": {
+            "S": "{% $ml_project_name != '' ? $ml_project_name : '__pre_fanout__' %}"
+          },
+          "ml_project_names_json": {
+            "S": "{% $ml_project_names_json != '' ? $ml_project_names_json : '[]' %}"
+          },
+          "ingested_at_utc": {
+            "S": "{% $execution_ts_iso %}"
+          },
+          "status": {
+            "S": "RECEIVED"
+          },
+          "GSI1PK": {
+            "S": "{% $batch_index_gsi1pk %}"
+          },
+          "GSI1SK": {
+            "S": "{% $source_timestamp_iso %}"
+          }
+        },
+        "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
+          "Next": "UpdateBatchIndexRecord"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "ReleaseMiniBatchLockOnFailure"
+        }
+      ],
+      "Next": "Start15mFeaturesPipeline"
+    },
+    "UpdateBatchIndexRecord": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${BatchIndexTableName}",
+        "Key": {
+          "pk": {
+            "S": "{% $batch_index_pk %}"
+          },
+          "sk": {
+            "S": "{% $batch_index_sk %}"
+          }
+        },
+        "UpdateExpression": "SET batch_s3_prefix = :batch_s3_prefix, event_ts_utc = :event_ts_utc, ingested_at_utc = :ingested_at_utc, #status = :status, ml_project_name = if_not_exists(ml_project_name, :ml_project_name), ml_project_names_json = if_not_exists(ml_project_names_json, :ml_project_names_json), GSI1PK = :gsi1pk, GSI1SK = :gsi1sk",
+        "ExpressionAttributeNames": {
+          "#status": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":batch_s3_prefix": {
+            "S": "{% $mini_batch_s3_prefix %}"
+          },
+          ":event_ts_utc": {
+            "S": "{% $source_timestamp_iso %}"
+          },
+          ":ingested_at_utc": {
+            "S": "{% $execution_ts_iso %}"
+          },
+          ":status": {
+            "S": "RECEIVED"
+          },
+          ":ml_project_name": {
+            "S": "{% $ml_project_name != '' ? $ml_project_name : '__pre_fanout__' %}"
+          },
+          ":ml_project_names_json": {
+            "S": "{% $ml_project_names_json != '' ? $ml_project_names_json : '[]' %}"
+          },
+          ":gsi1pk": {
+            "S": "{% $batch_index_gsi1pk %}"
+          },
+          ":gsi1sk": {
+            "S": "{% $source_timestamp_iso %}"
+          }
+        },
+        "ConditionExpression": "attribute_exists(pk) AND attribute_exists(sk)"
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "ReleaseMiniBatchLockOnFailure"
+        }
+      ],
+      "Next": "Start15mFeaturesPipeline"
+    },
+    "FailMissingDataSourceName": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: data_source_name"
+    },
+    "FailProjectDataSourceMismatch": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "project_name and data_source_name must match"
+    },
+    "FailInvalidMlProjectSelection": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Exactly one of ml_project_name or ml_project_names must be provided"
+    },
+    "FailInvalidMiniBatchS3Prefix": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "mini_batch_s3_prefix must start with s3:// and end with /<mini_batch_id>/"
+    },
+    "FailInvalidTimestamp": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "timestamp must be ISO-8601 UTC with Z suffix"
     }
   }
 }

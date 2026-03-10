@@ -120,6 +120,7 @@ PIPELINE_RUNTIME_PARAMS = {
         "MiniBatchId",
         "BatchStartTsIso",
         "BatchEndTsIso",
+        "MiniBatchS3Prefix",
     ],
     "pipeline_fg_b_baseline": [
         "ProjectName",

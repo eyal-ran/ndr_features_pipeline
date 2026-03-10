@@ -33,6 +33,7 @@ from ndr.processing.raw_traffic_fields import (
     normalize_raw_traffic_fields,
     REQUIRED_CANONICAL_TRAFFIC_FIELDS,
 )
+from ndr.orchestration.palo_alto_batch_utils import is_migration_toggle_enabled
 
 
 LOGGER = get_logger(__name__)
@@ -158,11 +159,17 @@ class PairCountsBuilderJob(BaseRunner):
 
         mini_batch_id = self.runtime_config.mini_batch_id
 
-        if layout == "batch_folder":
+        runtime_prefix = (self.runtime_config.mini_batch_s3_prefix or "").strip()
+        if runtime_prefix:
+            path = runtime_prefix
+        elif is_migration_toggle_enabled("enable_legacy_input_prefix_fallback"):
+            if layout != "batch_folder":
+                raise ValueError(f"Unsupported traffic_input.layout: {layout}")
             path = f"{base_prefix.rstrip('/')}/{mini_batch_id}/"
         else:
-            # Future: manifest-based or time-based layouts
-            raise ValueError(f"Unsupported traffic_input.layout: {layout}")
+            raise ValueError(
+                "mini_batch_s3_prefix is required when enable_legacy_input_prefix_fallback is disabled"
+            )
 
         LOGGER.info(
             "Reading traffic logs for pair-counts.",

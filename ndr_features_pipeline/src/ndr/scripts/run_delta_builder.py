@@ -13,6 +13,7 @@ Expected arguments (all required):
 - --project-name          : Logical NDR project name (for JobSpec lookup).
 - --feature-spec-version  : Feature-spec version (schema id for delta/FGs).
 - --mini-batch-id         : Identifier of the 15m ETL mini-batch.
+- --mini-batch-s3-prefix  : Authoritative S3 pointer for this mini-batch.
 - --batch-start-ts-iso    : ISO8601 start timestamp of the batch window.
 - --batch-end-ts-iso      : ISO8601 end timestamp of the batch window.
 """
@@ -59,6 +60,11 @@ def parse_args(argv=None):
         required=True,
         help="Identifier of the 15m ETL mini-batch (used to locate inputs).",        )
     parser.add_argument(
+        "--mini-batch-s3-prefix",
+        required=True,
+        help="Authoritative S3 prefix for this mini-batch (must end with /<mini_batch_id>/).",
+    )
+    parser.add_argument(
         "--batch-start-ts-iso",
         required=True,
         help="Batch start time (ISO8601, e.g. 2025-12-31T00:00:00Z).",        )
@@ -84,6 +90,7 @@ def main(argv=None) -> int:
             "project_name": args.project_name,
             "feature_spec_version": args.feature_spec_version,
             "mini_batch_id": args.mini_batch_id,
+            "mini_batch_s3_prefix": args.mini_batch_s3_prefix,
             "batch_start_ts_iso": args.batch_start_ts_iso,
             "batch_end_ts_iso": args.batch_end_ts_iso,
         },
@@ -93,6 +100,7 @@ def main(argv=None) -> int:
         project_name=args.project_name,
         feature_spec_version=args.feature_spec_version,
         mini_batch_id=args.mini_batch_id,
+        mini_batch_s3_prefix=args.mini_batch_s3_prefix,
         batch_start_ts_iso=args.batch_start_ts_iso,
         batch_end_ts_iso=args.batch_end_ts_iso,
     )

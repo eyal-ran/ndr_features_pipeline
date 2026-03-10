@@ -35,6 +35,7 @@ class RuntimeParams:
     project_name: str
     job_name: str
     mini_batch_s3_prefix: str
+    # Authoritative per-run pointer from orchestration runtime contract vNext.
     feature_spec_version: str
     run_id: str
     slice_start_ts: str | None = None

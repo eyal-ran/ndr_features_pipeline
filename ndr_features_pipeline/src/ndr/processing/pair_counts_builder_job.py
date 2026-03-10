@@ -50,6 +50,8 @@ class PairCountsJobRuntimeConfig:
         Feature spec version, used for JobSpec lookup and partitioning.
     mini_batch_id : str
         Identifier of the 15m ETL mini-batch (aligns with integration bucket folder).
+    mini_batch_s3_prefix : str
+        Authoritative runtime S3 prefix for this mini-batch.
     batch_start_ts_iso : str
         ISO8601 string of the batch start time (inclusive).
     batch_end_ts_iso : str
@@ -59,8 +61,9 @@ class PairCountsJobRuntimeConfig:
     project_name: str
     feature_spec_version: str
     mini_batch_id: str
-    batch_start_ts_iso: str
-    batch_end_ts_iso: str
+    mini_batch_s3_prefix: str = ""
+    batch_start_ts_iso: str = ""
+    batch_end_ts_iso: str = ""
 
 
 class PairCountsBuilderJob(BaseRunner):

@@ -104,6 +104,7 @@ def build_if_training_pipeline(
 
     project_name = ParameterString(name="ProjectName", default_value="<required:ProjectName>")
     feature_spec_version = ParameterString(name="FeatureSpecVersion", default_value="<required:FeatureSpecVersion>")
+    ml_project_name = ParameterString(name="MlProjectName", default_value="")
     run_id = ParameterString(name="RunId", default_value="<required:RunId>")
     execution_ts_iso = ParameterString(name="ExecutionTsIso", default_value="<required:ExecutionTsIso>")
     training_start_ts = ParameterString(name="TrainingStartTs", default_value="<required:TrainingStartTs>")
@@ -296,6 +297,7 @@ def build_if_training_pipeline(
         parameters=[
             project_name,
             feature_spec_version,
+            ml_project_name,
             run_id,
             execution_ts_iso,
             training_start_ts,

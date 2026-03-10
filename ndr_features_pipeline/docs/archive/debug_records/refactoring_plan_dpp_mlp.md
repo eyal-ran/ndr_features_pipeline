@@ -494,6 +494,72 @@ Supports backfill/training gap repair without brittle S3 enumeration.
 ### Deliverables
 - Non-RT flows resolve missing batches from index-first path.
 
+### Task 5 status
+- **implemented**
+
+### Task 5 implementation summary
+- Added `src/ndr/config/batch_index_loader.py` with deterministic `ndr_batch_index` read APIs:
+  - `lookup_forward(...)` resolves records by canonical index PK (`project_name#data_source_name#version#date_utc`) across UTC date range and sorts deterministically by (`event_ts_utc`, `batch_id`).
+  - `lookup_reverse(...)` resolves latest batch pointer by `GSI1PK = project_name#data_source_name#version#batch_id` with `ScanIndexForward=false` and `Limit=1`.
+- Added `src/ndr/config/batch_index_writer.py` implementing exact idempotent write semantics from §4:
+  - `PutItem` with `ConditionExpression = attribute_not_exists(pk) AND attribute_not_exists(sk)`.
+  - `UpdateItem` with `ConditionExpression = attribute_exists(pk) AND attribute_exists(sk)` and exact `UpdateExpression` including `if_not_exists` for `ml_project_name` and `ml_project_names_json`.
+- Updated `src/ndr/processing/historical_windows_extractor_job.py` to enforce non-RT lookup order:
+  1) Batch-index forward lookup first.
+  2) Optional S3 listing fallback only when `enable_s3_listing_fallback_for_backfill` is enabled.
+  3) Deterministic runtime error when neither source resolves batches.
+- Updated `src/ndr/config/project_parameters_loader.py` with deterministic batch-index table resolution helper (`resolve_batch_index_table_name`) and explicit env/default precedence.
+- Added/updated Task 5 tests:
+  - `tests/test_batch_index_loader.py`
+  - `tests/test_batch_index_writer.py`
+  - `tests/test_project_parameters_loader.py`
+
+### Task 5 Contract Delta
+- **Added:**
+  - `BatchIndexLoader` forward/reverse read path for `ndr_batch_index`.
+  - `BatchIndexWriter` idempotent upsert path with exact §4 expressions.
+  - `resolve_batch_index_table_name` helper and constants.
+- **Changed:**
+  - Historical non-RT extractor now resolves batch pointers index-first, with S3 fallback controlled only by `enable_s3_listing_fallback_for_backfill`.
+- **Unchanged:**
+  - Runtime contract payload shapes/field names remain unchanged.
+  - Migration toggle defaults/switch-over criteria in §8 remain unchanged.
+  - Compatibility flags remain in place (not removed before Task 7).
+
+### Task 5 Scope Compliance
+- **Files changed:**
+  - `src/ndr/config/batch_index_loader.py` (added)
+  - `src/ndr/config/batch_index_writer.py` (added)
+  - `src/ndr/processing/historical_windows_extractor_job.py` (modified)
+  - `src/ndr/config/project_parameters_loader.py` (modified)
+  - `tests/test_batch_index_loader.py` (added)
+  - `tests/test_batch_index_writer.py` (added)
+  - `tests/test_project_parameters_loader.py` (modified)
+- **Forbidden files touched:** none.
+- **Task boundary confirmation:** Task 6+ files and forbidden Step Functions JSON files were not modified.
+
+### Task 5 Tests & Gates
+- `PYTHONPATH=src pytest -q tests/test_batch_index_loader.py tests/test_batch_index_writer.py tests/test_project_parameters_loader.py tests/test_historical_windows_extractor_job.py`
+- `PYTHONPATH=src pytest -q tests/test_palo_alto_batch_utils.py tests/test_io_contract.py`
+- Result: `9 passed` (Task 5 targeted suite) and `11 passed` (related compatibility/contract checks).
+
+### Task 5 gate checklist (mapped to deliverables)
+- Batch index reader path added for non-RT: **done**.
+- Lookup order enforced (index-first, fallback second behind toggle): **done**.
+- Deterministic error when both unavailable: **done**.
+- Task contract tests updated in same PR: **done**.
+
+### Task 5 Rollback Plan
+1. Revert Task 5 commit(s) touching the seven Task 5 files listed above.
+2. Redeploy previous artifact.
+3. Re-run Task 5 targeted tests to confirm baseline behavior is restored.
+
+### Task 5 self-review outcome
+- Confirmed one-task-per-PR scope discipline for Task 5 files.
+- Verified idempotent DDB conditions/update expression match §4 exactly.
+- Verified non-RT lookup order and deterministic failure behavior are explicit.
+- Verified migration toggles/defaults and compatibility constraints remain unchanged.
+
 ---
 
 ## Task 6 — Multi-MLP fan-out alignment

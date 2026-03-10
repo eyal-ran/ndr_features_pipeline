@@ -13,6 +13,9 @@ import boto3
 from .job_spec_loader import DDB_TABLE_ENV_VAR, LEGACY_DDB_TABLE_ENV_VAR, JOB_SPEC_SORT_KEY_DELIMITER
 
 DEFAULT_PROJECT_PARAMETERS_JOB_NAME = "project_parameters"
+BATCH_INDEX_TABLE_ENV_VAR = "NDR_BATCH_INDEX_TABLE_NAME"
+LEGACY_BATCH_INDEX_TABLE_ENV_VAR = "BATCH_INDEX_DDB_TABLE_NAME"
+DEFAULT_BATCH_INDEX_TABLE_NAME = "ndr_batch_index"
 
 
 class ProjectParametersLoader:
@@ -111,3 +114,13 @@ def resolve_feature_spec_version(
     job_name_value = str(best["job_name"])
     _, feature_spec_version = job_name_value.split(JOB_SPEC_SORT_KEY_DELIMITER, 1)
     return feature_spec_version
+
+
+def resolve_batch_index_table_name(table_name: str | None = None) -> str:
+    """Resolve batch-index table name from explicit value, env, or default contract name."""
+    return (
+        table_name
+        or os.environ.get(BATCH_INDEX_TABLE_ENV_VAR)
+        or os.environ.get(LEGACY_BATCH_INDEX_TABLE_ENV_VAR)
+        or DEFAULT_BATCH_INDEX_TABLE_NAME
+    )

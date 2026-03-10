@@ -30,7 +30,10 @@ class _Key:
 conditions_module.Key = _Key
 sys.modules["boto3.dynamodb.conditions"] = conditions_module
 
-from ndr.config.project_parameters_loader import resolve_feature_spec_version
+from ndr.config.project_parameters_loader import (
+    resolve_batch_index_table_name,
+    resolve_feature_spec_version,
+)
 
 
 class DummyTable:
@@ -57,3 +60,8 @@ def test_resolve_feature_spec_version_uses_latest(monkeypatch):
     monkeypatch.setattr(module.boto3, "resource", lambda *_a, **_k: DummyResource(), raising=False)
     out = resolve_feature_spec_version(project_name="proj1", table_name="dummy")
     assert out == "v2"
+
+
+def test_resolve_batch_index_table_name_prefers_env(monkeypatch):
+    monkeypatch.setenv("NDR_BATCH_INDEX_TABLE_NAME", "idx-table")
+    assert resolve_batch_index_table_name() == "idx-table"

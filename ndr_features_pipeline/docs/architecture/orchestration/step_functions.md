@@ -1,120 +1,109 @@
-# Step Functions Orchestration (Canonical)
+# Step Functions Orchestration Contract (vNext)
 
-This document captures the current Step Functions orchestration model and points to the JSON definitions tracked in the repository.
+## Scope
 
-## Definition sources
+This document defines the orchestration contract required for DPP/MLP decoupling.
+For Task 1, this is a documentation foundation only.
 
-JSONata definitions are stored under `docs/step_functions_jsonata/`:
-- `sfn_ndr_15m_features_inference.json`
-- `sfn_ndr_monthly_fg_b_baselines.json`
-- `sfn_ndr_training_orchestrator.json`
-- `sfn_ndr_backfill_reprocessing.json`
-- `sfn_ndr_prediction_publication.json`
+## 1) Canonical ingestion payload contract (input to 15m SF)
 
-## State machine responsibilities
+### Single-MLP payload (exact)
 
-### 1) 15-minute features + inference
-- Controls idempotency/locking for mini-batch processing.
-- Parses producer completion payload contract (batch folder path + event timestamp).
-- Starts feature and inference SageMaker pipelines.
-- Uses native `describePipelineExecution` polling loops (no callback lambda).
-- Triggers prediction publication state machine directly (`states:startExecution.sync:2`) and releases lock.
+```json
+{
+  "project_name": "fw_paloalto",
+  "data_source_name": "fw_paloalto",
+  "ml_project_name": "network_anomalies_detection",
+  "batch_id": "a1b2c3d4e5",
+  "batch_s3_prefix": "s3://<prod_ing_bucket>/fw_paloalto/<org1>/<org2>/2026/03/10/a1b2c3d4e5/",
+  "timestamp": "2026-03-10T13:23:11Z",
+  "feature_spec_version": "v1"
+}
+```
 
-### 2) Monthly FG-B baseline orchestration
-- Runs machine inventory refresh pipeline.
-- Runs FG-B baseline pipeline.
-- Emits `NdrMonthlyBaselinesCompleted` immediately after FG-B succeeds; no supplemental placeholder stage remains.
-- Uses native SageMaker start + describe polling for all async stages.
+### Multi-MLP payload (exact)
 
-### 3) Training orchestrator
-- Runs a training-data verifier pre-stage before training.
-- On verifier failure, remediation stage triggers concrete orchestrations (backfill Step Functions + FG-B pipeline as needed) and retries verifier with bounded attempts from IF training spec.
-- Runs training, model publish, model attributes registration, and deployment as pipeline-native stages.
-- Uses native polling and fails closed with explicit terminal diagnostics after retry exhaustion.
+```json
+{
+  "project_name": "fw_paloalto",
+  "data_source_name": "fw_paloalto",
+  "ml_project_names": [
+    "network_anomalies_detection",
+    "network_capacity_forecasting"
+  ],
+  "batch_id": "a1b2c3d4e5",
+  "batch_s3_prefix": "s3://<prod_ing_bucket>/fw_paloalto/<org1>/<org2>/2026/03/10/a1b2c3d4e5/",
+  "timestamp": "2026-03-10T13:23:11Z",
+  "feature_spec_version": "v1"
+}
+```
 
-### 4) Backfill and reprocessing
-- Starts a preliminary historical-window extractor SageMaker pipeline.
-- Polls extractor completion, resolves emitted windows, and runs feature pipelines per window with bounded parallelism.
-- Uses polling for each map item pipeline execution and emits reconciliation events.
+### Validation rules
 
-### 5) Prediction publication
-- Enforces publication idempotency via deterministic identity + DynamoDB conditional lock.
-- Runs a single prediction join+publish pipeline with native polling.
-- Marks lock outcome (`SUCCEEDED`/`FAILED`) and suppresses duplicates on lock conflicts.
+- `project_name` and `data_source_name` must both equal the DPP id.
+- Exactly one of `ml_project_name` or `ml_project_names` must be present.
+- `ml_project_names` must be non-empty when present.
+- `batch_id` is non-empty.
+- `batch_s3_prefix` starts with `s3://` and ends with `/<batch_id>/`.
+- `timestamp` is ISO-8601 UTC (`...Z`).
 
-## Common orchestration pattern
+## 2) Orchestration-resolved runtime fields
 
-Across all definitions:
-- Input normalization and runtime parameter extraction are performed early in the flow.
-- Pipelines are started via SageMaker APIs with runtime parameters.
-- Asynchronous completion is controlled by polling `sagemaker:describePipelineExecution` with bounded waits and retry/backoff on transient API failures.
+- `project_name`
+- `data_source_name`
+- `ml_project_name` (per branch)
+- `ml_project_names` (only pre-Map)
+- `feature_spec_version`
+- `mini_batch_id` (= `batch_id`)
+- `mini_batch_s3_prefix` (= `batch_s3_prefix`)
+- `batch_start_ts_iso`
+- `batch_end_ts_iso`
+- `date_utc` (YYYY-MM-DD)
+- `hour_utc` (00..23)
+- `slot15` (1..4)
 
-## S3 ingestion event routing contract (Palo Alto raw->ingestion)
+## 3) Pipeline parameter contract
 
-For 15-minute inference triggering from ingestion-bucket writes, the canonical contract is:
+### Required for 15m path
 
-1. Producer emits an event containing the full S3 batch-folder path (`s3_key` or `batch_s3_path`) and event timestamp.
-2. Step Functions normalizes wrapper message formats and resolves path/timestamp.
-3. Step Functions extracts `org1`, `org2`, date path fragments, and hashed batch folder from the path.
-4. Step Functions loads routing metadata from DynamoDB (`project_routing` style item keyed by `org1#org2`) to resolve:
-   - `project_name`
-   - base `ingestion_prefix`
-5. Step Functions loads `project_parameters#<feature_spec_version>` and resolves runtime defaults (including window policy defaults).
-6. Runtime windows are derived from source timestamps using floor-minute policy `08/23/38/53` and lock keys are built from `(project_name, feature_spec_version, batch_start_ts_iso, batch_end_ts_iso)` to suppress duplicates.
+- `ProjectName`
+- `FeatureSpecVersion`
+- `MiniBatchId`
+- `MiniBatchS3Prefix`
+- `BatchStartTsIso`
+- `BatchEndTsIso`
 
-## Feasibility/risk review summary (item 19 gate)
+### Optional with explicit predicates
 
-- **Polling replacement feasibility:** fully feasible with existing Step Functions AWS SDK integrations; no extra callback lambdas required.
-- **Training lifecycle ownership:** Step Functions now starts one unified IF training pipeline and delegates verifier/remediation/training/publish/attributes/deploy to pipeline-native steps.
-- **Direct 15m -> publication handoff:** implemented via synchronous nested Step Function start to remove EventBridge handoff race/duplication risk.
-- **Idempotency controls:** publication lock + deterministic identity suppress duplicate publication attempts and support replay safety.
-- **Migration/rollback approach:** deploy updated definitions behind versioned state machines; rollback by repointing aliases to prior definitions if pipeline-native replacements are not yet available.
+- `MlProjectName` is required when executing a single-MLP branch.
+- `MlProjectNamesJson` is required only before fan-out or when fan-out context is passed through one field.
 
-## Deployment notes
+## 4) Batch-index orchestration requirement
 
-Definitions contain deploy-time placeholders (for names/ARNs/resources). Replace placeholders with environment-specific values through IaC templating or deployment automation before creating/updating state machines.
+Before pipeline start, orchestration writes to `ndr_batch_index` using deterministic idempotent write rules:
 
-### Required runtime/IAM alignment
-- Add `sagemaker:DescribePipelineExecution` to all state-machine roles that call SageMaker pipelines.
-- Ensure lock tables exist and state-machine roles include `dynamodb:PutItem`, `dynamodb:UpdateItem`, and `dynamodb:DeleteItem` as applicable.
-- Ensure pipeline name placeholders are wired for current orchestrator contracts:
-  - `PipelineNamePredictionJoin`
-  - `PipelineNameIFTraining`
-  - `PredictionPublicationStateMachineArn`
+1. `PutItem` with `attribute_not_exists(pk) AND attribute_not_exists(sk)`.
+2. If duplicate, continue.
+3. `UpdateItem` with deterministic `SET ... if_not_exists(...)` expression and `attribute_exists(pk) AND attribute_exists(sk)`.
 
-## Runtime fail-fast policy (item 23)
+This behavior is replay-safe and required for recovery/backfill lookup paths.
 
-The four core orchestrators now include a `ValidateResolvedRuntimeParams` guard immediately after runtime resolution and before any pipeline start/lock mutation:
-- `sfn_ndr_15m_features_inference.json`
-- `sfn_ndr_monthly_fg_b_baselines.json`
-- `sfn_ndr_backfill_reprocessing.json`
-- `sfn_ndr_training_orchestrator.json`
+## 5) Migration toggles and defaults
 
-Required values must be non-empty. Validation failures terminate with deterministic `RuntimeParameterValidationError` fail states and single-line operator-readable causes (for example: `Missing required runtime parameter: project_name`).
+Compatibility toggles remain active until Task 7:
 
-Backfill no longer uses static date literals. `start_ts`/`end_ts` must come from invocation payload, parsed message, or explicit Dynamo defaults, and are validated for:
-- presence,
-- ISO-8601 UTC format (`YYYY-MM-DDThh:mm:ssZ`),
-- strict ordering (`start_ts < end_ts`).
+- `enable_legacy_input_prefix_fallback`
+- `enable_legacy_path_parser`
+- `enable_s3_listing_fallback_for_backfill`
 
-FG-A now defaults to strict mini-batch enforcement: if runtime specifies `mini_batch_id` and the source delta data is missing the `mini_batch_id` column, processing fails fast. Compatibility mode is opt-in via `allow_missing_mini_batch_id_column=true`.
+Environment defaults:
 
-## Training orchestrator runtime expansion (item 25)
-The training orchestrator now resolves and passes additional IF training runtime parameters:
-- `EvaluationWindowsJson`
-- `EnableHistoryPlanner`
-- `EnableAutoRemediate15m`
-- `EnableAutoRemediateFgb`
-- `EnablePostTrainingEvaluation`
-- `EnableEvalJoinPublication`
-- `EnableEvalExperimentsLogging`
+- dev: all `true`
+- stage: `false`, `false`, `true`
+- prod: all `false`
 
-Validation remains fail-fast before pipeline start.
+Switch-over criteria are unchanged:
 
-
-## Item 26 closure notes
-
-- IF training runtime now resolves orchestration targets with precedence: DDB override (`if_training.spec.orchestration_targets`) -> code default -> env fallback compatibility path.
-- Dependency readiness is validated before expensive IF training/remediation/evaluation execution and recorded as machine-readable `dependency_readiness.json` under run-scoped report paths.
-- Required remediation/evaluation branches fail fast when a required target cannot be resolved/described; disabled branches are recorded as skipped with reasons.
-- Resolver source provenance (`ddb_override`, `code_default`, `env_fallback`) is persisted in remediation/evaluation artifacts to support audit and replay diagnostics.
+1. 7 consecutive days with zero index-write failures,
+2. 0 unresolved non-RT batch lookups,
+3. successful multi-ML fan-out validation in stage.

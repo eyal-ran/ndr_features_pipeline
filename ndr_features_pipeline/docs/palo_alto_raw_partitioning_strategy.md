@@ -1,99 +1,59 @@
-# Palo Alto Ingestion-Batch Strategy for ML Orchestration
+# Palo Alto Raw Partitioning + Batch Pointer Strategy (vNext)
 
 ## Scope
 
-This document is strictly scoped to the **ML process** in this repository:
+This document defines ML orchestration + builder-facing ingestion pointer behavior for the DPP/MLP refactor.
 
-- Step Functions orchestration
-- Delta Builder
-- Pair Counts Builder
-- runtime parameter resolution for ML jobs
+## Canonical path contract
 
-It does not specify non-ML data-loading internals.
+The canonical runtime path shape is:
 
-## Canonical assumptions and constraints
+- `s3://<ingestion_bucket>/fw_paloalto/<org1>/<org2>/YYYY/MM/dd/<batch_id>/...`
 
-1. The upstream batch producer emits **one event per batch** to SNS.
-2. The payload contains only:
-   - full S3 object path inside the batch folder,
-   - payload timestamp close to batch creation timestamp.
-3. `project_name`, `mini_batch_id`, and `mini_batch_s3_prefix` must be derived from S3 path segments.
-4. `feature_spec_version` and other defaults are resolved from DynamoDB by `project_name`.
-5. No persistent batch-catalog table is introduced at this stage.
+Rules:
 
-## ML-relevant input layout
+- `project_name` is the DPP id and is `fw_paloalto` in the canonical example.
+- `data_source_name` must equal `project_name`.
+- `batch_id` is the hashed folder name and canonical mini-batch identity.
+- `batch_s3_prefix` is the authoritative per-run pointer and must end with `/<batch_id>/`.
 
-For ML processing, the expected input is flattened JSON GZIP files in batch folders:
+## Runtime source of truth
 
-- `s3://<ingestion_bucket>/<org1>/<org2>/<project_name>/YYYY/MM/dd/<mini_batch_id>/<file>.json.gz`
+For 15m ingestion:
 
-Each hashed folder (`mini_batch_id`) is treated as one mini-batch candidate.
+- Payload-provided `batch_id` and `batch_s3_prefix` are authoritative.
+- Orchestration resolves remaining runtime fields (`date_utc`, `hour_utc`, `slot15`, window timestamps) from payload timestamp.
+- Base prefixes/contracts come from DynamoDB config; runtime composes only dynamic suffixes when needed.
 
-## Current builder contracts
+## Delta + Pair Counts ingestion behavior (contract)
 
-### Delta Builder
+- Delta Builder primary input: `mini_batch_s3_prefix` (runtime pointer).
+- Pair Counts Builder primary input: `mini_batch_s3_prefix` (runtime pointer for batch data selection).
+- Compatibility fallback remains controlled by `enable_legacy_input_prefix_fallback` until Task 7.
 
-Delta reads from one explicit runtime prefix (`mini_batch_s3_prefix`) passed by orchestration.
+## Slot derivation policy
 
-### Pair Counts Builder
+`slot15` is derived from payload timestamp minute:
 
-Pair Counts reads from:
+- `00-14 => 1`
+- `15-29 => 2`
+- `30-44 => 3`
+- `45-59 => 4`
 
-- `<traffic_input.s3_prefix>/<mini_batch_id>/`
+## Idempotency + indexing
 
-and uses specification-driven `traffic_input.field_mapping` to map source columns into canonical traffic fields (`source_ip`, `destination_ip`, `destination_port`, `event_start`, `event_end`).
+Before starting 15m pipeline execution, Step Functions writes deterministic batch identity records to `ndr_batch_index` using idempotent Put/Update semantics.
 
-## Timestamp and window derivation policy (authoritative)
+This enables:
 
-Cron rule is fixed to `8-59/15 * * * ? *`.
+- replay-safe ingestion,
+- reverse lookup by batch id via GSI,
+- index-first non-RT lookup behavior in later tasks.
 
-For both inference and non-inference:
+## Compatibility and migration
 
-- valid batch floor minutes per hour are `08`, `23`, `38`, `53`.
-- `batch_start_ts_iso` = floor of source timestamp to the nearest prior minute in `{08,23,38,53}`.
-- `batch_end_ts_iso` = the actual source timestamp.
+Toggles remain until Task 7 and defaults are unchanged:
 
-Source timestamp by flow:
-
-- inference: payload timestamp from SNS/SQS message.
-- non-inference/backfill: S3 object `LastModified` timestamp.
-
-## Current orchestration behavior (implemented)
-
-### Live inference flow
-
-1. S3 producer event -> SNS -> SQS.
-2. Step Functions receives normalized message (`s3_key`, payload timestamp).
-3. Step Functions derives from `s3_key`:
-   - `project_name`, `org1`, `org2`, `mini_batch_id`, `mini_batch_s3_prefix`.
-4. Step Functions loads project defaults from DynamoDB by `project_name`.
-5. Step Functions computes start/end by cron-floor policy.
-6. Step Functions acquires lock (project + feature_spec_version + window).
-7. Step Functions starts 15m pipeline.
-
-### Initial deployment / historical back-processing
-
-A preliminary **SageMaker historical extractor pipeline step** now:
-
-1. enumerate historical batch folders by date range,
-2. parse `project_name` + `mini_batch_id` from path,
-3. resolve `feature_spec_version` from DynamoDB by `project_name`,
-4. read representative object `LastModified`,
-5. compute `batch_start_ts_iso` and `batch_end_ts_iso` by cron-floor policy,
-6. emit execution units consumed by existing backfill orchestration.
-
-No additional Step Function is required; reuse existing backfill state machine.
-
-## Idempotency and duplicate suppression
-
-Use existing lock-table conditional write in orchestration to prevent duplicate executions for the same `(project_name, feature_spec_version, batch_start_ts_iso, batch_end_ts_iso)`.
-
-This is required for producer retries and message redelivery handling.
-
-## Operational notes
-
-- Keep the implementation ML-only and orchestration-centric.
-- Derive runtime identity from path + DynamoDB, with minimal payload assumptions.
-- Use cron-based start-time flooring (`08/23/38/53`) and actual timestamp as end-time.
-- Reuse existing Step Functions; non-inference flow now includes the preliminary SageMaker extraction/attachment step.
-- Skip persistent batch-catalog persistence for now.
+- dev: legacy fallback/parser/listing enabled,
+- stage: fallback/parser disabled, listing enabled,
+- prod: all disabled.

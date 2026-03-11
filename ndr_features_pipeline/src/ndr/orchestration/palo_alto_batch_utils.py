@@ -16,11 +16,6 @@ class ParsedBatchPath:
     day: str
     mini_batch_id: str
 
-def is_migration_toggle_enabled(toggle_name: str) -> bool:
-    """Compatibility toggles are removed in Task 7 and always evaluate to disabled."""
-    return False
-
-
 def _parse_canonical_parts(parts: list[str]) -> ParsedBatchPath:
     if len(parts) < 7:
         raise ValueError("canonical path requires at least 7 segments")

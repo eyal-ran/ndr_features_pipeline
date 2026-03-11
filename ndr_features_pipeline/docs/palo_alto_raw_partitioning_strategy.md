@@ -29,7 +29,7 @@ For 15m ingestion:
 
 - Delta Builder primary input: `raw_parsed_logs_s3_prefix` (runtime pointer).
 - Pair Counts Builder primary input: `raw_parsed_logs_s3_prefix` (runtime pointer for batch data selection).
-- `raw_parsed_logs_s3_prefix` is canonical and required; legacy aliases (`batch_s3_prefix`, `mini_batch_s3_prefix`) are accepted only at ingress/storage boundaries during P1 compatibility narrowing.
+- `raw_parsed_logs_s3_prefix` is canonical and required end-to-end.
 
 ## Slot derivation policy
 

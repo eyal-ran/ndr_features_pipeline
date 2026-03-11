@@ -99,10 +99,7 @@ def _compose_pk(*, project_name: str, data_source_name: str, version: str, date_
 
 
 def _record_from_item(item: dict[str, Any]) -> BatchIndexRecord:
-    raw_prefix = item.get("raw_parsed_logs_s3_prefix")
-    if raw_prefix is None:
-        # P1 compatibility: keep legacy attribute tolerance only at ingress/storage boundary.
-        raw_prefix = item["batch_s3_prefix"]
+    raw_prefix = item["raw_parsed_logs_s3_prefix"]
 
     return BatchIndexRecord(
         project_name=str(item["project_name"]),

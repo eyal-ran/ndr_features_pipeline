@@ -104,7 +104,7 @@ The index schema above is bound to the runtime contract fields:
 
 - `batch_id` -> `mini_batch_id`
 - `raw_parsed_logs_s3_prefix` -> canonical runtime/pipeline surfaces
-- Stage S3/P1 compatibility: legacy aliases are tolerated only at ingress/storage boundaries (`batch_s3_prefix`, `mini_batch_s3_prefix`) and canonical names are required for internal runtime writes/reads.
+- Legacy aliases are unsupported; canonical names are required for all writes/reads.
 - `timestamp` + derived calendar components -> `date_utc`, `hour_utc`, `slot15`
 
 Pipeline parameters for 15m path:
@@ -112,4 +112,3 @@ Pipeline parameters for 15m path:
 - Required: `ProjectName`, `FeatureSpecVersion`, `MiniBatchId`, `RawParsedLogsS3Prefix`, `BatchStartTsIso`, `BatchEndTsIso`
 - Optional by predicate: `MlProjectName`, `MlProjectNamesJson`
 
-P1 note: canonical write is `RawParsedLogsS3Prefix`; legacy aliases are read only at ingress/storage boundaries with deterministic warning logs (`LegacyFieldNameUsed`).

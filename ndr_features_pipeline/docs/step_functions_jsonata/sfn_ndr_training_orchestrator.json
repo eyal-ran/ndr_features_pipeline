@@ -333,7 +333,7 @@
             "S": "{% $exists($states.input.project_name) ? $states.input.project_name : $parsed_project_name %}"
           },
           "job_name_version": {
-            "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
+            "S": "{% 'pipeline_defaults#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
           }
         },
         "ConsistentRead": true
@@ -353,7 +353,7 @@
             "S": "{% $exists($states.input.ml_project_name) ? $states.input.ml_project_name : ($exists($project_defaults.MlProjectName.S) ? $project_defaults.MlProjectName.S : '') %}"
           },
           "job_name_version": {
-            "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
+            "S": "{% 'pipeline_defaults#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
           }
         },
         "ConsistentRead": true

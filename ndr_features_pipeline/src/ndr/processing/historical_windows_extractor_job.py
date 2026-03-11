@@ -14,7 +14,6 @@ from ndr.config.project_parameters_loader import resolve_feature_spec_version
 from ndr.orchestration.palo_alto_batch_utils import (
     parse_batch_path_from_s3_key,
     derive_window_bounds,
-    is_migration_toggle_enabled,
     to_iso_z,
 )
 
@@ -57,18 +56,10 @@ class HistoricalWindowsExtractorJob:
             if rows:
                 return rows
 
-        if not is_migration_toggle_enabled("enable_s3_listing_fallback_for_backfill"):
-            raise RuntimeError(
-                "No batch-index rows resolved for historical window and "
-                "enable_s3_listing_fallback_for_backfill is disabled"
-            ) from index_lookup_error
-
-        rows = self._extract_rows_from_s3_listing()
-        if rows:
-            return rows
         raise RuntimeError(
-            "No historical batches resolved from batch index, and optional S3 listing fallback returned no rows"
-        )
+            "No batch-index rows resolved for historical window and S3 listing fallback is disabled"
+        ) from index_lookup_error
+
 
     def _extract_rows_from_batch_index(self) -> list[dict[str, str]]:
         start_ts = _parse_iso8601(self.runtime_config.start_ts_iso)

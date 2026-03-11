@@ -4,7 +4,6 @@ import pytest
 from ndr.orchestration.palo_alto_batch_utils import (
     derive_window_bounds,
     floor_to_window_minute,
-    is_migration_toggle_enabled,
     parse_batch_path_from_s3_key,
 )
 
@@ -39,9 +38,3 @@ def test_derive_window_bounds_returns_iso_start_and_end():
     assert start_iso == "2025-01-01T10:38:00Z"
     assert end_iso == "2025-01-01T10:40:05Z"
 
-
-def test_migration_toggle_helper_is_hard_disabled_for_task7(monkeypatch):
-    monkeypatch.setenv("NDR_ENV", "dev")
-    monkeypatch.setenv("ENABLE_LEGACY_INPUT_PREFIX_FALLBACK", "true")
-    monkeypatch.setenv("enable_legacy_input_prefix_fallback", "true")
-    assert is_migration_toggle_enabled("enable_legacy_input_prefix_fallback") is False

@@ -796,3 +796,588 @@ Refactor is complete when:
 2. Runtime contract vNext ingestion payload examples from §2 were replicated into architecture docs without shape changes.
 3. DynamoDB table schemas (`ndr_dpp_config`, `ndr_mlp_config`, `ndr_batch_index`) and batch-index idempotent write contract (§4) were aligned in docs.
 4. Optional-field predicates from §2.4 were propagated into docs with deterministic wording.
+
+---
+
+## 11) Refactoring implementation fixes (authoritative execution addendum)
+
+This section is an explicit implementation addendum, intended for an engineer/agent who did **not** participate in earlier discussions.
+
+### 11.0 Governance and precedence rule (normative)
+
+- When any instruction in sections §1–§10 conflicts with §11, **§11 governs**.
+- §11 is the corrective addendum for prior plan/implementation drift; it supersedes conflicting predecessor wording.
+- During execution, implementors must first apply §11, then reconcile predecessor sections so the full file becomes internally consistent.
+
+#### 11.0.1 Mandatory implementation instructions and execution order
+
+Execute Item 11 in the following strict order. Do not merge later stages before earlier stages pass their listed checks.
+
+1. **Stage S0 — Plan reconciliation (docs-only, mandatory first):**
+   - Add/confirm predecessor notes in §§1–10 that conflicting instructions are superseded by §11.
+   - Align plan wording to canonical names from §11.8 and final table/env names from §11.9.
+   - Validation: run §11.10 static checks adjusted for stage scope (no behavior changes yet).
+
+2. **Stage S1 — Contract-surface migration (P0 compatibility):**
+   - Introduce canonical names on external boundaries (payload parsing, pipeline params, CLI args, runtime config fields).
+   - Implement canonical-write + alias-read at boundary layers only.
+   - Emit deterministic legacy warning logs (`LegacyFieldNameUsed`).
+   - Validation: targeted Step Functions + IO contract tests.
+
+3. **Stage S2 — Control-plane migration (split DPP/MLP + linkage):**
+   - Implement/seed `dpp_config`, `mlp_config`, `batch_index` contracts.
+   - Migrate loaders/resolvers from single-table assumptions to split-table reads.
+   - Enforce reciprocal linkage validation (`project_name <-> ml_project_name`).
+   - Validation: loader/seed tests + Step Functions contract tests.
+
+4. **Stage S3 — Runtime/internal canonicalization (P1):**
+   - Convert internals to canonical-only names; keep alias tolerance at ingress boundaries only.
+   - Update batch-index reader/writer field usage to canonical storage names.
+   - Validation: builders, batch-index, and historical extractor tests.
+
+5. **Stage S4 — Cleanup/hard-cutover (P2):**
+   - Remove legacy names from active code/tests/docs.
+   - Remove legacy parser/arg/state branches.
+   - Enforce hard-fail on legacy payload field names.
+   - Validation: full §11.10 matrix must pass.
+
+6. **Stage S5 — Closure and coherence:**
+   - Confirm no contradictions remain between §11 and predecessor sections.
+   - Update plan metadata/changelog and record final sign-off evidence.
+   - Validation: repeat §11.10 matrix + attach results summary.
+
+#### 11.0.2 Mandatory delivery rules for each stage
+
+- One stage per PR; do not combine S1–S4 in one PR.
+- Every stage PR must include:
+  - contract delta,
+  - files changed + rationale,
+  - exact commands run + outputs summary,
+  - rollback instructions.
+- If any mandatory gate fails, stage is not complete.
+
+#### 11.0.3 Prompt location policy (normative)
+
+- Execution prompts are intentionally kept **outside** this plan file.
+- This plan stores only implementation instructions, order, stage boundaries, and quality gates.
+- For each stage, use one externally provided single prompt aligned to §11.0.1 stage scope.
+- Do not persist prompt bodies in this plan file to avoid stale or duplicated operator instructions.
+
+### 11.1 Context and problem statement (expanded)
+
+This section is intentionally explicit and redundant so an implementor with no prior discussion context can execute correctly without re-discovery.
+
+#### 11.1.1 Primary business/technical problem being fixed
+
+The central refactoring purpose is to correct a runtime/path-contract misalignment:
+
+- Existing logic and documentation in multiple places treat `batch_s3_prefix`/`mini_batch_s3_prefix` as canonical runtime entities.
+- The real producer event contract and ingestion bucket layout are based on **full S3 path + isolated identity fields**.
+- Historical pipeline/path usage also mixed DPP and MLP identities in ways that reduced project-agnostic behavior.
+
+In practical terms, the misalignment manifested as path and identity confusion between:
+
+- DPP data-processing identity (`project_name` interpreted as data source), and
+- MLP identity (`ml_project_name` for ML-specific outputs and operations).
+
+#### 11.1.2 Canonical ingestion path and event payload reality
+
+Canonical ingestion batch location:
+
+- `s3://<S3-ingestion-bucket>/<data_source_name>/<org1>/<org2>/<YYYY>/<MM>/<dd>/<batch_id>/<batch_file_1..n>`
+
+Where:
+
+- `batch_id` is the hashed folder name (opaque/meaningless hash, but authoritative batch identity).
+- `data_source_name` (for example `fw_paloalto`) is the DPP scope identity and is used as DPP `project_name`.
+- `org1`/`org2` are org partition components.
+- ETL timestamp is the write-time timestamp associated with this batch publication.
+
+Event delivery chain and payload source of truth:
+
+- ETL SF -> SNS -> SQS -> EventBridge Pipe -> 15m inference SF.
+- At 15m SF trigger time, the payload already contains:
+  - full batch S3 path (to the raw/parsed flattened logs batch folder/files),
+  - isolated `batch_id`,
+  - isolated `data_source_name` (must become DPP `project_name`),
+  - ETL timestamp.
+- The same canonical full prefix (`raw_parsed_logs_s3_prefix`) must also exist as a DPP config attribute so orchestration and non-RT flows can resolve base ingestion location deterministically from DDB.
+
+#### 11.1.3 Naming clarification and deprecation intent
+
+- There is no canonical domain entity named `batch_s3_prefix`.
+- If `batch_s3_prefix` / `mini_batch_s3_prefix` appear in code/docs/tests, they are to be treated as legacy/debt naming and migrated.
+- Implementations should use the canonical full raw-parsed-logs prefix field `raw_parsed_logs_s3_prefix` (full S3 prefix up to and including `batch_id`) plus isolated `batch_id`, `data_source_name`, and timestamp.
+
+#### 11.1.4 DPP vs MLP scope split (what each subsystem must own)
+
+DPP (data processing project) scope:
+
+- `project_name` is always the data source identity (`project_name == data_source_name`).
+- All DPP IO prefixes are rooted by data source identity.
+- Delta -> pair-counts -> feature processing products are managed under data-source rooted prefixes to keep DPP project-agnostic and reusable by many MLPs.
+
+MLP (ML project) scope:
+
+- ML-specific flows use `ml_project_name` rooted prefixes.
+- This includes training artifacts, model artifacts, reports, model outputs, and other ML lifecycle outputs.
+- One DPP source may fan out to one or many MLP branches (`ml_project_name` or `ml_project_names`).
+
+#### 11.1.5 Why split control-plane tables are mandatory
+
+Different subsystems require different configuration ownership and lifecycle control:
+
+- DPP config table stores data-source scoped processing configuration, including base ingestion prefix attribute (`raw_parsed_logs_s3_prefix`).
+- MLP config table stores ML-project scoped configuration.
+- Reciprocal linkage is mandatory:
+  - DPP row includes linked `ml_project_name` (or list for fan-out semantics),
+  - MLP row includes linked source `project_name` (data source identity).
+
+This linkage enables 15m SF to:
+
+1. resolve DPP config using incoming `project_name` (= `data_source_name`),
+2. resolve linked MLP config using `ml_project_name`,
+3. pass correct DPP-vs-MLP parameters/prefixes into downstream pipelines,
+4. support multi-MLP fan-out consuming the same DPP-produced data products.
+
+#### 11.1.6 Batch index table role and non-RT support
+
+A third table is required for batch indexing:
+
+- 15m SF writes isolated batch identity/time records per event.
+- Forward lookup supports `timestamp/date-range -> batch_id` discovery.
+- Reverse lookup supports `batch_id -> timestamp/latest record` discovery.
+
+This is required for non-RT scenarios such as:
+
+- backfill/training data reconstruction over historical windows,
+- initial historical bootstrapping on first deployment,
+- deterministic replay/recovery without brittle S3 listing dependence.
+
+#### 11.1.7 Prefix composition principle (global)
+
+Across the project, the rule is:
+
+- base prefixes must be read from DDB config tables,
+- only date/time partition suffixes and `batch_id` are composed dynamically.
+
+This applies to RT and non-RT flows, including index-assisted retrospective reconstruction.
+
+#### 11.1.8 Generic naming and de-branding expectation
+
+DPP and MLP are intended to be generic/project-agnostic subsystems. Within refactor scope:
+
+- reduce/remove hardcoded `ndr`/`NDR` naming in table names, env vars, and prefixes where feasible,
+- examples include removing `ndr_` prefixes from table names (`ndr_dpp_config`, `ndr_mlp_config`, `ndr_batch_index`) in favor of normalized generic names,
+- keep compatibility migration notes only where operationally necessary.
+
+### 11.2 Operational architecture decisions to preserve
+
+1. DPP and MLP config concerns are separated into distinct control-plane tables.
+2. DPP→MLP and MLP→DPP linkage is explicit and deterministic.
+3. 15m SF writes to a third batch-index table for:
+   - forward lookup (`timestamp/date-range -> batch_ids`),
+   - reverse lookup (`batch_id -> timestamp/latest record`).
+4. Base prefixes come from config tables. Dynamic composition is limited to date partitions and batch identity segments.
+5. Multi-MLP fan-out remains supported from one DPP-triggered batch.
+
+### 11.3 Refactoring purposes and tactics (7-point summary)
+
+1. **No canonical `batch_s3_prefix` or `ingestion_s3_path` entity**: canonical ingestion contract uses `raw_parsed_logs_s3_prefix` (full S3 prefix up to and including `batch_id`) + isolated `batch_id` + isolated `data_source_name` (used as DPP `project_name`) + ETL timestamp.
+2. **15m inference SF already has full path**: pass the path directly to Delta/Pair Counts and derive partition/index fields from path + timestamp.
+3. **DPP IO prefixes must be data-source based**: DPP `project_name == data_source_name`, keeping data processing generic/project-agnostic.
+4. **MLP IO prefixes must be ml-project based**: training/model artifacts/reports and related ML outputs are rooted by `ml_project_name`.
+5. **Split config + linkage + batch index**: DPP config table, MLP config table, and batch-index table with reciprocal DPP/MLP link attributes.
+6. **Read all base prefixes from DDB config**: only date/batch suffixes are dynamically composed.
+7. **Reduce/remove `ndr`/`NDR` naming where feasible in this refactor scope**: normalize generic subsystem naming in table names, env vars, docs, and contracts while preserving compatibility migration notes where required.
+
+### 11.4 Mandatory implementation fix list (A–D)
+
+The following files and changes are mandatory for full implementation alignment.
+
+#### A) 15m ingestion contract and runtime pointer normalization
+
+1. **`docs/step_functions_jsonata/sfn_ndr_15m_features_inference.json`**
+   - **Issue**: runtime pointer contract still treats `batch_s3_prefix` / `mini_batch_s3_prefix` as canonical inputs.
+   - **Violation**: §11.3 points 1–2.
+   - **Fix**:
+     - Make full ingestion path field canonical (`s3_key`/`batch_s3_path` path source).
+     - Keep `batch_id`, `data_source_name`, timestamp as first-class isolated fields.
+     - Derive internal pointer/path fields from canonical full path (optionally keeping old names as temporary aliases).
+     - Ensure batch-index write keys and partition fields are derived from canonical path + timestamp deterministically.
+   - **Why this remedies misalignment**: aligns orchestration with actual producer payload and eliminates contract drift.
+
+2. **`docs/architecture/orchestration/step_functions.md`**
+   - **Issue**: examples/rules still describe `batch_s3_prefix` as canonical payload member.
+   - **Violation**: §11.3 points 1–2.
+   - **Fix**:
+     - Rewrite ingestion examples to canonical full-path model with isolated `batch_id` / `data_source_name` / timestamp.
+     - Document legacy alias handling only if transitional compatibility is still required.
+   - **Why**: keeps docs consistent with operational runtime reality.
+
+3. **`docs/palo_alto_raw_partitioning_strategy.md`**
+   - **Issue**: source-of-truth section still says payload `batch_id` + `batch_s3_prefix` are authoritative.
+   - **Violation**: §11.3 points 1–2.
+   - **Fix**:
+     - Replace with full-ingestion-path authoritative contract.
+     - Explicitly document derivation of `YYYY/MM/dd`, org prefixes, and batch identity used for index writes.
+   - **Why**: removes misleading contract text for implementors/operators.
+
+4. **`docs/architecture/data_projects_vs_ml_projects.md`**
+   - **Issue**: contract examples retain non-canonical pointer naming and legacy table naming.
+   - **Violation**: §11.3 points 1, 5, 7.
+   - **Fix**:
+     - Update payload examples and validation bullets to path-first contract.
+     - Update table references to normalized names selected in this execution.
+   - **Why**: preserves architecture consistency across docs.
+
+#### B) DPP/MLP split tables, linkage, and loader/orchestration migration
+
+5. **`docs/architecture/orchestration/dynamodb_io_contract.md`**
+   - **Issue**: still describes a single-table `project_parameters#<version>` contract.
+   - **Violation**: §11.3 points 5–6.
+   - **Fix**:
+     - Rewrite to explicit DPP config table + MLP config table + batch-index table contracts.
+     - Specify reciprocal linkage fields and read precedence.
+   - **Why**: prevents implementation from using obsolete control-plane model.
+
+6. **`src/ndr/scripts/create_ml_projects_parameters_table.py`**
+   - **Issue**: seed/create logic remains centered on single-table legacy shape and naming.
+   - **Violation**: §11.3 points 5–7.
+   - **Fix**:
+     - Introduce/create seeds for split DPP/MLP config tables and routing/index contracts.
+     - Ensure seeded base prefixes are clearly separated by subsystem scope (DPP vs MLP).
+     - Rename env vars/table defaults toward generic naming where in scope.
+   - **Why**: bootstrap artifacts must reflect target architecture.
+
+7. **`src/ndr/config/job_spec_loader.py`**
+   - **Issue**: loader tied to legacy table and `job_name#version` pattern.
+   - **Violation**: §11.3 points 5–6.
+   - **Fix**:
+     - Add split-table aware resolution strategy (DPP vs MLP spec lookup).
+     - Keep deterministic erroring when linkage/config records are missing.
+   - **Why**: avoids hidden coupling to deprecated schema.
+
+8. **`src/ndr/config/project_parameters_loader.py`**
+   - **Issue**: project-parameter loading still assumes single-table model.
+   - **Violation**: §11.3 points 5–6.
+   - **Fix**:
+     - Replace with DPP/MLP config resolvers.
+     - Add explicit linkage checks (`project_name -> ml_project_name`, `ml_project_name -> project_name`).
+     - Keep/rename batch-index table resolver to normalized naming.
+   - **Why**: enforces correct subsystem boundaries and identity mapping.
+
+9. **`docs/step_functions_jsonata/sfn_ndr_backfill_reprocessing.json`**
+10. **`docs/step_functions_jsonata/sfn_ndr_monthly_fg_b_baselines.json`**
+11. **`docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json`**
+12. **`docs/step_functions_jsonata/sfn_ndr_prediction_publication.json`**
+   - **Issue (all)**: still load `project_parameters#<version>` from a single project-parameters table.
+   - **Violation**: §11.3 points 5–6.
+   - **Fix**:
+     - Migrate each orchestration definition to split config reads and deterministic identity propagation.
+     - Ensure DPP-scoped paths remain data-source rooted and MLP-scoped paths remain ml-project rooted.
+   - **Why**: completes control-plane migration across all orchestrators.
+
+#### C) Runtime arg/contract names and index schema naming normalization
+
+13. **`src/ndr/scripts/run_delta_builder.py`**
+14. **`src/ndr/scripts/run_pair_counts_builder.py`**
+15. **`src/ndr/processing/delta_builder_job.py`**
+16. **`src/ndr/processing/pair_counts_builder_job.py`**
+17. **`src/ndr/pipeline/sagemaker_pipeline_definitions_unified_with_fgc.py`**
+   - **Issue**: external/runtime contract currently exposes `mini_batch_s3_prefix` naming.
+   - **Violation**: §11.3 point 1.
+   - **Fix**:
+     - Rename public runtime args/parameters to canonical path-first names.
+     - If migration is needed, support alias + deprecation warning window, then remove alias in cleanup task.
+   - **Why**: removes conceptual mismatch and aligns with producer payload semantics.
+
+18. **`src/ndr/config/batch_index_loader.py`**
+19. **`src/ndr/config/batch_index_writer.py`**
+   - **Issue**: schema attribute naming still uses `batch_s3_prefix`.
+   - **Violation**: §11.3 points 1 and 5.
+   - **Fix**:
+     - Rename storage attribute to canonical ingestion path name (or formalize temporary dual-read/dual-write migration).
+     - Preserve idempotent key/condition semantics.
+   - **Why**: keeps index schema semantically consistent with refactor contract.
+
+#### D) Test suite and documentation synchronization for final contract
+
+20. **`tests/test_io_contract.py`**
+   - **Issue**: asserts deprecated/legacy pointer arg naming.
+   - **Violation**: §11.3 points 1 and 7.
+   - **Fix**: update assertions to canonical runtime arg names and expected aliases (if transitional).
+
+21. **`tests/test_step_functions_item19_contracts.py`**
+   - **Issue**: contract assertions still pinned to old pointer naming and update-expression literals.
+   - **Violation**: §11.3 points 1, 5.
+   - **Fix**: align expected expressions/parameters with canonical naming + split-table state transitions.
+
+22. **`tests/test_create_ml_projects_parameters_table.py`**
+23. **`tests/test_project_parameters_loader.py`**
+   - **Issue**: tests enforce legacy single-table/project-parameters key pattern.
+   - **Violation**: §11.3 points 5–6.
+   - **Fix**: replace with split-table seed/loader/linkage tests.
+
+24. **`tests/test_step_functions_jsonata_contracts.py`**
+   - **Issue**: state-name expectations implicitly assume legacy single-table load flow.
+   - **Violation**: §11.3 points 5–6.
+   - **Fix**: update tests to validate new resolver states and split control-plane contract.
+
+25. **`docs/pipelines/pipelines_flow_description.md`**
+26. **`docs/archive/debug_records/refactoring_plan_dpp_mlp.md`**
+   - **Issue**: naming/contract language drift and metadata inconsistency.
+   - **Violation**: §11.3 point 7 + docs alignment requirement.
+   - **Fix**:
+     - synchronize flow descriptions with final contract and selected normalized naming.
+     - update plan metadata/version text to reflect post-fix completion status accurately.
+
+### 11.5 Additional required documentation-principles alignment fix
+
+27. **Project-wide documentation principle alignment (all relevant docs)**
+   - **Issue**: some docs describe direct/static prefix composition patterns or mixed ownership boundaries.
+   - **Required principle**:
+     - base S3 prefixes are sourced from DDB config tables,
+     - runtime composes only date-partition and batch-id suffixes,
+     - DPP prefix roots use `project_name` (= data source),
+     - MLP prefix roots use `ml_project_name`.
+   - **Fix**:
+     - audit all architecture/orchestration/pipeline docs for these principles,
+     - correct any contradicting examples, and
+     - add one concise “prefix composition rules” section to each high-level orchestration doc.
+   - **Why**: protects long-term consistency beyond this specific refactor.
+
+### 11.6 Additional implementor guidance for successful execution
+
+To maximize delivery quality and reduce regression risk, implement in the following order:
+
+1. **Contract naming and schema decisions first**
+   - finalize canonical field/table/env names,
+   - define compatibility alias policy and end-of-life date for aliases.
+
+2. **Control-plane migration second**
+   - implement split loaders and seeders,
+   - migrate Step Functions DDB read states.
+
+3. **Runtime argument migration third**
+   - update 15m SF, pipeline definitions, scripts, and builder runtime configs in one cohesive change.
+
+4. **Batch-index compatibility-safe migration**
+   - if renaming stored attributes, use dual-read/dual-write transitional window when required.
+
+5. **Tests/docs in same PR as behavior changes**
+   - keep contract tests synchronized with code changes.
+
+6. **Validation gates before merge**
+   - targeted tests for Step Functions contracts, loader/seed logic, batch-index read/write, and builders.
+   - confirm no stale `batch_s3_prefix` canonical references remain except in explicit compatibility notes.
+   - confirm no stale single-table assumptions remain in code/docs/tests.
+
+7. **Operational readiness checks**
+   - log final resolved DPP/MLP identities per branch,
+   - include explicit failure causes for missing linkage/config,
+   - ensure reverse-lookup and backfill paths remain deterministic.
+
+### 11.7 Completion addendum for this section
+
+This addendum is complete when:
+
+- all items A–D plus item 27 are implemented,
+- all renamed contract fields are consistently applied or explicitly aliased with retirement notes,
+- docs and tests fully match the final implemented contract,
+- DPP and MLP flows are both project-agnostic and correctly scoped by their respective identities.
+
+### 11.8 Deterministic migration matrix: canonical field names and phase behavior
+
+This matrix is normative and machine-checkable. Implementations MUST follow it exactly.
+
+#### 11.8.1 Canonical runtime vocabulary (final target)
+
+- Canonical full raw-parsed-logs prefix field: `raw_parsed_logs_s3_prefix`.
+  - Semantic definition: full S3 prefix up to and including `batch_id`, i.e.    `s3://<S3-ingestion-bucket>/<data_source_name>/<org1>/<org2>/<YYYY>/<MM>/<dd>/<batch_id>/`
+- Canonical batch identity field: `batch_id`.
+- Canonical source identity field: `data_source_name` (mapped to DPP `project_name`).
+- Canonical event-time field: `etl_timestamp` (ISO-8601 UTC `Z`).
+
+Deprecated names to retire:
+
+- `batch_s3_prefix`
+- `mini_batch_s3_prefix`
+- `MiniBatchS3Prefix`
+- `ingestion_s3_path`
+- `IngestionS3Path`
+- CLI flags `--mini-batch-s3-prefix`, `--ingestion-s3-path`
+
+#### 11.8.2 Old -> new map (strict)
+
+| Legacy name | New canonical name | Surface | Final status |
+|---|---|---|---|
+| `batch_s3_prefix` | `raw_parsed_logs_s3_prefix` | JSON payload / DDB attribute alias | removed at P2 |
+| `mini_batch_s3_prefix` | `raw_parsed_logs_s3_prefix` | internal runtime field / JSON alias | removed at P2 |
+| `ingestion_s3_path` | `raw_parsed_logs_s3_prefix` | transitional alias | removed at P2 |
+| `MiniBatchS3Prefix` | `RawParsedLogsS3Prefix` | pipeline parameter | removed at P2 |
+| `IngestionS3Path` | `RawParsedLogsS3Prefix` | pipeline parameter alias | removed at P2 |
+| `--mini-batch-s3-prefix` | `--raw-parsed-logs-s3-prefix` | CLI runtime arg | removed at P2 |
+| `--ingestion-s3-path` | `--raw-parsed-logs-s3-prefix` | CLI alias | removed at P2 |
+| `batch_s3_prefix` (batch-index attr) | `raw_parsed_logs_s3_prefix` | batch-index row attribute | legacy attr removed at P2 |
+
+#### 11.8.3 Phase gates and accepted-name policy
+
+- **P0 (compatibility introduction, mandatory first merge):**
+  - Writers emit canonical names (`raw_parsed_logs_s3_prefix`, `RawParsedLogsS3Prefix`, `--raw-parsed-logs-s3-prefix`).
+  - Readers accept canonical plus legacy aliases.
+  - Any legacy-name usage must emit deterministic warning log:
+    - code: `LegacyFieldNameUsed`
+    - field: `<legacy_name>`
+- **P1 (compatibility narrowing):**
+  - Canonical names required for writes.
+  - Readers accept legacy names only at ingress boundary layers (15m SF input parsing + batch-index dual-read).
+  - Internal modules (runtime config, pipeline args, builders) are canonical-only.
+- **P2 (final cleanup):**
+  - Legacy names removed from code, tests, and docs.
+  - No legacy-name parser branches remain.
+  - Any legacy field in payload hard-fails with deterministic validation error:
+    - code: `RuntimeParameterValidationError`
+    - cause includes: `legacy field not supported`
+
+### 11.9 Deterministic naming freeze: table/env names and cutover windows
+
+This matrix freezes the final naming target and cutover expectations.
+
+#### 11.9.1 Final table names (canonical)
+
+- DPP config table: `dpp_config`
+- MLP config table: `mlp_config`
+- batch index table: `batch_index`
+
+Legacy names slated for removal:
+
+- `ndr_dpp_config`
+- `ndr_mlp_config`
+- `ndr_batch_index`
+
+#### 11.9.2 Final env var names (canonical)
+
+- `DPP_CONFIG_TABLE_NAME`
+- `MLP_CONFIG_TABLE_NAME`
+- `BATCH_INDEX_TABLE_NAME`
+
+Legacy env vars slated for removal:
+
+- `NDR_BATCH_INDEX_TABLE_NAME`
+- `BATCH_INDEX_DDB_TABLE_NAME`
+- any table env var keyed to legacy single-table model for DPP/MLP control-plane loading.
+
+#### 11.9.3 Cutover window and enforcement
+
+- **W0 (P0):** canonical + legacy env vars accepted; canonical takes precedence.
+- **W1 (P1):** canonical env vars required in deploy templates; legacy still read only as fallback with warning.
+- **W2 (P2):** legacy env vars unsupported; startup hard-fails if only legacy env vars are set.
+
+Deterministic startup failure format at W2:
+
+- exception class: `ValueError`
+- message pattern: `Missing required env var: <CANONICAL_ENV_VAR>`
+
+### 11.10 Hard acceptance matrix (machine-checkable completion sign-off)
+
+All commands MUST pass exactly as specified below for completion approval.
+
+#### 11.10.1 Static contract checks
+
+1. Canonical field names present; legacy names absent from runtime code/docs/tests (except archived debug docs).
+
+```bash
+rg -n "raw_parsed_logs_s3_prefix|RawParsedLogsS3Prefix|--raw-parsed-logs-s3-prefix" src docs tests
+```
+Expected:
+- one or more matches.
+
+```bash
+rg -n "batch_s3_prefix|mini_batch_s3_prefix|MiniBatchS3Prefix|ingestion_s3_path|IngestionS3Path|--mini-batch-s3-prefix|--ingestion-s3-path" src tests docs --glob '!docs/archive/**'
+```
+Expected:
+- zero matches.
+
+2. Final table names present; legacy `ndr_` table names absent from active contracts.
+
+```bash
+rg -n "dpp_config|mlp_config|batch_index" src docs tests
+```
+Expected:
+- matches in loaders/docs/tests.
+
+```bash
+rg -n "ndr_dpp_config|ndr_mlp_config|ndr_batch_index" src tests docs --glob '!docs/archive/**'
+```
+Expected:
+- zero matches (archive/history files are excluded by command scope).
+
+3. Step Functions contract no longer loads legacy single-table `project_parameters#` records.
+
+```bash
+rg -n "project_parameters#|LoadProjectParametersFromDynamo" docs/step_functions_jsonata/sfn_ndr_*.json
+```
+Expected:
+- zero matches.
+
+#### 11.10.2 Unit/contract test execution gates
+
+```bash
+PYTHONPATH=src pytest -q tests/test_step_functions_item19_contracts.py tests/test_step_functions_jsonata_contracts.py tests/test_io_contract.py
+```
+Expected:
+- exit code 0.
+
+```bash
+PYTHONPATH=src pytest -q tests/test_create_ml_projects_parameters_table.py tests/test_project_parameters_loader.py tests/test_batch_index_loader.py tests/test_batch_index_writer.py tests/test_historical_windows_extractor_job.py
+```
+Expected:
+- exit code 0.
+
+```bash
+PYTHONPATH=src pytest -q tests/test_pair_counts_builder_job.py tests/test_palo_alto_batch_utils.py
+```
+Expected:
+- exit code 0.
+
+#### 11.10.3 Runtime/config sanity gates
+
+```bash
+python -m py_compile src/ndr/config/job_spec_loader.py src/ndr/config/project_parameters_loader.py src/ndr/config/batch_index_loader.py src/ndr/config/batch_index_writer.py src/ndr/scripts/run_delta_builder.py src/ndr/scripts/run_pair_counts_builder.py src/ndr/processing/delta_builder_job.py src/ndr/processing/pair_counts_builder_job.py
+```
+Expected:
+- exit code 0.
+
+#### 11.10.4 Completion verdict rule
+
+Implementation is approved only if all commands in §11.10.1–§11.10.3 pass, with no waived failures.
+Any failure is a blocker and must be fixed in the same delivery stream before marking this refactor complete.
+
+### 11.11 Plan-level reconciliation of predecessor sections and migration sequencing
+
+To resolve internal contradictions across this file, apply this mandatory reconciliation sequence:
+
+1. **Precedence enforcement commit (docs-only):**
+   - annotate §§1–10 with a short note: `Superseded by §11 where conflicting`.
+   - do not change behavior in this step.
+
+2. **Contract harmonization commit:**
+   - update §§1–4 canonical payload/field/table naming to match §11.8/§11.9 exactly.
+   - remove contradictory references to `batch_s3_prefix`, `mini_batch_s3_prefix`, and non-canonical table/env names from active sections.
+
+3. **Implementation migration commits (P0 -> P1 -> P2):**
+   - P0: canonical-write + alias-read introduction.
+   - P1: internal canonical-only, boundary alias tolerance.
+   - P2: alias removal and hard-fail on legacy names.
+
+4. **Acceptance-gate commit:**
+   - run and record all §11.10 commands with pass/fail outcomes.
+   - any failure blocks closure.
+
+5. **Final plan coherence commit:**
+   - verify no contradictions remain between §11 and predecessor sections.
+   - update “Version bump and changelog” to final post-reconciliation status.
+
+No task may be marked complete unless this sequence is followed in order.
+

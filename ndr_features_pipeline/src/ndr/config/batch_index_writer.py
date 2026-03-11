@@ -23,7 +23,7 @@ class BatchIndexWriteRequest:
     hour_utc: str
     slot15: int
     batch_id: str
-    batch_s3_prefix: str
+    raw_parsed_logs_s3_prefix: str
     event_ts_utc: str
     org1: str
     org2: str
@@ -57,7 +57,7 @@ class BatchIndexWriter:
         self._table.update_item(
             Key={"pk": write_request.pk, "sk": write_request.sk},
             UpdateExpression=(
-                "SET batch_s3_prefix = :batch_s3_prefix, "
+                "SET raw_parsed_logs_s3_prefix = :raw_parsed_logs_s3_prefix, "
                 "event_ts_utc = :event_ts_utc, "
                 "ingested_at_utc = :ingested_at_utc, "
                 "#status = :status, "
@@ -68,7 +68,7 @@ class BatchIndexWriter:
             ),
             ExpressionAttributeNames={"#status": "status"},
             ExpressionAttributeValues={
-                ":batch_s3_prefix": write_request.batch_s3_prefix,
+                ":raw_parsed_logs_s3_prefix": write_request.raw_parsed_logs_s3_prefix,
                 ":event_ts_utc": write_request.event_ts_utc,
                 ":ingested_at_utc": _now_iso(),
                 ":status": write_request.status,
@@ -91,7 +91,7 @@ class BatchIndexWriter:
             "hour_utc": write_request.hour_utc,
             "slot15": write_request.slot15,
             "batch_id": write_request.batch_id,
-            "batch_s3_prefix": write_request.batch_s3_prefix,
+            "raw_parsed_logs_s3_prefix": write_request.raw_parsed_logs_s3_prefix,
             "event_ts_utc": write_request.event_ts_utc,
             "org1": write_request.org1,
             "org2": write_request.org2,

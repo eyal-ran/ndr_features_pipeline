@@ -47,7 +47,7 @@ class _Table:
                         "data_source_name": "fw_paloalto",
                         "version": "v1",
                         "batch_id": "mb-2",
-                        "batch_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-2/",
+                        "raw_parsed_logs_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-2/",
                         "event_ts_utc": "2025-01-01T10:30:00Z",
                     }
                 ]
@@ -60,7 +60,7 @@ class _Table:
                     "data_source_name": "fw_paloalto",
                     "version": "v1",
                     "batch_id": "mb-1",
-                    "batch_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-1/",
+                    "raw_parsed_logs_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-1/",
                     "event_ts_utc": "2025-01-01T10:15:00Z",
                 },
                 {
@@ -68,7 +68,7 @@ class _Table:
                     "data_source_name": "fw_paloalto",
                     "version": "v1",
                     "batch_id": "mb-2",
-                    "batch_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-2/",
+                    "raw_parsed_logs_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-2/",
                     "event_ts_utc": "2025-01-01T10:30:00Z",
                 },
             ]
@@ -113,7 +113,7 @@ def test_lookup_reverse_uses_gsi1(monkeypatch):
         batch_id="mb-2",
     )
     assert row is not None
-    assert row.batch_s3_prefix.endswith("/mb-2/")
+    assert row.raw_parsed_logs_s3_prefix.endswith("/mb-2/")
 
 
 def test_lookup_forward_handles_paginated_query(monkeypatch):
@@ -143,7 +143,7 @@ def test_lookup_forward_handles_paginated_query(monkeypatch):
                         "data_source_name": "fw_paloalto",
                         "version": "v1",
                         "batch_id": "mb-2",
-                        "batch_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-2/",
+                        "raw_parsed_logs_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-2/",
                         "event_ts_utc": "2025-01-01T10:20:00Z",
                     }
                 ]
@@ -160,3 +160,35 @@ def test_lookup_forward_handles_paginated_query(monkeypatch):
         end_ts_iso="2025-01-01T11:00:00Z",
     )
     assert [row.batch_id for row in rows] == ["mb-1", "mb-2"]
+
+
+def test_lookup_forward_tolerates_legacy_batch_s3_prefix(monkeypatch):
+    import ndr.config.batch_index_loader as module
+
+    class _LegacyTable(_Table):
+        def query(self, **kwargs):
+            self.query_calls.append(kwargs)
+            return {
+                "Items": [
+                    {
+                        "project_name": "fw_paloalto",
+                        "data_source_name": "fw_paloalto",
+                        "version": "v1",
+                        "batch_id": "mb-3",
+                        "batch_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-3/",
+                        "event_ts_utc": "2025-01-01T10:30:00Z",
+                    }
+                ]
+            }
+
+    fake_table = _LegacyTable()
+    monkeypatch.setattr(module.boto3, "resource", lambda *_a, **_k: _Resource(fake_table), raising=False)
+    loader = BatchIndexLoader(table_name="idx")
+    rows = loader.lookup_forward(
+        project_name="fw_paloalto",
+        data_source_name="fw_paloalto",
+        version="v1",
+        start_ts_iso="2025-01-01T10:00:00Z",
+        end_ts_iso="2025-01-01T11:00:00Z",
+    )
+    assert rows[0].raw_parsed_logs_s3_prefix.endswith("/mb-3/")

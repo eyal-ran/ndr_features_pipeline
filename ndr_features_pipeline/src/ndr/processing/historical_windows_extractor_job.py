@@ -98,7 +98,7 @@ class HistoricalWindowsExtractorJob:
                     "project_name": project_name,
                     "feature_spec_version": feature_spec_version,
                     "mini_batch_id": record.batch_id,
-                    "mini_batch_s3_prefix": record.batch_s3_prefix,
+                    "raw_parsed_logs_s3_prefix": record.raw_parsed_logs_s3_prefix,
                     "batch_start_ts_iso": batch_start_ts_iso,
                     "batch_end_ts_iso": batch_end_ts_iso,
                     "source_last_modified_ts_iso": to_iso_z(source_ts),
@@ -134,7 +134,7 @@ class HistoricalWindowsExtractorJob:
                     grouped[group_key] = {
                         "project_name": parsed.project_name,
                         "mini_batch_id": parsed.mini_batch_id,
-                        "mini_batch_s3_prefix": mini_batch_prefix,
+                        "raw_parsed_logs_s3_prefix": mini_batch_prefix,
                         "last_modified": last_modified,
                     }
 
@@ -153,7 +153,7 @@ class HistoricalWindowsExtractorJob:
                     "project_name": project_name,
                     "feature_spec_version": feature_spec_version,
                     "mini_batch_id": str(item["mini_batch_id"]),
-                    "mini_batch_s3_prefix": str(item["mini_batch_s3_prefix"]),
+                    "raw_parsed_logs_s3_prefix": str(item["raw_parsed_logs_s3_prefix"]),
                     "batch_start_ts_iso": batch_start_ts_iso,
                     "batch_end_ts_iso": batch_end_ts_iso,
                     "source_last_modified_ts_iso": to_iso_z(source_ts),

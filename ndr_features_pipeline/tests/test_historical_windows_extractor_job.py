@@ -90,7 +90,7 @@ def test_extractor_prefers_batch_index_rows(monkeypatch):
             [
                 types.SimpleNamespace(
                     batch_id="mb-9",
-                    batch_s3_prefix="s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-9/",
+                    raw_parsed_logs_s3_prefix="s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-9/",
                     event_ts_utc="2025-01-01T10:40:00Z",
                 )
             ]
@@ -108,6 +108,7 @@ def test_extractor_prefers_batch_index_rows(monkeypatch):
     assert uri.startswith("s3://bucket/out/historical_windows/")
     body = fake_s3.put_calls[0]["Body"].decode("utf-8")
     assert '"mini_batch_id": "mb-9"' in body
+    assert '"raw_parsed_logs_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-9/"' in body
 
 
 def test_extractor_errors_when_index_empty_and_fallback_disabled(monkeypatch):

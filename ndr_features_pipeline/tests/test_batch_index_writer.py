@@ -59,7 +59,7 @@ def test_upsert_uses_exact_idempotent_contract(monkeypatch):
             hour_utc="10",
             slot15=2,
             batch_id="mb-1",
-            batch_s3_prefix="s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-1/",
+            raw_parsed_logs_s3_prefix="s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-1/",
             event_ts_utc="2025-01-01T10:20:00Z",
             org1="org1",
             org2="org2",
@@ -78,4 +78,5 @@ def test_upsert_uses_exact_idempotent_contract(monkeypatch):
     assert fake_table.update_calls
     update_call = fake_table.update_calls[0]
     assert update_call["ConditionExpression"] == "attribute_exists(pk) AND attribute_exists(sk)"
+    assert "raw_parsed_logs_s3_prefix = :raw_parsed_logs_s3_prefix" in update_call["UpdateExpression"]
     assert "ml_project_name = if_not_exists(ml_project_name, :ml_project_name)" in update_call["UpdateExpression"]

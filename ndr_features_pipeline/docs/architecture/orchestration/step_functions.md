@@ -56,7 +56,7 @@ For Task 1, this is a documentation foundation only.
 - `feature_spec_version`
 - `mini_batch_id` (= `batch_id`)
 - `raw_parsed_logs_s3_prefix` (= ingestion batch prefix)
-- Compatibility aliases accepted at ingress only: `batch_s3_prefix`, `mini_batch_s3_prefix`
+- Stage S3/P1 compatibility aliases are accepted only at ingress/storage boundaries: `batch_s3_prefix`, `mini_batch_s3_prefix`.
 - `batch_start_ts_iso`
 - `batch_end_ts_iso`
 - `date_utc` (YYYY-MM-DD)

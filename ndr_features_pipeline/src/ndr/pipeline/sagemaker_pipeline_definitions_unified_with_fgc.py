@@ -14,7 +14,7 @@ contracts:
      --project-name
      --feature-spec-version
      --mini-batch-id
-     --mini-batch-s3-prefix
+     --raw-parsed-logs-s3-prefix
      --batch-start-ts-iso
      --batch-end-ts-iso
 
@@ -111,9 +111,9 @@ def build_delta_builder_pipeline(
         name="MiniBatchId",
         default_value="<required:MiniBatchId>",
     )
-    mini_batch_s3_prefix = ParameterString(
-        name="MiniBatchS3Prefix",
-        default_value="<required:MiniBatchS3Prefix>",
+    raw_parsed_logs_s3_prefix = ParameterString(
+        name="RawParsedLogsS3Prefix",
+        default_value="<required:RawParsedLogsS3Prefix>",
     )
     batch_start_ts_iso = ParameterString(
         name="BatchStartTsIso",
@@ -141,8 +141,8 @@ def build_delta_builder_pipeline(
             feature_spec_version,
             "--mini-batch-id",
             mini_batch_id,
-            "--mini-batch-s3-prefix",
-            mini_batch_s3_prefix,
+            "--raw-parsed-logs-s3-prefix",
+            raw_parsed_logs_s3_prefix,
             "--batch-start-ts-iso",
             batch_start_ts_iso,
             "--batch-end-ts-iso",
@@ -158,7 +158,7 @@ def build_delta_builder_pipeline(
             project_name,
             feature_spec_version,
             mini_batch_id,
-            mini_batch_s3_prefix,
+            raw_parsed_logs_s3_prefix,
             batch_start_ts_iso,
             batch_end_ts_iso,
         ],
@@ -201,7 +201,7 @@ def build_15m_streaming_pipeline(
       --project-name
       --feature-spec-version
       --mini-batch-id
-      --mini-batch-s3-prefix
+      --raw-parsed-logs-s3-prefix
       --batch-start-ts-iso
       --batch-end-ts-iso
 
@@ -234,9 +234,9 @@ def build_15m_streaming_pipeline(
         name="MiniBatchId",
         default_value="<required:MiniBatchId>",
     )
-    mini_batch_s3_prefix = ParameterString(
-        name="MiniBatchS3Prefix",
-        default_value="<required:MiniBatchS3Prefix>",
+    raw_parsed_logs_s3_prefix = ParameterString(
+        name="RawParsedLogsS3Prefix",
+        default_value="<required:RawParsedLogsS3Prefix>",
     )
     batch_start_ts_iso = ParameterString(
         name="BatchStartTsIso",
@@ -289,8 +289,8 @@ def build_15m_streaming_pipeline(
             feature_spec_version,
             "--mini-batch-id",
             mini_batch_id,
-            "--mini-batch-s3-prefix",
-            mini_batch_s3_prefix,
+            "--raw-parsed-logs-s3-prefix",
+            raw_parsed_logs_s3_prefix,
             "--batch-start-ts-iso",
             batch_start_ts_iso,
             "--batch-end-ts-iso",
@@ -344,8 +344,8 @@ def build_15m_streaming_pipeline(
             feature_spec_version,
             "--mini-batch-id",
             mini_batch_id,
-            "--mini-batch-s3-prefix",
-            mini_batch_s3_prefix,
+            "--raw-parsed-logs-s3-prefix",
+            raw_parsed_logs_s3_prefix,
             "--batch-start-ts-iso",
             batch_start_ts_iso,
             "--batch-end-ts-iso",
@@ -389,7 +389,7 @@ def build_15m_streaming_pipeline(
             project_name,
             feature_spec_version,
             mini_batch_id,
-            mini_batch_s3_prefix,
+            raw_parsed_logs_s3_prefix,
             batch_start_ts_iso,
             batch_end_ts_iso,
         ],

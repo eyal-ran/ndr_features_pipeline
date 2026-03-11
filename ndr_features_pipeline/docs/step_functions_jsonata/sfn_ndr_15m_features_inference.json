@@ -26,7 +26,9 @@
         "parsed_ml_project_name": "{% $exists($states.input.ml_project_name) ? $states.input.ml_project_name : '' %}",
         "parsed_ml_project_names": "{% $exists($states.input.ml_project_names) ? $states.input.ml_project_names : [] %}",
         "parsed_batch_id": "{% $exists($states.input.batch_id) ? $states.input.batch_id : ($exists($states.input.mini_batch_id) ? $states.input.mini_batch_id : ($parsed_batch_folder != '' ? $parsed_batch_folder : '')) %}",
-        "parsed_batch_s3_prefix": "{% $exists($states.input.batch_s3_prefix) ? $states.input.batch_s3_prefix : ($exists($states.input.mini_batch_s3_prefix) ? $states.input.mini_batch_s3_prefix : '') %}"
+        "parsed_raw_parsed_logs_s3_prefix": "{% $exists($states.input.raw_parsed_logs_s3_prefix) ? $states.input.raw_parsed_logs_s3_prefix : ($exists($states.input.batch_s3_prefix) ? $states.input.batch_s3_prefix : ($exists($states.input.mini_batch_s3_prefix) ? $states.input.mini_batch_s3_prefix : '')) %}",
+        "legacy_batch_s3_prefix_used": "{% not($exists($states.input.raw_parsed_logs_s3_prefix)) and $exists($states.input.batch_s3_prefix) %}",
+        "legacy_mini_batch_s3_prefix_used": "{% not($exists($states.input.raw_parsed_logs_s3_prefix)) and not($exists($states.input.batch_s3_prefix)) and $exists($states.input.mini_batch_s3_prefix) %}"
       },
       "Next": "BatchCompletionEventChoice"
     },
@@ -105,7 +107,8 @@
         "batch_end_ts_iso": "{% $source_timestamp_iso %}",
         "execution_ts_iso": "{% $exists($states.input.execution_ts_iso) ? $states.input.execution_ts_iso : ($exists($project_defaults.ExecutionTsIso.S) ? $project_defaults.ExecutionTsIso.S : $now()) %}",
         "lock_ttl_epoch": "{% $exists($states.input.lock_ttl_epoch) ? $states.input.lock_ttl_epoch : ($exists($project_defaults.LockTtlEpoch.N) ? $number($project_defaults.LockTtlEpoch.N) : 1893456000) %}",
-        "mini_batch_s3_prefix": "{% $parsed_batch_s3_prefix %}",
+        "raw_parsed_logs_s3_prefix": "{% $parsed_raw_parsed_logs_s3_prefix %}",
+        "legacy_field_warnings": "{% [$legacy_batch_s3_prefix_used ? 'LegacyFieldNameUsed:batch_s3_prefix->raw_parsed_logs_s3_prefix' : '', $legacy_mini_batch_s3_prefix_used ? 'LegacyFieldNameUsed:mini_batch_s3_prefix->raw_parsed_logs_s3_prefix' : ''] %}",
         "data_source_name": "{% $parsed_data_source_name != '' ? $parsed_data_source_name : $project_name %}",
         "ml_project_name": "{% $parsed_ml_project_name %}",
         "ml_project_names": "{% $parsed_ml_project_names %}",
@@ -115,8 +118,8 @@
         "minute_utc": "{% $number($substring($source_timestamp_iso,14,2)) %}",
         "slot15": "{% $minute_utc <= 14 ? 1 : ($minute_utc <= 29 ? 2 : ($minute_utc <= 44 ? 3 : 4)) %}",
         "batch_index_version": "{% $feature_spec_version %}",
-        "org1": "{% $count($split($mini_batch_s3_prefix,'/')) >= 6 ? $split($mini_batch_s3_prefix,'/')[4] : '' %}",
-        "org2": "{% $count($split($mini_batch_s3_prefix,'/')) >= 7 ? $split($mini_batch_s3_prefix,'/')[5] : '' %}",
+        "org1": "{% $count($split($raw_parsed_logs_s3_prefix,'/')) >= 6 ? $split($raw_parsed_logs_s3_prefix,'/')[4] : '' %}",
+        "org2": "{% $count($split($raw_parsed_logs_s3_prefix,'/')) >= 7 ? $split($raw_parsed_logs_s3_prefix,'/')[5] : '' %}",
         "batch_index_pk": "{% $project_name & '#' & $data_source_name & '#' & $batch_index_version & '#' & $date_utc %}",
         "batch_index_sk": "{% $hour_utc & '#' & $string($slot15) & '#' & $mini_batch_id %}",
         "batch_index_gsi1pk": "{% $project_name & '#' & $data_source_name & '#' & $batch_index_version & '#' & $mini_batch_id %}"
@@ -186,8 +189,8 @@
             "Value": "{% $batch_end_ts_iso %}"
           },
           {
-            "Name": "MiniBatchS3Prefix",
-            "Value": "{% $mini_batch_s3_prefix %}"
+            "Name": "RawParsedLogsS3Prefix",
+            "Value": "{% $raw_parsed_logs_s3_prefix %}"
           },
           {
             "Name": "MlProjectName",
@@ -309,8 +312,8 @@
             "Value": "{% $batch_end_ts_iso %}"
           },
           {
-            "Name": "MiniBatchS3Prefix",
-            "Value": "{% $mini_batch_s3_prefix %}"
+            "Name": "RawParsedLogsS3Prefix",
+            "Value": "{% $raw_parsed_logs_s3_prefix %}"
           },
           {
             "Name": "MlProjectName",
@@ -520,20 +523,20 @@
           "Next": "FailMissingBatchEndTsIso"
         },
         {
-          "Condition": "{% $mini_batch_s3_prefix = \"\" %}",
-          "Next": "FailMissingMiniBatchS3Prefix"
+          "Condition": "{% $raw_parsed_logs_s3_prefix = \"\" %}",
+          "Next": "FailMissingRawParsedLogsS3Prefix"
         },
         {
           "Condition": "{% ($ml_project_name = '' and $count($ml_project_names)=0) or ($ml_project_name != '' and $count($ml_project_names)>0) %}",
           "Next": "FailInvalidMlProjectSelection"
         },
         {
-          "Condition": "{% not($startsWith($mini_batch_s3_prefix,'s3://')) %}",
-          "Next": "FailInvalidMiniBatchS3Prefix"
+          "Condition": "{% not($startsWith($raw_parsed_logs_s3_prefix,'s3://')) %}",
+          "Next": "FailInvalidRawParsedLogsS3Prefix"
         },
         {
-          "Condition": "{% not($endsWith($mini_batch_s3_prefix, '/' & $mini_batch_id & '/')) %}",
-          "Next": "FailInvalidMiniBatchS3Prefix"
+          "Condition": "{% not($endsWith($raw_parsed_logs_s3_prefix, '/' & $mini_batch_id & '/')) %}",
+          "Next": "FailInvalidRawParsedLogsS3Prefix"
         },
         {
           "Condition": "{% not($endsWith($source_timestamp_iso,'Z')) %}",
@@ -567,10 +570,10 @@
       "Error": "RuntimeParameterValidationError",
       "Cause": "Missing required runtime parameter: batch_end_ts_iso"
     },
-    "FailMissingMiniBatchS3Prefix": {
+    "FailMissingRawParsedLogsS3Prefix": {
       "Type": "Fail",
       "Error": "RuntimeParameterValidationError",
-      "Cause": "Missing required runtime parameter: mini_batch_s3_prefix"
+      "Cause": "Missing required runtime parameter: raw_parsed_logs_s3_prefix"
     },
     "WriteBatchIndexRecord": {
       "Type": "Task",
@@ -605,8 +608,8 @@
           "batch_id": {
             "S": "{% $mini_batch_id %}"
           },
-          "batch_s3_prefix": {
-            "S": "{% $mini_batch_s3_prefix %}"
+          "raw_parsed_logs_s3_prefix": {
+            "S": "{% $raw_parsed_logs_s3_prefix %}"
           },
           "event_ts_utc": {
             "S": "{% $source_timestamp_iso %}"
@@ -667,13 +670,13 @@
             "S": "{% $batch_index_sk %}"
           }
         },
-        "UpdateExpression": "SET batch_s3_prefix = :batch_s3_prefix, event_ts_utc = :event_ts_utc, ingested_at_utc = :ingested_at_utc, #status = :status, ml_project_name = if_not_exists(ml_project_name, :ml_project_name), ml_project_names_json = if_not_exists(ml_project_names_json, :ml_project_names_json), GSI1PK = :gsi1pk, GSI1SK = :gsi1sk",
+        "UpdateExpression": "SET raw_parsed_logs_s3_prefix = :raw_parsed_logs_s3_prefix, event_ts_utc = :event_ts_utc, ingested_at_utc = :ingested_at_utc, #status = :status, ml_project_name = if_not_exists(ml_project_name, :ml_project_name), ml_project_names_json = if_not_exists(ml_project_names_json, :ml_project_names_json), GSI1PK = :gsi1pk, GSI1SK = :gsi1sk",
         "ExpressionAttributeNames": {
           "#status": "status"
         },
         "ExpressionAttributeValues": {
-          ":batch_s3_prefix": {
-            "S": "{% $mini_batch_s3_prefix %}"
+          ":raw_parsed_logs_s3_prefix": {
+            "S": "{% $raw_parsed_logs_s3_prefix %}"
           },
           ":event_ts_utc": {
             "S": "{% $source_timestamp_iso %}"
@@ -724,10 +727,10 @@
       "Error": "RuntimeParameterValidationError",
       "Cause": "Exactly one of ml_project_name or ml_project_names must be provided"
     },
-    "FailInvalidMiniBatchS3Prefix": {
+    "FailInvalidRawParsedLogsS3Prefix": {
       "Type": "Fail",
       "Error": "RuntimeParameterValidationError",
-      "Cause": "mini_batch_s3_prefix must start with s3:// and end with /<mini_batch_id>/"
+      "Cause": "raw_parsed_logs_s3_prefix must start with s3:// and end with /<batch_id>/"
     },
     "FailInvalidTimestamp": {
       "Type": "Fail",

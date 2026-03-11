@@ -18,6 +18,7 @@ from ndr.processing.raw_traffic_fields import (
     normalize_raw_traffic_fields,
     REQUIRED_DELTA_TRAFFIC_FIELDS,
 )
+from ndr.runtime_field_aliases import resolve_with_legacy_alias
 
 
 class DeltaBuilderRunner(BaseProcessingRunner):
@@ -222,6 +223,7 @@ class DeltaBuilderJobRuntimeConfig:
     project_name: str
     feature_spec_version: str
     mini_batch_id: str
+    raw_parsed_logs_s3_prefix: str = ""
     mini_batch_s3_prefix: str = ""
     batch_start_ts_iso: str = ""
     batch_end_ts_iso: str = ""
@@ -236,14 +238,20 @@ def run_delta_builder_from_runtime_config(runtime_config: DeltaBuilderJobRuntime
         feature_spec_version=runtime_config.feature_spec_version,
     )
 
-    runtime_prefix = runtime_config.mini_batch_s3_prefix
+    runtime_prefix = resolve_with_legacy_alias(
+        canonical_value=runtime_config.raw_parsed_logs_s3_prefix,
+        legacy_value=runtime_config.mini_batch_s3_prefix,
+        canonical_name="raw_parsed_logs_s3_prefix",
+        legacy_name="mini_batch_s3_prefix",
+        context="delta_builder_runtime_config",
+    )
     if not runtime_prefix:
-        raise ValueError("mini_batch_s3_prefix is required")
+        raise ValueError("raw_parsed_logs_s3_prefix is required")
 
     runtime = RuntimeParams(
         project_name=runtime_config.project_name,
         job_name="delta_builder",
-        mini_batch_s3_prefix=runtime_prefix,
+        raw_parsed_logs_s3_prefix=runtime_prefix,
         feature_spec_version=runtime_config.feature_spec_version,
         run_id=runtime_config.mini_batch_id,
         slice_start_ts=runtime_config.batch_start_ts_iso,

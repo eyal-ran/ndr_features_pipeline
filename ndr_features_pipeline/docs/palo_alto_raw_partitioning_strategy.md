@@ -15,21 +15,21 @@ Rules:
 - `project_name` is the DPP id and is `fw_paloalto` in the canonical example.
 - `data_source_name` must equal `project_name`.
 - `batch_id` is the hashed folder name and canonical mini-batch identity.
-- `batch_s3_prefix` is the authoritative per-run pointer and must end with `/<batch_id>/`.
+- `raw_parsed_logs_s3_prefix` is the authoritative per-run pointer and must end with `/<batch_id>/`.
 
 ## Runtime source of truth
 
 For 15m ingestion:
 
-- Payload-provided `batch_id` and `batch_s3_prefix` are authoritative.
+- Payload-provided `batch_id` and `raw_parsed_logs_s3_prefix` are authoritative.
 - Orchestration resolves remaining runtime fields (`date_utc`, `hour_utc`, `slot15`, window timestamps) from payload timestamp.
 - Base prefixes/contracts come from DynamoDB config; runtime composes only dynamic suffixes when needed.
 
 ## Delta + Pair Counts ingestion behavior (contract)
 
-- Delta Builder primary input: `mini_batch_s3_prefix` (runtime pointer).
-- Pair Counts Builder primary input: `mini_batch_s3_prefix` (runtime pointer for batch data selection).
-- `mini_batch_s3_prefix` is required; no legacy input-prefix fallback is supported.
+- Delta Builder primary input: `raw_parsed_logs_s3_prefix` (runtime pointer).
+- Pair Counts Builder primary input: `raw_parsed_logs_s3_prefix` (runtime pointer for batch data selection).
+- `raw_parsed_logs_s3_prefix` is canonical and required; legacy aliases (`batch_s3_prefix`, `mini_batch_s3_prefix`) are accepted only at ingress during P0.
 
 ## Slot derivation policy
 
@@ -55,5 +55,5 @@ This enables:
 Task 7 finalization removes dual-mode behavior:
 
 - canonical path parsing is required,
-- `mini_batch_s3_prefix` is always required,
+- `raw_parsed_logs_s3_prefix` is always required at canonical surfaces,
 - no compatibility toggles are used in this contract.

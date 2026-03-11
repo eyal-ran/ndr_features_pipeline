@@ -34,13 +34,18 @@ class RuntimeParams:
 
     project_name: str
     job_name: str
-    mini_batch_s3_prefix: str
+    raw_parsed_logs_s3_prefix: str
     # Authoritative per-run pointer from orchestration runtime contract vNext.
     feature_spec_version: str
     run_id: str
     slice_start_ts: str | None = None
     slice_end_ts: str | None = None
     extra: Dict[str, Any] | None = None
+
+    @property
+    def mini_batch_s3_prefix(self) -> str:
+        """Compatibility alias for legacy runtime field usage."""
+        return self.raw_parsed_logs_s3_prefix
 
 
 class BaseProcessingRunner:
@@ -72,7 +77,7 @@ class BaseProcessingRunner:
         """Read input from S3 using the JobSpec input configuration."""
         input_spec = self.job_spec.input
         return self.reader.read_jsonlines_gzip(
-            prefix=self.runtime.mini_batch_s3_prefix,
+            prefix=self.runtime.raw_parsed_logs_s3_prefix,
             projection=input_spec.schema_projection,
         )
 

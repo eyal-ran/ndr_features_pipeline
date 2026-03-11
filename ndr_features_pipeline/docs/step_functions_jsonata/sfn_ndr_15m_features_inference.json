@@ -70,31 +70,10 @@
           "ErrorEquals": [
             "States.ALL"
           ],
-          "Next": "LoadProjectParametersFromDynamo"
+          "Next": "LoadDppConfigFromDynamo"
         }
       ],
-      "Next": "LoadProjectParametersFromDynamo"
-    },
-    "LoadProjectParametersFromDynamo": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
-      "Arguments": {
-        "TableName": "${ProjectParametersTableName}",
-        "Key": {
-          "project_name": {
-            "S": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : $routed_project_name) %}"
-          },
-          "job_name": {
-            "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
-          }
-        },
-        "ConsistentRead": true
-      },
-      "Assign": {
-        "project_parameters_spec": "{% $exists($states.result.Item.spec.M) ? $states.result.Item.spec.M : {} %}",
-        "project_defaults": "{% $exists($states.result.Item.spec.M.defaults.M) ? $states.result.Item.spec.M.defaults.M : {} %}"
-      },
-      "Next": "ResolvePipelineRuntimeParams"
+      "Next": "LoadDppConfigFromDynamo"
     },
     "ResolvePipelineRuntimeParams": {
       "Type": "Pass",
@@ -736,6 +715,47 @@
       "Type": "Fail",
       "Error": "RuntimeParameterValidationError",
       "Cause": "timestamp must be ISO-8601 UTC with Z suffix"
+    },
+    "LoadDppConfigFromDynamo": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+      "Arguments": {
+        "TableName": "${DppConfigTableName}",
+        "Key": {
+          "project_name": {
+            "S": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : $routed_project_name) %}"
+          },
+          "job_name_version": {
+            "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
+          }
+        },
+        "ConsistentRead": true
+      },
+      "Assign": {
+        "project_parameters_spec": "{% $exists($states.result.Item.spec.M) ? $states.result.Item.spec.M : {} %}",
+        "project_defaults": "{% $exists($states.result.Item.spec.M.defaults.M) ? $states.result.Item.spec.M.defaults.M : {} %}"
+      },
+      "Next": "LoadMlpConfigFromDynamo"
+    },
+    "LoadMlpConfigFromDynamo": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+      "Arguments": {
+        "TableName": "${MlpConfigTableName}",
+        "Key": {
+          "ml_project_name": {
+            "S": "{% $exists($states.input.ml_project_name) ? $states.input.ml_project_name : ($exists($project_defaults.MlProjectName.S) ? $project_defaults.MlProjectName.S : '') %}"
+          },
+          "job_name_version": {
+            "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
+          }
+        },
+        "ConsistentRead": true
+      },
+      "Assign": {
+        "mlp_linked_project_name": "{% $exists($states.result.Item.project_name.S) ? $states.result.Item.project_name.S : '' %}"
+      },
+      "Next": "ResolvePipelineRuntimeParams"
     }
   }
 }

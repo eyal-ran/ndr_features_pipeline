@@ -1,4 +1,7 @@
-"""Create and seed the ML project parameters DynamoDB table.
+"""Create and seed NDR control-plane DynamoDB configuration tables.
+
+Primary bootstrap remains compatible with legacy single-table seeding, and split-table
+helpers are provided for Stage S2 contracts (`dpp_config`, `mlp_config`, `batch_index`).
 
 This module supports two invocation patterns for SageMaker JupyterLab users:
 
@@ -400,6 +403,86 @@ def create_table_if_missing(
 def _versioned_job_name(job_name: str, feature_spec_version: str) -> str:
     """Return the standardized versioned sort-key value for a job spec item."""
     return f"{job_name}{JOB_SPEC_SORT_KEY_DELIMITER}{feature_spec_version}"
+
+
+
+
+def build_split_table_contracts() -> dict[str, dict[str, Any]]:
+    """Return create-table payloads for canonical split control/data plane tables."""
+    return {
+        "dpp_config": {
+            "TableName": "dpp_config",
+            "AttributeDefinitions": [
+                {"AttributeName": "project_name", "AttributeType": "S"},
+                {"AttributeName": "job_name_version", "AttributeType": "S"},
+            ],
+            "KeySchema": [
+                {"AttributeName": "project_name", "KeyType": "HASH"},
+                {"AttributeName": "job_name_version", "KeyType": "RANGE"},
+            ],
+            "BillingMode": "PAY_PER_REQUEST",
+        },
+        "mlp_config": {
+            "TableName": "mlp_config",
+            "AttributeDefinitions": [
+                {"AttributeName": "ml_project_name", "AttributeType": "S"},
+                {"AttributeName": "job_name_version", "AttributeType": "S"},
+            ],
+            "KeySchema": [
+                {"AttributeName": "ml_project_name", "KeyType": "HASH"},
+                {"AttributeName": "job_name_version", "KeyType": "RANGE"},
+            ],
+            "BillingMode": "PAY_PER_REQUEST",
+        },
+        "batch_index": {
+            "TableName": "batch_index",
+            "AttributeDefinitions": [
+                {"AttributeName": "pk", "AttributeType": "S"},
+                {"AttributeName": "sk", "AttributeType": "S"},
+                {"AttributeName": "GSI1PK", "AttributeType": "S"},
+                {"AttributeName": "GSI1SK", "AttributeType": "S"},
+            ],
+            "KeySchema": [
+                {"AttributeName": "pk", "KeyType": "HASH"},
+                {"AttributeName": "sk", "KeyType": "RANGE"},
+            ],
+            "GlobalSecondaryIndexes": [
+                {
+                    "IndexName": "GSI1",
+                    "KeySchema": [
+                        {"AttributeName": "GSI1PK", "KeyType": "HASH"},
+                        {"AttributeName": "GSI1SK", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+            ],
+            "BillingMode": "PAY_PER_REQUEST",
+        },
+    }
+
+
+def build_split_seed_items(project_name: str, ml_project_name: str, feature_spec_version: str, owner: str | None = None) -> dict[str, list[dict[str, Any]]]:
+    """Build minimum reciprocal-linkage seed records for split config tables."""
+    updated_at = _utc_now_iso8601()
+    job_name_version = _versioned_job_name("project_parameters", feature_spec_version)
+    dpp_item = {
+        "project_name": project_name,
+        "job_name_version": job_name_version,
+        "data_source_name": project_name,
+        "ml_project_name": ml_project_name,
+        "spec": {"ProjectName": project_name, "MlProjectName": ml_project_name},
+        "updated_at": updated_at,
+        "owner": owner or "unknown",
+    }
+    mlp_item = {
+        "ml_project_name": ml_project_name,
+        "job_name_version": job_name_version,
+        "project_name": project_name,
+        "spec": {"ProjectName": project_name, "MlProjectName": ml_project_name},
+        "updated_at": updated_at,
+        "owner": owner or "unknown",
+    }
+    return {"dpp_config": [dpp_item], "mlp_config": [mlp_item], "batch_index": []}
 
 
 def _build_bootstrap_items(

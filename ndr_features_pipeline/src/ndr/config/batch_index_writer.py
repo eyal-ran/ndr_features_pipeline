@@ -1,4 +1,4 @@
-"""Write helpers for deterministic idempotent ndr_batch_index upserts."""
+"""Write helpers for deterministic idempotent batch_index upserts."""
 
 from __future__ import annotations
 

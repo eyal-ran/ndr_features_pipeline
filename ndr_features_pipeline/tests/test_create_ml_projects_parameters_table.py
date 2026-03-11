@@ -20,6 +20,8 @@ sys.modules.setdefault("botocore.exceptions", exceptions_module)
 
 from ndr.scripts.create_ml_projects_parameters_table import (
     _build_bootstrap_items,
+    build_split_seed_items,
+    build_split_table_contracts,
     resolve_routing_table_name,
 )
 
@@ -163,3 +165,18 @@ def test_item19_pipeline_seed_items_present_with_expected_runtime_params():
     if_training_spec = by_job["if_training"]["spec"]
     assert if_training_spec["runtime_defaults"]["EvaluationWindowsJson"] == "[]"
     assert if_training_spec["orchestration_targets"]["backfill_15m"] == "sfn_ndr_backfill_reprocessing"
+
+
+def test_split_table_contracts_use_canonical_table_names():
+    contracts = build_split_table_contracts()
+    assert set(contracts.keys()) == {"dpp_config", "mlp_config", "batch_index"}
+    assert contracts["dpp_config"]["KeySchema"][1]["AttributeName"] == "job_name_version"
+    assert contracts["mlp_config"]["KeySchema"][0]["AttributeName"] == "ml_project_name"
+
+
+def test_split_seed_items_enforce_reciprocal_linkage_fields():
+    items = build_split_seed_items("fw_paloalto", "network_anomaly", "v1", owner="ndr")
+    dpp_item = items["dpp_config"][0]
+    mlp_item = items["mlp_config"][0]
+    assert dpp_item["ml_project_name"] == "network_anomaly"
+    assert mlp_item["project_name"] == "fw_paloalto"

@@ -81,7 +81,7 @@ For Task 1, this is a documentation foundation only.
 
 ## 4) Batch-index orchestration requirement
 
-Before pipeline start, orchestration writes to `ndr_batch_index` using deterministic idempotent write rules:
+Before pipeline start, orchestration writes to `batch_index` using deterministic idempotent write rules:
 
 1. `PutItem` with `attribute_not_exists(pk) AND attribute_not_exists(sk)`.
 2. If duplicate, continue.

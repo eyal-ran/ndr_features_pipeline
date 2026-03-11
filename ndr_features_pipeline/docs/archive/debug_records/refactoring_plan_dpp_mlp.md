@@ -797,9 +797,10 @@ Refactor is complete when:
 ## 10) Version bump and changelog
 > **S0 reconciliation note:** Superseded by §11 where conflicting. Canonical naming/table/env targets are defined by §11.8 and §11.9.
 
-- **Plan version:** `vNext-s0-reconciled`
-- **Task 1 status:** implemented (contract/docs/schema foundation only)
-- **Stage S0 status:** implemented (plan reconciliation, docs-only)
+- **Plan version:** `vNext-final-reconciled-s5`
+- **Task 1 status:** implemented (contract/docs/schema foundation)
+- **Stage sequence status:** `S0 -> S1 -> S2 -> S3 -> S4 -> S5` all implemented
+- **Closure status:** final sign-off complete (all §11.10 gates passed)
 
 ### Stage S0 changelog
 
@@ -813,6 +814,14 @@ Refactor is complete when:
 2. Runtime contract vNext ingestion payload examples from §2 were replicated into architecture docs without shape changes.
 3. DynamoDB table schemas (`dpp_config`, `mlp_config`, `batch_index`) and batch-index idempotent write contract (§4) were aligned in docs.
 4. Optional-field predicates from §2.4 were propagated into docs with deterministic wording.
+
+### Stage S1–S5 closure changelog
+
+1. Canonical contract migration (S1) completed with canonical-write/alias-read boundaries and deterministic legacy-field warning policy, followed by strict acceptance checks.
+2. Split control-plane migration (S2) completed for `dpp_config`/`mlp_config`/`batch_index` with reciprocal DPP↔MLP linkage validation and seeded loader contracts.
+3. Runtime canonicalization (S3) completed by moving internal readers/writers/builders to canonical field naming and canonical batch-index behavior.
+4. Hard-cutover cleanup (S4) completed by removing active legacy naming branches and enforcing deterministic legacy-field rejection at final boundaries.
+5. Closure stage (S5) completed by reconciling predecessor sections with §11 authority, re-running the full §11.10 acceptance matrix, and recording final sign-off evidence in §11.12.
 
 ---
 
@@ -1398,3 +1407,48 @@ To resolve internal contradictions across this file, apply this mandatory reconc
 
 No task may be marked complete unless this sequence is followed in order.
 
+### 11.12 Stage S5 closure report and final sign-off evidence
+
+#### 11.12.1 Final coherence verification (predecessor sections vs §11)
+
+- §§1–10 retain explicit supersession notes and do not override §11 governance.
+- Canonical field naming in predecessor sections aligns with §11.8 (`raw_parsed_logs_s3_prefix`, `RawParsedLogsS3Prefix`, `--raw-parsed-logs-s3-prefix`).
+- Canonical table/env naming in predecessor sections aligns with §11.9 (`dpp_config`, `mlp_config`, `batch_index`; canonical env var set).
+- No contradictory active references to deprecated payload/pointer/table names remain outside archive scope.
+
+#### 11.12.2 Stage sequence and gate-outcome evidence
+
+- Completed sequence: `S0 -> S1 -> S2 -> S3 -> S4 -> S5`.
+- S5 validation gate re-ran full §11.10 acceptance matrix with all commands passing.
+
+#### 11.12.3 §11.10 execution evidence (S5 rerun)
+
+1. Static contract checks
+   - `rg -n "raw_parsed_logs_s3_prefix|RawParsedLogsS3Prefix|--raw-parsed-logs-s3-prefix" src docs tests`
+     - Result: **pass** (canonical field names present across src/docs/tests).
+   - `rg -n "batch_s3_prefix|mini_batch_s3_prefix|MiniBatchS3Prefix|ingestion_s3_path|IngestionS3Path|--mini-batch-s3-prefix|--ingestion-s3-path" src tests docs --glob '!docs/archive/**'`
+     - Result: **pass** (no matches; command exited 1 as expected for zero results).
+   - `rg -n "dpp_config|mlp_config|batch_index" src docs tests`
+     - Result: **pass** (canonical table names present).
+   - `rg -n "ndr_dpp_config|ndr_mlp_config|ndr_batch_index" src tests docs --glob '!docs/archive/**'`
+     - Result: **pass** (no matches; command exited 1 as expected for zero results).
+   - `rg -n "project_parameters#|LoadProjectParametersFromDynamo" docs/step_functions_jsonata/sfn_ndr_*.json`
+     - Result: **pass** (no matches; command exited 1 as expected for zero results).
+
+2. Unit/contract test execution gates
+   - `PYTHONPATH=src pytest -q tests/test_step_functions_item19_contracts.py tests/test_step_functions_jsonata_contracts.py tests/test_io_contract.py`
+     - Result: **pass** (`21 passed in 0.15s`).
+   - `PYTHONPATH=src pytest -q tests/test_create_ml_projects_parameters_table.py tests/test_project_parameters_loader.py tests/test_batch_index_loader.py tests/test_batch_index_writer.py tests/test_historical_windows_extractor_job.py`
+     - Result: **pass** (`20 passed in 0.18s`).
+   - `PYTHONPATH=src pytest -q tests/test_pair_counts_builder_job.py tests/test_palo_alto_batch_utils.py`
+     - Result: **pass** (`8 passed in 0.64s`).
+
+3. Runtime/config sanity gate
+   - `python -m py_compile src/ndr/config/job_spec_loader.py src/ndr/config/project_parameters_loader.py src/ndr/config/batch_index_loader.py src/ndr/config/batch_index_writer.py src/ndr/scripts/run_delta_builder.py src/ndr/scripts/run_pair_counts_builder.py src/ndr/processing/delta_builder_job.py src/ndr/processing/pair_counts_builder_job.py`
+     - Result: **pass** (exit code 0).
+
+#### 11.12.4 Final closure verdict
+
+- **Verdict:** approved/finalized.
+- **Blocking failures:** none.
+- **Rollback anchor:** revert this S5 closure commit to return plan metadata/changelog/sign-off evidence to pre-closure state.

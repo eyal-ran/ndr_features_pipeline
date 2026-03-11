@@ -118,7 +118,6 @@ def test_extractor_errors_when_index_empty_and_fallback_disabled(monkeypatch):
     monkeypatch.setattr(module.boto3, "client", lambda *_a, **_k: fake_s3, raising=False)
     monkeypatch.setattr(module, "resolve_feature_spec_version", lambda **_k: "v9")
     monkeypatch.setattr(module, "BatchIndexLoader", lambda: _BatchIndexLoader([]))
-    monkeypatch.setattr(module, "is_migration_toggle_enabled", lambda name: False)
 
     runtime = HistoricalWindowsExtractorRuntimeConfig(
         input_s3_prefix="s3://bucket/raw/fw_paloalto",
@@ -131,6 +130,6 @@ def test_extractor_errors_when_index_empty_and_fallback_disabled(monkeypatch):
     try:
         HistoricalWindowsExtractorJob(runtime).run()
     except RuntimeError as exc:
-        assert "enable_s3_listing_fallback_for_backfill is disabled" in str(exc)
+        assert "S3 listing fallback is disabled" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError")

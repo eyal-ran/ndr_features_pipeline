@@ -26,9 +26,8 @@
         "parsed_ml_project_name": "{% $exists($states.input.ml_project_name) ? $states.input.ml_project_name : '' %}",
         "parsed_ml_project_names": "{% $exists($states.input.ml_project_names) ? $states.input.ml_project_names : [] %}",
         "parsed_batch_id": "{% $exists($states.input.batch_id) ? $states.input.batch_id : ($exists($states.input.mini_batch_id) ? $states.input.mini_batch_id : ($parsed_batch_folder != '' ? $parsed_batch_folder : '')) %}",
-        "parsed_raw_parsed_logs_s3_prefix": "{% $exists($states.input.raw_parsed_logs_s3_prefix) ? $states.input.raw_parsed_logs_s3_prefix : ($exists($states.input.batch_s3_prefix) ? $states.input.batch_s3_prefix : ($exists($states.input.mini_batch_s3_prefix) ? $states.input.mini_batch_s3_prefix : '')) %}",
-        "legacy_batch_s3_prefix_used": "{% not($exists($states.input.raw_parsed_logs_s3_prefix)) and $exists($states.input.batch_s3_prefix) %}",
-        "legacy_mini_batch_s3_prefix_used": "{% not($exists($states.input.raw_parsed_logs_s3_prefix)) and not($exists($states.input.batch_s3_prefix)) and $exists($states.input.mini_batch_s3_prefix) %}"
+        "parsed_raw_parsed_logs_s3_prefix": "{% $exists($states.input.raw_parsed_logs_s3_prefix) ? $states.input.raw_parsed_logs_s3_prefix : '' %}",
+        "unsupported_input_fields": "{% $keys($states.input)[$not($ in ['project_name','data_source_name','ml_project_name','ml_project_names','batch_id','mini_batch_id','raw_parsed_logs_s3_prefix','timestamp','event_ts','feature_spec_version','s3_key','batch_s3_path','execution_ts_iso','lock_ttl_epoch','batch_start_ts_iso','force_process','message_body','Records'])] %}"
       },
       "Next": "BatchCompletionEventChoice"
     },
@@ -87,7 +86,6 @@
         "execution_ts_iso": "{% $exists($states.input.execution_ts_iso) ? $states.input.execution_ts_iso : ($exists($project_defaults.ExecutionTsIso.S) ? $project_defaults.ExecutionTsIso.S : $now()) %}",
         "lock_ttl_epoch": "{% $exists($states.input.lock_ttl_epoch) ? $states.input.lock_ttl_epoch : ($exists($project_defaults.LockTtlEpoch.N) ? $number($project_defaults.LockTtlEpoch.N) : 1893456000) %}",
         "raw_parsed_logs_s3_prefix": "{% $parsed_raw_parsed_logs_s3_prefix %}",
-        "legacy_field_warnings": "{% [$legacy_batch_s3_prefix_used ? 'LegacyFieldNameUsed:batch_s3_prefix->raw_parsed_logs_s3_prefix' : '', $legacy_mini_batch_s3_prefix_used ? 'LegacyFieldNameUsed:mini_batch_s3_prefix->raw_parsed_logs_s3_prefix' : ''] %}",
         "data_source_name": "{% $parsed_data_source_name != '' ? $parsed_data_source_name : $project_name %}",
         "ml_project_name": "{% $parsed_ml_project_name %}",
         "ml_project_names": "{% $parsed_ml_project_names %}",
@@ -502,6 +500,10 @@
           "Next": "FailMissingBatchEndTsIso"
         },
         {
+          "Condition": "{% $count($unsupported_input_fields) > 0 %}",
+          "Next": "FailUnsupportedInputFields"
+        },
+        {
           "Condition": "{% $raw_parsed_logs_s3_prefix = \"\" %}",
           "Next": "FailMissingRawParsedLogsS3Prefix"
         },
@@ -553,6 +555,11 @@
       "Type": "Fail",
       "Error": "RuntimeParameterValidationError",
       "Cause": "Missing required runtime parameter: raw_parsed_logs_s3_prefix"
+    },
+    "FailUnsupportedInputFields": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "legacy field not supported"
     },
     "WriteBatchIndexRecord": {
       "Type": "Task",
@@ -726,7 +733,7 @@
             "S": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : $routed_project_name) %}"
           },
           "job_name_version": {
-            "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
+            "S": "{% 'pipeline_defaults#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
           }
         },
         "ConsistentRead": true
@@ -747,7 +754,7 @@
             "S": "{% $exists($states.input.ml_project_name) ? $states.input.ml_project_name : ($exists($project_defaults.MlProjectName.S) ? $project_defaults.MlProjectName.S : '') %}"
           },
           "job_name_version": {
-            "S": "{% 'project_parameters#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
+            "S": "{% 'pipeline_defaults#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
           }
         },
         "ConsistentRead": true

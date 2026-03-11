@@ -23,7 +23,7 @@ It includes:
 3. `BatchCompletionEventChoice` — gate on valid batch-completion event.
 4. `IgnoreNonBatchCompletionEvent` — terminate cleanly for non-batch events.
 5. `LoadProjectRoutingFromDynamo` — resolve org-based routing metadata.
-6. `LoadProjectParametersFromDynamo` — load project defaults/spec settings.
+6. `LoadDppConfigFromDynamo -> LoadMlpConfigFromDynamo` — load project defaults/spec settings.
 7. `ResolvePipelineRuntimeParams` — compute final runtime parameters.
 8. `AcquireMiniBatchLock` — enforce idempotency lock for 15m window.
 9. `DuplicateMiniBatch` — fail duplicate execution attempts.
@@ -104,7 +104,7 @@ It includes:
 ### All steps in triggering source (in declared order)
 1. `NormalizeIncomingMessage` — normalize inbound payload shape.
 2. `ParseIncomingProjectContext` — parse project/spec values.
-3. `LoadProjectParametersFromDynamo` — load project defaults.
+3. `LoadDppConfigFromDynamo -> LoadMlpConfigFromDynamo` — load project defaults.
 4. `ResolvePipelineRuntimeParams` — resolve publication runtime values.
 5. `AcquirePublicationLock` — enforce publication idempotency lock.
 6. `StartPredictionJoinPipeline` — **PIPELINE TRIGGER**; start `${PipelineNamePredictionJoin}`.
@@ -143,7 +143,7 @@ It includes:
 ### All steps in triggering source (in declared order)
 1. `NormalizeIncomingMessage` — normalize inbound payload.
 2. `ParseIncomingProjectContext` — parse project/spec hints.
-3. `LoadProjectParametersFromDynamo` — load project defaults.
+3. `LoadDppConfigFromDynamo -> LoadMlpConfigFromDynamo` — load project defaults.
 4. `ResolvePipelineRuntimeParams` — resolve monthly runtime parameters.
 5. `StartMachineInventoryRefresh` — **PIPELINE TRIGGER**; start `${PipelineNameMachineInventory}`.
 6. `DescribeInventoryPipeline` — poll machine-inventory pipeline status.
@@ -198,7 +198,7 @@ It includes:
 ### All steps in triggering source (in declared order)
 1. `NormalizeIncomingMessage` — normalize inbound payload.
 2. `ParseIncomingProjectContext` — parse project/spec hints.
-3. `LoadProjectParametersFromDynamo` — load project defaults.
+3. `LoadDppConfigFromDynamo -> LoadMlpConfigFromDynamo` — load project defaults.
 4. `ResolvePipelineRuntimeParams` — resolve unified training runtime values.
 5. `StartTrainingPipeline` — **PIPELINE TRIGGER**; starts `${PipelineNameIFTraining}`.
 6. `DescribeTrainingPipeline` — poll unified training pipeline status.
@@ -253,7 +253,7 @@ It includes:
 ### All steps in triggering source (in declared order)
 1. `NormalizeIncomingMessage` — normalize inbound payload.
 2. `ParseIncomingProjectContext` — parse project/spec context.
-3. `LoadProjectParametersFromDynamo` — load project defaults.
+3. `LoadDppConfigFromDynamo -> LoadMlpConfigFromDynamo` — load project defaults.
 4. `ResolvePipelineRuntimeParams` — resolve backfill runtime values.
 5. `StartHistoricalWindowsExtractorPipeline` — **PIPELINE TRIGGER**; start `${PipelineNameBackfillHistoricalExtractor}`.
 6. `DescribeHistoricalWindowsExtractor` — poll extractor pipeline status.

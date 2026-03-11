@@ -1,4 +1,4 @@
-"""Read access helpers for the ndr_batch_index table."""
+"""Read access helpers for the batch_index table."""
 
 from __future__ import annotations
 

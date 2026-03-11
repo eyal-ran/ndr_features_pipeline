@@ -42,7 +42,7 @@ For 15m ingestion:
 
 ## Idempotency + indexing
 
-Before starting 15m pipeline execution, Step Functions writes deterministic batch identity records to `ndr_batch_index` using idempotent Put/Update semantics.
+Before starting 15m pipeline execution, Step Functions writes deterministic batch identity records to `batch_index` using idempotent Put/Update semantics.
 
 This enables:
 

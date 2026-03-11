@@ -61,8 +61,8 @@ Exactly one payload shape must be used.
 
 - `MlProjectName` pipeline param is required in single-MLP branch execution.
 - `MlProjectNamesJson` pipeline param is required only before fan-out or when fan-out context must be carried as one field.
-- `ml_project_name` in `ndr_batch_index` is required for per-branch rows and omitted only for pre-fan-out aggregate rows.
-- `ml_project_names_json` in `ndr_batch_index` is required only for pre-fan-out aggregate rows.
+- `ml_project_name` in `batch_index` is required for per-branch rows and omitted only for pre-fan-out aggregate rows.
+- `ml_project_names_json` in `batch_index` is required only for pre-fan-out aggregate rows.
 - `ttl_epoch` is operationally optional; if omitted, TTL behavior is disabled for that row.
 
 ## Deterministic routing model

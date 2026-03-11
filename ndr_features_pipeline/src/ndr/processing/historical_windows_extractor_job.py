@@ -51,6 +51,12 @@ class HistoricalWindowsExtractorJob:
         if index_rows:
             return index_rows
 
+        # If project cannot be inferred from the input prefix, batch-index lookup cannot be authoritative.
+        if self._infer_project_name_from_input_prefix() is None:
+            rows = self._extract_rows_from_s3_listing()
+            if rows:
+                return rows
+
         if not is_migration_toggle_enabled("enable_s3_listing_fallback_for_backfill"):
             raise RuntimeError(
                 "No batch-index rows resolved for historical window and "

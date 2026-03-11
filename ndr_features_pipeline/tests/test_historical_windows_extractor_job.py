@@ -25,7 +25,7 @@ class _Paginator:
             {
                 "Contents": [
                     {
-                        "Key": "raw/org1/org2/projA/2025/01/01/mb-1/file1.json.gz",
+                        "Key": "raw/fw_paloalto/org1/org2/2025/01/01/mb-1/file1.json.gz",
                         "LastModified": datetime(2025, 1, 1, 10, 40, tzinfo=timezone.utc),
                     }
                 ]
@@ -71,7 +71,7 @@ def test_extractor_emits_expected_window_rows(monkeypatch):
     assert uri.startswith("s3://bucket/out/historical_windows/")
     assert len(fake_s3.put_calls) == 1
     body = fake_s3.put_calls[0]["Body"].decode("utf-8")
-    assert '"project_name": "projA"' in body
+    assert '"project_name": "fw_paloalto"' in body
     assert '"feature_spec_version": "v9"' in body
     assert '"batch_start_ts_iso": "2025-01-01T10:38:00Z"' in body
     assert '"batch_end_ts_iso": "2025-01-01T10:40:00Z"' in body

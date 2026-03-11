@@ -2,13 +2,18 @@
 
 This document defines the **authoritative IO contract** for orchestration and pipeline script/data resolution.
 
-## 1) DynamoDB primary keys
+## 1) DynamoDB primary keys (split control plane)
 
-All records live in the ML projects parameters table (`ML_PROJECTS_PARAMETERS_TABLE_NAME`) with:
+Control-plane records are split across DPP and MLP tables:
 
+### DPP table (`dpp_config`)
 - **Partition key**: `project_name`
-- **Sort key**: `job_name`
+- **Sort key**: `job_name_version`
 - **Versioned sort key format**: `<logical_job_name>#<feature_spec_version>`
+
+### MLP table (`mlp_config`)
+- **Partition key**: `ml_project_name`
+- **Sort key**: `job_name_version`
 
 Examples:
 - `project_parameters#v1`
@@ -29,15 +34,16 @@ For each `pipeline_*` record, `spec` must contain:
 
 ## 3) Project-level defaults / validation contract
 
-`project_parameters#<feature_spec_version>` includes:
+`project_parameters#<feature_spec_version>` in DPP config includes:
 
 - `spec.defaults`: runtime fallback values (non-critical defaults + placeholders).
 - `spec.validation`: regex/type-oriented validation hints for runtime parameters.
+- `ml_project_name`: default linkage target for reciprocal DPP<->MLP mapping checks.
 
 Step Functions resolve incoming event values in this order:
 1. explicit payload value,
 2. parsed SQS/SNS message value,
-3. `project_parameters.spec.defaults` from DynamoDB.
+3. DPP defaults (`spec.defaults`) from DynamoDB.
 
 ## 4) Placeholder-value guidance (seed templates)
 
@@ -75,7 +81,7 @@ Examples:
 Step Functions JSONata definitions should:
 
 - Parse `project_name` and `feature_spec_version` from direct payload and SQS/SNS wrappers.
-- Read `project_parameters#<feature_spec_version>` from DynamoDB.
+- Read DPP record via `LoadDppConfigFromDynamo` and MLP linkage via `LoadMlpConfigFromDynamo`.
 - Resolve runtime parameters using the precedence described above.
 - Pass resolved values to SageMaker pipelines via `PipelineParameters`.
 

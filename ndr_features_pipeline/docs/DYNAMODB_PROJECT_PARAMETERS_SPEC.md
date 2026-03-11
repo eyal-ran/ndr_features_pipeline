@@ -4,13 +4,13 @@
 
 This spec defines the exact DynamoDB contracts for the DPP/MLP decoupling refactor:
 
-1. `ndr_dpp_config` (control plane)
-2. `ndr_mlp_config` (control plane)
-3. `ndr_batch_index` (data plane)
+1. `dpp_config` (control plane)
+2. `mlp_config` (control plane)
+3. `batch_index` (data plane)
 
 Table count is fixed to these three tables in this refactor scope.
 
-## 1) `ndr_dpp_config`
+## 1) `dpp_config`
 
 ### Keys
 
@@ -30,7 +30,7 @@ Table count is fixed to these three tables in this refactor scope.
 - `project_name` is always the DPP id.
 - `data_source_name` must match the same DPP id in vNext payload validation.
 
-## 2) `ndr_mlp_config`
+## 2) `mlp_config`
 
 ### Keys
 
@@ -43,7 +43,7 @@ Table count is fixed to these three tables in this refactor scope.
 - `spec` (M)
 - `updated_at` (S)
 
-## 3) `ndr_batch_index`
+## 3) `batch_index`
 
 ### Primary key (exact)
 

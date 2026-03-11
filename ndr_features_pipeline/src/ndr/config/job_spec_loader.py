@@ -5,6 +5,19 @@ from typing import Any, Dict
 
 import boto3
 
+JOB_SPEC_SORT_KEY_DELIMITER = "#"
+
+
+def resolve_dpp_config_table_name(table_name: str | None = None) -> str:
+    return (
+        table_name
+        or os.environ.get("DPP_CONFIG_TABLE_NAME")
+        or os.environ.get("ML_PROJECTS_PARAMETERS_TABLE_NAME")
+        or os.environ.get("JOB_SPEC_DDB_TABLE_NAME")
+        or "dpp_config"
+    )
+
+
 from .job_spec_models import (
     JobSpec,
     InputSpec,
@@ -19,15 +32,11 @@ from .job_spec_models import (
     PairCountsOutputSpec,
 )
 
-LEGACY_DDB_TABLE_ENV_VAR = "JOB_SPEC_DDB_TABLE_NAME"
-DDB_TABLE_ENV_VAR = "ML_PROJECTS_PARAMETERS_TABLE_NAME"
-JOB_SPEC_SORT_KEY_DELIMITER = "#"
-
 
 class JobSpecLoader:
     """Loads JobSpec records from a DynamoDB table.
 
-    The table is expected to have a primary key on (project_name, job_name)
+    The table is expected to have a primary key on (project_name, job_name_version)
     and an attribute 'spec' that contains a JSON-like dictionary compatible
     with the JobSpec dataclasses.
     """
@@ -35,16 +44,7 @@ class JobSpecLoader:
     def __init__(self, table_name: str | None = None):
         """Initialize the instance with required clients and runtime configuration."""
         self._ddb = boto3.resource("dynamodb")
-        self._table_name = (
-            table_name
-            or os.environ.get(DDB_TABLE_ENV_VAR)
-            or os.environ.get(LEGACY_DDB_TABLE_ENV_VAR)
-        )
-        if not self._table_name:
-            raise ValueError(
-                "DynamoDB table name for JobSpec must be provided or set in "
-                f"{DDB_TABLE_ENV_VAR} (or legacy {LEGACY_DDB_TABLE_ENV_VAR})"
-            )
+        self._table_name = resolve_dpp_config_table_name(table_name)
         self._table = self._ddb.Table(self._table_name)
 
     def load(
@@ -57,10 +57,13 @@ class JobSpecLoader:
         key = {"project_name": project_name}
         if feature_spec_version:
             sort_key = f"{job_name}{JOB_SPEC_SORT_KEY_DELIMITER}{feature_spec_version}"
-            key["job_name"] = sort_key
+            key["job_name_version"] = sort_key
         else:
-            key["job_name"] = job_name
+            key["job_name_version"] = job_name
         response = self._table.get_item(Key=key)
+        if "Item" not in response:
+            legacy_key = {"project_name": key["project_name"], "job_name": key["job_name_version"]}
+            response = self._table.get_item(Key=legacy_key)
         if "Item" not in response:
             raise KeyError(
                 "No JobSpec found for "
@@ -105,9 +108,16 @@ def load_job_spec(
     response = loader._table.get_item(
         Key={
             "project_name": project_name,
-            "job_name": f"{job_name}{JOB_SPEC_SORT_KEY_DELIMITER}{feature_spec_version}",
+            "job_name_version": f"{job_name}{JOB_SPEC_SORT_KEY_DELIMITER}{feature_spec_version}",
         }
     )
+    if "Item" not in response:
+        response = loader._table.get_item(
+            Key={
+                "project_name": project_name,
+                "job_name": f"{job_name}{JOB_SPEC_SORT_KEY_DELIMITER}{feature_spec_version}",
+            }
+        )
     if "Item" not in response:
         raise KeyError(
             "No JobSpec found for "

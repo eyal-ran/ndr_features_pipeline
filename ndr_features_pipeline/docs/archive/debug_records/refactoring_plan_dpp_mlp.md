@@ -25,15 +25,16 @@ Implement a two-project-type architecture where:
 ---
 
 ## 1) Hard decisions (finalized, no options)
+> **S0 reconciliation note:** Superseded by §11 where conflicting. Canonical naming/table/env targets are defined by §11.8 and §11.9.
 
 1. **Table layout is fixed to 3 tables** (no "single table alternative"):
-   - `ndr_dpp_config`
-   - `ndr_mlp_config`
-   - `ndr_batch_index`
+   - `dpp_config`
+   - `mlp_config`
+   - `batch_index`
 2. `project_name` is always DPP in this refactor scope.
 3. `ml_project_name` is always a single MLP id in a single execution branch.
 4. `ml_project_names` is always a list used only for fan-out orchestration.
-5. Payload-provided `batch_id` and `batch_s3_prefix` are authoritative per-run pointers.
+5. Payload-provided `batch_id` and `raw_parsed_logs_s3_prefix` are authoritative per-run pointers.
 6. Base prefixes/contracts come from DDB; code composes only dynamic suffixes (`date/slot/batch`) where needed.
 7. Batch-index upserts are idempotent via deterministic key + explicit condition/update expressions.
 8. Compatibility flags are required through Task 7, with fixed environment defaults (defined in §8).
@@ -41,6 +42,7 @@ Implement a two-project-type architecture where:
 ---
 
 ## 2) Canonical runtime contract vNext (exact)
+> **S0 reconciliation note:** Superseded by §11 where conflicting. Canonical naming/table/env targets are defined by §11.8 and §11.9.
 
 ## 2.1 Ingestion payload shape (input to 15m SF)
 
@@ -51,7 +53,7 @@ Implement a two-project-type architecture where:
   "data_source_name": "fw_paloalto",
   "ml_project_name": "network_anomalies_detection",
   "batch_id": "a1b2c3d4e5",
-  "batch_s3_prefix": "s3://<prod_ing_bucket>/fw_paloalto/<org1>/<org2>/2026/03/10/a1b2c3d4e5/",
+  "raw_parsed_logs_s3_prefix": "s3://<prod_ing_bucket>/fw_paloalto/<org1>/<org2>/2026/03/10/a1b2c3d4e5/",
   "timestamp": "2026-03-10T13:23:11Z",
   "feature_spec_version": "v1"
 }
@@ -67,7 +69,7 @@ Implement a two-project-type architecture where:
     "network_capacity_forecasting"
   ],
   "batch_id": "a1b2c3d4e5",
-  "batch_s3_prefix": "s3://<prod_ing_bucket>/fw_paloalto/<org1>/<org2>/2026/03/10/a1b2c3d4e5/",
+  "raw_parsed_logs_s3_prefix": "s3://<prod_ing_bucket>/fw_paloalto/<org1>/<org2>/2026/03/10/a1b2c3d4e5/",
   "timestamp": "2026-03-10T13:23:11Z",
   "feature_spec_version": "v1"
 }
@@ -79,7 +81,7 @@ Implement a two-project-type architecture where:
   - `ml_project_name` (single branch), or
   - `ml_project_names` (fan-out list, non-empty)
 - `batch_id` non-empty string.
-- `batch_s3_prefix` must be `s3://` and end with `/<batch_id>/`.
+- `raw_parsed_logs_s3_prefix` must be `s3://` and end with `/<batch_id>/`.
 - `timestamp` must be ISO-8601 UTC `...Z`.
 
 ## 2.2 Orchestration-resolved runtime fields (internal)
@@ -89,7 +91,7 @@ Implement a two-project-type architecture where:
 - `ml_project_names` (list; only before Map)
 - `feature_spec_version`
 - `mini_batch_id` (= `batch_id`)
-- `mini_batch_s3_prefix` (= `batch_s3_prefix`)
+- `raw_parsed_logs_s3_prefix` (= `raw_parsed_logs_s3_prefix`)
 - `batch_start_ts_iso`
 - `batch_end_ts_iso`
 - `date_utc` (YYYY-MM-DD)
@@ -106,7 +108,7 @@ Existing required:
 - `BatchEndTsIso`
 
 New required for 15m path:
-- `MiniBatchS3Prefix`
+- `RawParsedLogsS3Prefix`
 
 New optional for MLP-scoped downstream branches:
 - `MlProjectName`
@@ -121,13 +123,14 @@ In this plan, the word **optional** is never ambiguous; it always means **condit
 
 - `MlProjectName` is required when executing a single-MLP branch.
 - `MlProjectNamesJson` is required only before fan-out or when passing fan-out context through a single payload field.
-- `ml_project_name` in `ndr_batch_index` is required for per-branch records and omitted only for pre-fan-out aggregate records.
-- `ml_project_names_json` in `ndr_batch_index` is required only for pre-fan-out aggregate records.
+- `ml_project_name` in `batch_index` is required for per-branch records and omitted only for pre-fan-out aggregate records.
+- `ml_project_names_json` in `batch_index` is required only for pre-fan-out aggregate records.
 - `ttl_epoch` is optional operationally; when omitted, table-level TTL behavior is disabled for that row.
 
 ## 3) DDB schema (exact)
+> **S0 reconciliation note:** Superseded by §11 where conflicting. Canonical naming/table/env targets are defined by §11.8 and §11.9.
 
-## 3.1 `ndr_dpp_config` (control plane)
+## 3.1 `dpp_config` (control plane)
 - PK: `project_name` (S)
 - SK: `job_name_version` (S) where format is `<job_name>#<version>`
 
@@ -138,7 +141,7 @@ Required attributes on DPP project-parameter records:
 - `spec` (M)
 - `updated_at` (S, ISO8601Z)
 
-## 3.2 `ndr_mlp_config` (control plane)
+## 3.2 `mlp_config` (control plane)
 - PK: `ml_project_name` (S)
 - SK: `job_name_version` (S)
 
@@ -147,7 +150,7 @@ Required attributes:
 - `spec` (M)
 - `updated_at` (S)
 
-## 3.3 `ndr_batch_index` (data plane)
+## 3.3 `batch_index` (data plane)
 
 ### Primary key
 - PK: `pk` (S) = `project_name#data_source_name#version#date_utc`
@@ -161,7 +164,7 @@ Required attributes:
 - `hour_utc` (S, 00..23)
 - `slot15` (N, 1..4)
 - `batch_id` (S)
-- `batch_s3_prefix` (S)
+- `raw_parsed_logs_s3_prefix` (S)
 - `event_ts_utc` (S)
 - `org1` (S)
 - `org2` (S)
@@ -177,7 +180,8 @@ Required attributes:
 
 ---
 
-## 4) Exact upsert logic for `ndr_batch_index`
+## 4) Exact upsert logic for `batch_index`
+> **S0 reconciliation note:** Superseded by §11 where conflicting. Canonical naming/table/env targets are defined by §11.8 and §11.9.
 
 All writes happen in 15m SF before starting the 15m pipeline.
 
@@ -191,7 +195,7 @@ If condition fails, treat as idempotent duplicate and continue.
 Use `UpdateItem` with:
 - `Key`: `pk`, `sk`
 - `UpdateExpression`:
-  `SET batch_s3_prefix = :batch_s3_prefix, event_ts_utc = :event_ts_utc, ingested_at_utc = :ingested_at_utc, #status = :status, ml_project_name = if_not_exists(ml_project_name, :ml_project_name), ml_project_names_json = if_not_exists(ml_project_names_json, :ml_project_names_json), GSI1PK = :gsi1pk, GSI1SK = :gsi1sk`
+  `SET raw_parsed_logs_s3_prefix = :raw_parsed_logs_s3_prefix, event_ts_utc = :event_ts_utc, ingested_at_utc = :ingested_at_utc, #status = :status, ml_project_name = if_not_exists(ml_project_name, :ml_project_name), ml_project_names_json = if_not_exists(ml_project_names_json, :ml_project_names_json), GSI1PK = :gsi1pk, GSI1SK = :gsi1sk`
 - `ExpressionAttributeNames`:
   - `#status` -> `status`
 - `ConditionExpression`:
@@ -202,6 +206,7 @@ This yields deterministic, replay-safe behavior.
 ---
 
 ## 5) Must-not-change constraints (strict)
+> **S0 reconciliation note:** Superseded by §11 where conflicting. Canonical naming/table/env targets are defined by §11.8 and §11.9.
 
 1. Do not modify any Step Functions JSON file except:
    - `docs/step_functions_jsonata/sfn_ndr_15m_features_inference.json`
@@ -215,6 +220,7 @@ This yields deterministic, replay-safe behavior.
 ---
 
 ## 6) Task plan (ordered, deterministic)
+> **S0 reconciliation note:** Superseded by §11 where conflicting. Canonical naming/table/env targets are defined by §11.8 and §11.9.
 
 ## Task 1 — Contract/docs/schema foundation
 
@@ -243,13 +249,13 @@ Creates stable, shared definitions so implementation tasks cannot drift.
 
 ### Task 1 implementation summary
 - Added `docs/architecture/data_projects_vs_ml_projects.md` to define DPP (`project_name`) vs MLP (`ml_project_name`, `ml_project_names`) semantics and to include exact runtime contract vNext payload examples from §2.
-- Updated `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md` to document the fixed 3-table schema (`ndr_dpp_config`, `ndr_mlp_config`, `ndr_batch_index`) including exact keys, attributes, GSI mapping, and idempotent PutItem/UpdateItem expressions from §4.
+- Updated `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md` to document the fixed 3-table schema (`dpp_config`, `mlp_config`, `batch_index`) including exact keys, attributes, GSI mapping, and idempotent PutItem/UpdateItem expressions from §4.
 - Updated `docs/architecture/orchestration/step_functions.md` with vNext payload validation rules, orchestration-resolved runtime fields, required/conditional pipeline parameter contract, and fixed migration-toggle defaults/switch-over criteria.
-- Updated `docs/palo_alto_raw_partitioning_strategy.md` to align canonical path contract, authoritative `batch_id`/`batch_s3_prefix` runtime pointer behavior, slot15 derivation policy, and deterministic `ndr_batch_index` usage.
+- Updated `docs/palo_alto_raw_partitioning_strategy.md` to align canonical path contract, authoritative `batch_id`/`raw_parsed_logs_s3_prefix` runtime pointer behavior, slot15 derivation policy, and deterministic `batch_index` usage.
 
 ### Task 1 contract delta
 - **Added:** explicit DPP/MLP identity semantics and deterministic optional-field predicates (`MlProjectName`, `MlProjectNamesJson`, `ml_project_name`, `ml_project_names_json`, `ttl_epoch`).
-- **Changed:** 15m contract documentation to require `MiniBatchS3Prefix` and to codify exact `ndr_batch_index` key shapes and idempotent write expressions.
+- **Changed:** 15m contract documentation to require `RawParsedLogsS3Prefix` and to codify exact `batch_index` key shapes and idempotent write expressions.
 - **Unchanged:** migration toggles/defaults and switch-over criteria remain exactly as defined in §8; compatibility flags remain required through Task 7.
 
 ---
@@ -266,14 +272,14 @@ Moves runtime truth to orchestration boundary and records replay/recovery index.
 - `tests/test_create_ml_projects_parameters_table.py`
 
 ### Required implementation details
-- Parse payload `batch_id` and `batch_s3_prefix` directly.
+- Parse payload `batch_id` and `raw_parsed_logs_s3_prefix` directly.
 - Derive `slot15` from payload timestamp minute:
   - 00-14 => 1
   - 15-29 => 2
   - 30-44 => 3
   - 45-59 => 4
 - Add `WriteBatchIndexRecord` state using §4 exact expressions.
-- Pass `MiniBatchS3Prefix`, `MlProjectName`, `MlProjectNamesJson` to pipeline start.
+- Pass `RawParsedLogsS3Prefix`, `MlProjectName`, `MlProjectNamesJson` to pipeline start.
 
 ### Deliverables
 - Deterministic pre-pipeline batch-index write.
@@ -283,19 +289,19 @@ Moves runtime truth to orchestration boundary and records replay/recovery index.
 - **implemented**
 
 ### Task 2 implementation summary
-- Updated `docs/step_functions_jsonata/sfn_ndr_15m_features_inference.json` to parse `batch_id` and `batch_s3_prefix` directly from payload, derive `slot15` from the payload timestamp minute bucket (`00-14=>1`, `15-29=>2`, `30-44=>3`, `45-59=>4`), and enforce vNext payload validation for DPP identity matching and field-shape constraints.
+- Updated `docs/step_functions_jsonata/sfn_ndr_15m_features_inference.json` to parse `batch_id` and `raw_parsed_logs_s3_prefix` directly from payload, derive `slot15` from the payload timestamp minute bucket (`00-14=>1`, `15-29=>2`, `30-44=>3`, `45-59=>4`), and enforce vNext payload validation for DPP identity matching and field-shape constraints.
 - Added deterministic pre-pipeline batch-index persistence states in the same state machine:
   - `WriteBatchIndexRecord` uses `PutItem` with `ConditionExpression = attribute_not_exists(pk) AND attribute_not_exists(sk)`.
   - `UpdateBatchIndexRecord` uses `UpdateItem` with `ConditionExpression = attribute_exists(pk) AND attribute_exists(sk)` and exact `UpdateExpression` from §4.
-- Added `MiniBatchS3Prefix`, `MlProjectName`, and `MlProjectNamesJson` into 15m/inference SageMaker `PipelineParameters`.
-- Updated seed contract source `src/ndr/scripts/create_ml_projects_parameters_table.py` so `pipeline_15m_streaming` required runtime params include `MiniBatchS3Prefix`.
+- Added `RawParsedLogsS3Prefix`, `MlProjectName`, and `MlProjectNamesJson` into 15m/inference SageMaker `PipelineParameters`.
+- Updated seed contract source `src/ndr/scripts/create_ml_projects_parameters_table.py` so `pipeline_15m_streaming` required runtime params include `RawParsedLogsS3Prefix`.
 - Added/updated contract tests in:
   - `tests/test_step_functions_item19_contracts.py`
   - `tests/test_create_ml_projects_parameters_table.py`
 
 ### Task 2 Contract Delta
 - **Added:** runtime resolution and validation for `data_source_name`, `ml_project_name` / `ml_project_names`, `ml_project_names_json`, `date_utc`, `hour_utc`, `slot15`, batch-index PK/SK/GSI identity fields, and pre-pipeline batch-index writer states.
-- **Changed:** `pipeline_15m_streaming` required runtime params now include `MiniBatchS3Prefix`; 15m/orchestration path now passes `MiniBatchS3Prefix`, `MlProjectName`, `MlProjectNamesJson` downstream.
+- **Changed:** `pipeline_15m_streaming` required runtime params now include `RawParsedLogsS3Prefix`; 15m/orchestration path now passes `RawParsedLogsS3Prefix`, `MlProjectName`, `MlProjectNamesJson` downstream.
 - **Unchanged:** migration toggles and defaults from §8 remain unchanged; compatibility flags remain required through Task 7.
 
 ### Task 2 Scope Compliance
@@ -314,7 +320,7 @@ Moves runtime truth to orchestration boundary and records replay/recovery index.
 ### Task 2 gate checklist (mapped to deliverables)
 - Deterministic pre-pipeline batch-index write: **done**.
 - Idempotent `PutItem`/`UpdateItem` contract with exact expressions from §4: **done**.
-- `MiniBatchS3Prefix`/`MlProjectName`/`MlProjectNamesJson` propagation to pipeline start: **done**.
+- `RawParsedLogsS3Prefix`/`MlProjectName`/`MlProjectNamesJson` propagation to pipeline start: **done**.
 - Contract tests for write state and parameter passing: **done**.
 
 ### Task 2 Rollback Plan
@@ -343,8 +349,8 @@ Ensures runtime contract reaches entry scripts and job runtime configs.
 - `tests/test_io_contract.py`
 
 ### Required implementation details
-- Add `MiniBatchS3Prefix` pipeline parameter.
-- Add CLI `--mini-batch-s3-prefix` to both scripts.
+- Add `RawParsedLogsS3Prefix` pipeline parameter.
+- Add CLI `--raw-parsed-logs-s3-prefix` to both scripts.
 - Thread value into job runtime configs.
 
 ### Deliverables
@@ -354,14 +360,14 @@ Ensures runtime contract reaches entry scripts and job runtime configs.
 - **implemented**
 
 ### Task 3 implementation summary
-- Updated `src/ndr/pipeline/sagemaker_pipeline_definitions_unified_with_fgc.py` to include `MiniBatchS3Prefix` as a required pipeline parameter and to pass `--mini-batch-s3-prefix` into `run_delta_builder` and `run_pair_counts_builder` step arguments.
-- Updated `src/ndr/scripts/run_delta_builder.py` and `src/ndr/scripts/run_pair_counts_builder.py` to accept required CLI argument `--mini-batch-s3-prefix` and to propagate it into typed runtime configs.
-- Updated runtime config models in `src/ndr/processing/delta_builder_job.py` and `src/ndr/processing/pair_counts_builder_job.py` to carry `mini_batch_s3_prefix` and to thread it into runtime execution context.
+- Updated `src/ndr/pipeline/sagemaker_pipeline_definitions_unified_with_fgc.py` to include `RawParsedLogsS3Prefix` as a required pipeline parameter and to pass `--raw-parsed-logs-s3-prefix` into `run_delta_builder` and `run_pair_counts_builder` step arguments.
+- Updated `src/ndr/scripts/run_delta_builder.py` and `src/ndr/scripts/run_pair_counts_builder.py` to accept required CLI argument `--raw-parsed-logs-s3-prefix` and to propagate it into typed runtime configs.
+- Updated runtime config models in `src/ndr/processing/delta_builder_job.py` and `src/ndr/processing/pair_counts_builder_job.py` to carry `raw_parsed_logs_s3_prefix` and to thread it into runtime execution context.
 - Updated `tests/test_io_contract.py` to include Task 3 contract checks asserting the new CLI argument is present in both entry scripts.
 
 ### Task 3 Contract Delta
-- **Added:** pipeline parameter `MiniBatchS3Prefix`; CLI argument `--mini-batch-s3-prefix`; runtime config field `mini_batch_s3_prefix` for Delta and Pair Counts.
-- **Changed:** Delta runtime wiring now forwards runtime `mini_batch_s3_prefix` into `RuntimeParams` with compatibility fallback to existing JobSpec input prefix during migration period.
+- **Added:** pipeline parameter `RawParsedLogsS3Prefix`; CLI argument `--raw-parsed-logs-s3-prefix`; runtime config field `raw_parsed_logs_s3_prefix` for Delta and Pair Counts.
+- **Changed:** Delta runtime wiring now forwards runtime `raw_parsed_logs_s3_prefix` into `RuntimeParams` with compatibility fallback to existing JobSpec input prefix during migration period.
 - **Unchanged:** Step Functions JSON definitions, DDB schema/idempotent write expressions, migration toggle defaults, and switch-over criteria.
 
 ### Task 3 Scope Compliance
@@ -381,15 +387,15 @@ Ensures runtime contract reaches entry scripts and job runtime configs.
 - Result: `22 passed`.
 
 ### Task 3 gate checklist (mapped to deliverables)
-- Add `MiniBatchS3Prefix` pipeline parameter: **done**.
-- Add CLI `--mini-batch-s3-prefix` to both scripts: **done**.
+- Add `RawParsedLogsS3Prefix` pipeline parameter: **done**.
+- Add CLI `--raw-parsed-logs-s3-prefix` to both scripts: **done**.
 - Thread value into job runtime configs: **done**.
 - Entry points accept and forward batch pointer: **done**.
 - Contract tests updated in same PR: **done**.
 
 ### Task 3 Rollback Plan
 1. Revert the Task 3 commit that introduced runtime pointer propagation changes.
-2. Restore previous pipeline definition artifact without `MiniBatchS3Prefix` parameter wiring.
+2. Restore previous pipeline definition artifact without `RawParsedLogsS3Prefix` parameter wiring.
 3. Re-run Task 3 targeted tests and verify baseline pre-task behavior.
 
 ### Task 3 self-review outcome
@@ -412,7 +418,7 @@ Applies contract at raw ingestion readers.
 - `tests/test_palo_alto_batch_utils.py`
 
 ### Required implementation details
-- Runtime `mini_batch_s3_prefix` takes precedence.
+- Runtime `raw_parsed_logs_s3_prefix` takes precedence.
 - Compatibility fallback to DDB/base prefix controlled by toggle `enable_legacy_input_prefix_fallback`.
 - Parser updated to canonical path with `fw_paloalto/<org1>/<org2>/YYYY/MM/dd/<batch_id>/...`.
 
@@ -423,14 +429,14 @@ Applies contract at raw ingestion readers.
 - **implemented**
 
 ### Task 4 implementation summary
-- Updated `src/ndr/processing/delta_builder_job.py` so `mini_batch_s3_prefix` is the primary runtime input pointer, with deterministic failure when missing while `enable_legacy_input_prefix_fallback=false`; legacy fallback to JobSpec input prefix is preserved only behind the compatibility toggle.
-- Updated `src/ndr/processing/pair_counts_builder_job.py` so input-path resolution uses runtime `mini_batch_s3_prefix` first, then optional legacy fallback to `traffic_input.s3_prefix/<mini_batch_id>/` only when `enable_legacy_input_prefix_fallback=true`, else raises deterministic validation error.
+- Updated `src/ndr/processing/delta_builder_job.py` so `raw_parsed_logs_s3_prefix` is the primary runtime input pointer, with deterministic failure when missing while `enable_legacy_input_prefix_fallback=false`; legacy fallback to JobSpec input prefix is preserved only behind the compatibility toggle.
+- Updated `src/ndr/processing/pair_counts_builder_job.py` so input-path resolution uses runtime `raw_parsed_logs_s3_prefix` first, then optional legacy fallback to `traffic_input.s3_prefix/<mini_batch_id>/` only when `enable_legacy_input_prefix_fallback=true`, else raises deterministic validation error.
 - Updated `src/ndr/orchestration/palo_alto_batch_utils.py` to parse canonical batch path order `fw_paloalto/<org1>/<org2>/YYYY/MM/dd/<batch_id>/...` as primary behavior, retain legacy parser branch only behind `enable_legacy_path_parser`, and centralize migration toggle default resolution per fixed env defaults (dev/stage/prod) with explicit env override support.
 - Updated `tests/test_palo_alto_batch_utils.py` with Task 4 contract tests validating canonical parser behavior, legacy parser gating, and migration-toggle default matrix behavior.
 
 ### Task 4 Contract Delta
 - **Added:** toggle-resolution helpers to enforce fixed migration defaults and explicit override handling for `enable_legacy_input_prefix_fallback`, `enable_legacy_path_parser`, `enable_s3_listing_fallback_for_backfill`.
-- **Changed:** Delta and Pair Counts raw-reader input resolution now prioritizes runtime pointer (`mini_batch_s3_prefix`) and applies deterministic compatibility fallback only through `enable_legacy_input_prefix_fallback`.
+- **Changed:** Delta and Pair Counts raw-reader input resolution now prioritizes runtime pointer (`raw_parsed_logs_s3_prefix`) and applies deterministic compatibility fallback only through `enable_legacy_input_prefix_fallback`.
 - **Changed:** Palo Alto path parser primary contract now uses canonical ordering `fw_paloalto/<org1>/<org2>/YYYY/MM/dd/<batch_id>/...`; legacy order remains gated by `enable_legacy_path_parser`.
 - **Unchanged:** no runtime payload fields added; no Step Functions JSON modified; migration toggles remain present (not removed before Task 7); Task 5+ index-first behavior not started.
 
@@ -449,8 +455,8 @@ Applies contract at raw ingestion readers.
 - Result: targeted checks passed from repository root layout used by project tests.
 
 ### Task 4 gate checklist (mapped to deliverables)
-- Runtime `mini_batch_s3_prefix` precedence in Delta builder: **done**.
-- Runtime `mini_batch_s3_prefix` precedence in Pair Counts builder: **done**.
+- Runtime `raw_parsed_logs_s3_prefix` precedence in Delta builder: **done**.
+- Runtime `raw_parsed_logs_s3_prefix` precedence in Pair Counts builder: **done**.
 - Compatibility fallback behind `enable_legacy_input_prefix_fallback`: **done**.
 - Canonical parser update to `fw_paloalto/<org1>/<org2>/YYYY/MM/dd/<batch_id>/...`: **done**.
 - Contract tests updated in same task PR: **done**.
@@ -498,7 +504,7 @@ Supports backfill/training gap repair without brittle S3 enumeration.
 - **implemented**
 
 ### Task 5 implementation summary
-- Added `src/ndr/config/batch_index_loader.py` with deterministic `ndr_batch_index` read APIs:
+- Added `src/ndr/config/batch_index_loader.py` with deterministic `batch_index` read APIs:
   - `lookup_forward(...)` resolves records by canonical index PK (`project_name#data_source_name#version#date_utc`) across UTC date range and sorts deterministically by (`event_ts_utc`, `batch_id`).
   - `lookup_reverse(...)` resolves latest batch pointer by `GSI1PK = project_name#data_source_name#version#batch_id` with `ScanIndexForward=false` and `Limit=1`.
 - Added `src/ndr/config/batch_index_writer.py` implementing exact idempotent write semantics from §4:
@@ -516,7 +522,7 @@ Supports backfill/training gap repair without brittle S3 enumeration.
 
 ### Task 5 Contract Delta
 - **Added:**
-  - `BatchIndexLoader` forward/reverse read path for `ndr_batch_index`.
+  - `BatchIndexLoader` forward/reverse read path for `batch_index`.
   - `BatchIndexWriter` idempotent upsert path with exact §4 expressions.
   - `resolve_batch_index_table_name` helper and constants.
 - **Changed:**
@@ -678,14 +684,14 @@ Finalizes architecture and removes migration debt.
 implemented
 
 ### Task 7 implementation summary
-- Updated `src/ndr/processing/delta_builder_job.py` to require runtime `mini_batch_s3_prefix` with deterministic validation error when missing; legacy fallback to JobSpec input prefix was removed.
-- Updated `src/ndr/processing/pair_counts_builder_job.py` so traffic input resolution is runtime-pointer only (`mini_batch_s3_prefix`) with deterministic validation when absent.
+- Updated `src/ndr/processing/delta_builder_job.py` to require runtime `raw_parsed_logs_s3_prefix` with deterministic validation error when missing; legacy fallback to JobSpec input prefix was removed.
+- Updated `src/ndr/processing/pair_counts_builder_job.py` so traffic input resolution is runtime-pointer only (`raw_parsed_logs_s3_prefix`) with deterministic validation when absent.
 - Updated `src/ndr/orchestration/palo_alto_batch_utils.py` to enforce canonical path parsing only (`fw_paloalto/<org1>/<org2>/YYYY/MM/dd/<batch_id>/...`) and remove legacy parser/toggle resolution branches.
 - Updated `docs/palo_alto_raw_partitioning_strategy.md`, `docs/architecture/orchestration/step_functions.md`, and `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md` to document Task 7 final vNext-only contract posture.
 
 ### Task 7 Contract Delta
-- **Added:** Task 7 contract note clarifying compatibility toggles are removed and `MiniBatchS3Prefix` is strictly required for ingestion-pointer resolution.
-- **Changed:** Delta and Pair Counts input path resolution now requires runtime `mini_batch_s3_prefix`; legacy fallback branches are removed.
+- **Added:** Task 7 contract note clarifying compatibility toggles are removed and `RawParsedLogsS3Prefix` is strictly required for ingestion-pointer resolution.
+- **Changed:** Delta and Pair Counts input path resolution now requires runtime `raw_parsed_logs_s3_prefix`; legacy fallback branches are removed.
 - **Changed:** Palo Alto batch path parser now accepts canonical ordering only; legacy path-order acceptance is removed.
 - **Unchanged:** Runtime contract vNext payload shape, pipeline parameter names, optional-field predicates (§2.4), DDB keys/attributes, and idempotent PutItem/UpdateItem expressions remain unchanged.
 
@@ -730,6 +736,7 @@ implemented
 ---
 
 ## 7) Alignment and quality gates (mandatory for every task)
+> **S0 reconciliation note:** Superseded by §11 where conflicting. Canonical naming/table/env targets are defined by §11.8 and §11.9.
 
 1. Maintain runtime contract vNext section and changelog in this file.
 2. One task per PR (Tasks 2–6 must not be merged together).
@@ -744,6 +751,7 @@ implemented
 ---
 
 ## 8) Migration toggles and defaults (fixed)
+> **S0 reconciliation note:** Superseded by §11 where conflicting. Canonical naming/table/env targets are defined by §11.8 and §11.9.
 
 ## Toggle definitions
 - `enable_legacy_input_prefix_fallback`
@@ -773,10 +781,11 @@ implemented
 ---
 
 ## 9) Completion criteria (Definition of Done)
+> **S0 reconciliation note:** Superseded by §11 where conflicting. Canonical naming/table/env targets are defined by §11.8 and §11.9.
 
 Refactor is complete when:
 1. 15m SF writes deterministic batch-index rows before pipeline start.
-2. Delta and Pair Counts consume runtime batch pointer (`MiniBatchS3Prefix`) as primary input.
+2. Delta and Pair Counts consume runtime batch pointer (`RawParsedLogsS3Prefix`) as primary input.
 3. Non-RT flows use batch-index first, reverse lookup supported by GSI.
 4. DPP↔MLP linkage enforced in config tables (`ml_project_name` on DPP, `project_name` on MLP).
 5. Multi-MLP fan-out executes per-ML branch with correct identity propagation.
@@ -786,15 +795,23 @@ Refactor is complete when:
 ---
 
 ## 10) Version bump and changelog
+> **S0 reconciliation note:** Superseded by §11 where conflicting. Canonical naming/table/env targets are defined by §11.8 and §11.9.
 
-- **Plan version:** `vNext-task1-docs-baseline`
+- **Plan version:** `vNext-s0-reconciled`
 - **Task 1 status:** implemented (contract/docs/schema foundation only)
+- **Stage S0 status:** implemented (plan reconciliation, docs-only)
+
+### Stage S0 changelog
+
+1. Added explicit predecessor notes in §§1–10 that §11 supersedes conflicting instructions.
+2. Harmonized §§1–10 naming references to §11.8 canonical field names and §11.9 table names.
+3. Removed contradictory legacy canonical-name references from active predecessor sections.
 
 ### Task 1 changelog
 
 1. Canonical DPP/MLP semantics were documented with explicit field-role separation (`project_name`, `ml_project_name`, `ml_project_names`).
 2. Runtime contract vNext ingestion payload examples from §2 were replicated into architecture docs without shape changes.
-3. DynamoDB table schemas (`ndr_dpp_config`, `ndr_mlp_config`, `ndr_batch_index`) and batch-index idempotent write contract (§4) were aligned in docs.
+3. DynamoDB table schemas (`dpp_config`, `mlp_config`, `batch_index`) and batch-index idempotent write contract (§4) were aligned in docs.
 4. Optional-field predicates from §2.4 were propagated into docs with deterministic wording.
 
 ---

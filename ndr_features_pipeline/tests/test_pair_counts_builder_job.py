@@ -115,7 +115,7 @@ class TestPairCountsBuilderJob(unittest.TestCase):
                 project_name="ndr_project",
                 feature_spec_version="v1",
                 mini_batch_id="batch_20251231T0000Z",
-                mini_batch_s3_prefix="s3://integration/parsed/runtime-batch/",
+                raw_parsed_logs_s3_prefix="s3://integration/parsed/runtime-batch/",
                 batch_start_ts_iso="2025-12-31T00:00:00Z",
                 batch_end_ts_iso="2025-12-31T00:15:00Z",
             )

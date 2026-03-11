@@ -42,12 +42,6 @@ class RuntimeParams:
     slice_end_ts: str | None = None
     extra: Dict[str, Any] | None = None
 
-    @property
-    def mini_batch_s3_prefix(self) -> str:
-        """Compatibility alias for legacy runtime field usage."""
-        return self.raw_parsed_logs_s3_prefix
-
-
 class BaseProcessingRunner:
     """Shared orchestration skeleton for all NDR processing jobs."""
 

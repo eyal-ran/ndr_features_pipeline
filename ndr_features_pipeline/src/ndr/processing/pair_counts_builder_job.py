@@ -33,7 +33,6 @@ from ndr.processing.raw_traffic_fields import (
     normalize_raw_traffic_fields,
     REQUIRED_CANONICAL_TRAFFIC_FIELDS,
 )
-from ndr.runtime_field_aliases import resolve_with_legacy_alias
 
 
 LOGGER = get_logger(__name__)
@@ -53,8 +52,6 @@ class PairCountsJobRuntimeConfig:
         Identifier of the 15m ETL mini-batch (aligns with integration bucket folder).
     raw_parsed_logs_s3_prefix : str
         Canonical runtime S3 prefix for this mini-batch.
-    mini_batch_s3_prefix : str
-        Legacy alias for runtime S3 prefix (compatibility).
     batch_start_ts_iso : str
         ISO8601 string of the batch start time (inclusive).
     batch_end_ts_iso : str
@@ -65,7 +62,6 @@ class PairCountsJobRuntimeConfig:
     feature_spec_version: str
     mini_batch_id: str
     raw_parsed_logs_s3_prefix: str = ""
-    mini_batch_s3_prefix: str = ""
     batch_start_ts_iso: str = ""
     batch_end_ts_iso: str = ""
 
@@ -155,16 +151,8 @@ class PairCountsBuilderJob(BaseRunner):
         traffic_cfg = self.job_spec.traffic_input
         mini_batch_id = self.runtime_config.mini_batch_id
 
-        runtime_prefix = resolve_with_legacy_alias(
-            canonical_value=self.runtime_config.raw_parsed_logs_s3_prefix,
-            legacy_value=self.runtime_config.mini_batch_s3_prefix,
-            canonical_name="raw_parsed_logs_s3_prefix",
-            legacy_name="mini_batch_s3_prefix",
-            context="pair_counts_runtime_config",
-        )
-        if runtime_prefix:
-            path = runtime_prefix
-        else:
+        path = self.runtime_config.raw_parsed_logs_s3_prefix
+        if not path:
             raise ValueError("raw_parsed_logs_s3_prefix is required")
 
         LOGGER.info(

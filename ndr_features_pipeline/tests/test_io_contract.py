@@ -63,14 +63,14 @@ def test_resolve_step_code_uri_loads_pipeline_spec(monkeypatch):
     assert uri == "s3://bucket/path/run_delta_builder.py"
 
 
-def test_run_delta_builder_script_contract_includes_mini_batch_s3_prefix_arg():
+def test_run_delta_builder_script_contract_includes_canonical_raw_parsed_logs_arg():
     script = Path("src/ndr/scripts/run_delta_builder.py").read_text()
-    assert "--mini-batch-s3-prefix" in script
+    assert "--raw-parsed-logs-s3-prefix" in script
 
 
-def test_run_pair_counts_script_contract_includes_mini_batch_s3_prefix_arg():
+def test_run_pair_counts_script_contract_includes_canonical_raw_parsed_logs_arg():
     script = Path("src/ndr/scripts/run_pair_counts_builder.py").read_text()
-    assert "--mini-batch-s3-prefix" in script
+    assert "--raw-parsed-logs-s3-prefix" in script
 
 
 def test_inference_pipeline_defines_ml_project_name_parameter():

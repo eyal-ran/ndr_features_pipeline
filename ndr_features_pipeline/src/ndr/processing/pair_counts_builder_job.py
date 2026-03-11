@@ -33,6 +33,7 @@ from ndr.processing.raw_traffic_fields import (
     normalize_raw_traffic_fields,
     REQUIRED_CANONICAL_TRAFFIC_FIELDS,
 )
+from ndr.runtime_field_aliases import resolve_with_legacy_alias
 
 
 LOGGER = get_logger(__name__)
@@ -50,8 +51,10 @@ class PairCountsJobRuntimeConfig:
         Feature spec version, used for JobSpec lookup and partitioning.
     mini_batch_id : str
         Identifier of the 15m ETL mini-batch (aligns with integration bucket folder).
+    raw_parsed_logs_s3_prefix : str
+        Canonical runtime S3 prefix for this mini-batch.
     mini_batch_s3_prefix : str
-        Authoritative runtime S3 prefix for this mini-batch.
+        Legacy alias for runtime S3 prefix (compatibility).
     batch_start_ts_iso : str
         ISO8601 string of the batch start time (inclusive).
     batch_end_ts_iso : str
@@ -61,6 +64,7 @@ class PairCountsJobRuntimeConfig:
     project_name: str
     feature_spec_version: str
     mini_batch_id: str
+    raw_parsed_logs_s3_prefix: str = ""
     mini_batch_s3_prefix: str = ""
     batch_start_ts_iso: str = ""
     batch_end_ts_iso: str = ""
@@ -146,16 +150,22 @@ class PairCountsBuilderJob(BaseRunner):
         """Read parsed Palo Alto traffic logs for this mini-batch.
 
         This implementation reads from the authoritative runtime pointer
-        ``mini_batch_s3_prefix`` and expects JSON Lines gzip data.
+        ``raw_parsed_logs_s3_prefix`` and expects JSON Lines gzip data.
         """
         traffic_cfg = self.job_spec.traffic_input
         mini_batch_id = self.runtime_config.mini_batch_id
 
-        runtime_prefix = (self.runtime_config.mini_batch_s3_prefix or "").strip()
+        runtime_prefix = resolve_with_legacy_alias(
+            canonical_value=self.runtime_config.raw_parsed_logs_s3_prefix,
+            legacy_value=self.runtime_config.mini_batch_s3_prefix,
+            canonical_name="raw_parsed_logs_s3_prefix",
+            legacy_name="mini_batch_s3_prefix",
+            context="pair_counts_runtime_config",
+        )
         if runtime_prefix:
             path = runtime_prefix
         else:
-            raise ValueError("mini_batch_s3_prefix is required")
+            raise ValueError("raw_parsed_logs_s3_prefix is required")
 
         LOGGER.info(
             "Reading traffic logs for pair-counts.",

@@ -30,7 +30,7 @@ def test_priority_item23_required_runtime_validation_states_present():
             "FailMissingMiniBatchId",
             "FailMissingBatchStartTsIso",
             "FailMissingBatchEndTsIso",
-            "FailMissingMiniBatchS3Prefix",
+            "FailMissingRawParsedLogsS3Prefix",
         },
         "sfn_ndr_monthly_fg_b_baselines.json": {
             "ValidateResolvedRuntimeParams",

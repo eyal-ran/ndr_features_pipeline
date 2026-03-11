@@ -59,7 +59,7 @@ Table count is fixed to these three tables in this refactor scope.
 - `hour_utc` (S, 00..23)
 - `slot15` (N, 1..4)
 - `batch_id` (S)
-- `batch_s3_prefix` (S)
+- `raw_parsed_logs_s3_prefix` (S)
 - `event_ts_utc` (S)
 - `org1` (S)
 - `org2` (S)
@@ -92,7 +92,7 @@ Use `UpdateItem` with:
 
 - `Key`: `pk`, `sk`
 - `UpdateExpression`:
-  `SET batch_s3_prefix = :batch_s3_prefix, event_ts_utc = :event_ts_utc, ingested_at_utc = :ingested_at_utc, #status = :status, ml_project_name = if_not_exists(ml_project_name, :ml_project_name), ml_project_names_json = if_not_exists(ml_project_names_json, :ml_project_names_json), GSI1PK = :gsi1pk, GSI1SK = :gsi1sk`
+  `SET raw_parsed_logs_s3_prefix = :raw_parsed_logs_s3_prefix, event_ts_utc = :event_ts_utc, ingested_at_utc = :ingested_at_utc, #status = :status, ml_project_name = if_not_exists(ml_project_name, :ml_project_name), ml_project_names_json = if_not_exists(ml_project_names_json, :ml_project_names_json), GSI1PK = :gsi1pk, GSI1SK = :gsi1sk`
 - `ExpressionAttributeNames`:
   - `#status` -> `status`
 - `ConditionExpression`:
@@ -103,12 +103,13 @@ Use `UpdateItem` with:
 The index schema above is bound to the runtime contract fields:
 
 - `batch_id` -> `mini_batch_id`
-- `batch_s3_prefix` -> `mini_batch_s3_prefix`
+- `raw_parsed_logs_s3_prefix` -> canonical runtime/pipeline surfaces
+- Legacy ingress aliases during P0: `batch_s3_prefix`, `mini_batch_s3_prefix`
 - `timestamp` + derived calendar components -> `date_utc`, `hour_utc`, `slot15`
 
 Pipeline parameters for 15m path:
 
-- Required: `ProjectName`, `FeatureSpecVersion`, `MiniBatchId`, `MiniBatchS3Prefix`, `BatchStartTsIso`, `BatchEndTsIso`
+- Required: `ProjectName`, `FeatureSpecVersion`, `MiniBatchId`, `RawParsedLogsS3Prefix`, `BatchStartTsIso`, `BatchEndTsIso`
 - Optional by predicate: `MlProjectName`, `MlProjectNamesJson`
 
-Task 7 note: compatibility toggles are removed; `MiniBatchS3Prefix` is strictly required for runtime ingestion-pointer resolution.
+P0 note: canonical write is `RawParsedLogsS3Prefix`; legacy aliases are read at ingress only with deterministic warning logs (`LegacyFieldNameUsed`).

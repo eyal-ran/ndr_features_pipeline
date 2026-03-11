@@ -157,14 +157,14 @@ def test_15m_flow_writes_batch_index_with_idempotent_contract_and_vnext_pipeline
     assert update_state["Resource"] == "arn:aws:states:::aws-sdk:dynamodb:updateItem"
     assert update_state["Arguments"]["ConditionExpression"] == "attribute_exists(pk) AND attribute_exists(sk)"
     assert update_state["Arguments"]["UpdateExpression"] == (
-        "SET batch_s3_prefix = :batch_s3_prefix, event_ts_utc = :event_ts_utc, ingested_at_utc = :ingested_at_utc, "
+        "SET raw_parsed_logs_s3_prefix = :raw_parsed_logs_s3_prefix, event_ts_utc = :event_ts_utc, ingested_at_utc = :ingested_at_utc, "
         "#status = :status, ml_project_name = if_not_exists(ml_project_name, :ml_project_name), "
         "ml_project_names_json = if_not_exists(ml_project_names_json, :ml_project_names_json), GSI1PK = :gsi1pk, GSI1SK = :gsi1sk"
     )
 
     for state_name in ["Start15mFeaturesPipeline", "StartInferencePipeline"]:
         params = {entry["Name"] for entry in states[state_name]["Arguments"]["PipelineParameters"]}
-        assert {"MiniBatchS3Prefix", "MlProjectName", "MlProjectNamesJson"}.issubset(params)
+        assert {"RawParsedLogsS3Prefix", "MlProjectName", "MlProjectNamesJson"}.issubset(params)
 
 
 def test_15m_flow_derives_slot15_from_timestamp_minute_buckets():

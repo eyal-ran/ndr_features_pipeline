@@ -13,7 +13,8 @@ Expected arguments (all required):
 - --project-name          : Logical NDR project name (for JobSpec lookup).
 - --feature-spec-version  : Feature-spec version (schema id for delta/FGs).
 - --mini-batch-id         : Identifier of the 15m ETL mini-batch.
-- --mini-batch-s3-prefix  : Authoritative S3 pointer for this mini-batch.
+- --raw-parsed-logs-s3-prefix : Canonical authoritative S3 pointer for this mini-batch.
+- --mini-batch-s3-prefix       : Legacy alias for compatibility.
 - --batch-start-ts-iso    : ISO8601 start timestamp of the batch window.
 - --batch-end-ts-iso      : ISO8601 end timestamp of the batch window.
 """
@@ -26,6 +27,7 @@ from ndr.processing.delta_builder_job import (
     run_delta_builder_from_runtime_config,
 )
 from ndr.logging.logger import get_logger
+from ndr.runtime_field_aliases import resolve_with_legacy_alias
 
 
 LOGGER = get_logger(__name__)
@@ -60,9 +62,14 @@ def parse_args(argv=None):
         required=True,
         help="Identifier of the 15m ETL mini-batch (used to locate inputs).",        )
     parser.add_argument(
+        "--raw-parsed-logs-s3-prefix",
+        default="",
+        help="Canonical S3 prefix for this mini-batch (must end with /<mini_batch_id>/).",
+    )
+    parser.add_argument(
         "--mini-batch-s3-prefix",
-        required=True,
-        help="Authoritative S3 prefix for this mini-batch (must end with /<mini_batch_id>/).",
+        default="",
+        help="Legacy alias for --raw-parsed-logs-s3-prefix.",
     )
     parser.add_argument(
         "--batch-start-ts-iso",
@@ -84,13 +91,23 @@ def main(argv=None) -> int:
     """
     args = parse_args(argv)
 
+    raw_parsed_logs_s3_prefix = resolve_with_legacy_alias(
+        canonical_value=args.raw_parsed_logs_s3_prefix,
+        legacy_value=args.mini_batch_s3_prefix,
+        canonical_name="raw_parsed_logs_s3_prefix",
+        legacy_name="mini_batch_s3_prefix",
+        context="run_delta_builder.parse_args",
+    )
+    if not raw_parsed_logs_s3_prefix:
+        raise ValueError("raw_parsed_logs_s3_prefix is required")
+
     LOGGER.info(
         "Starting Delta Builder via CLI/runtime entrypoint.",
         extra={
             "project_name": args.project_name,
             "feature_spec_version": args.feature_spec_version,
             "mini_batch_id": args.mini_batch_id,
-            "mini_batch_s3_prefix": args.mini_batch_s3_prefix,
+            "raw_parsed_logs_s3_prefix": raw_parsed_logs_s3_prefix,
             "batch_start_ts_iso": args.batch_start_ts_iso,
             "batch_end_ts_iso": args.batch_end_ts_iso,
         },
@@ -100,7 +117,7 @@ def main(argv=None) -> int:
         project_name=args.project_name,
         feature_spec_version=args.feature_spec_version,
         mini_batch_id=args.mini_batch_id,
-        mini_batch_s3_prefix=args.mini_batch_s3_prefix,
+        raw_parsed_logs_s3_prefix=raw_parsed_logs_s3_prefix,
         batch_start_ts_iso=args.batch_start_ts_iso,
         batch_end_ts_iso=args.batch_end_ts_iso,
     )

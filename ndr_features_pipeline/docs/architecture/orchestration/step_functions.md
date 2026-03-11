@@ -15,7 +15,7 @@ For Task 1, this is a documentation foundation only.
   "data_source_name": "fw_paloalto",
   "ml_project_name": "network_anomalies_detection",
   "batch_id": "a1b2c3d4e5",
-  "batch_s3_prefix": "s3://<prod_ing_bucket>/fw_paloalto/<org1>/<org2>/2026/03/10/a1b2c3d4e5/",
+  "raw_parsed_logs_s3_prefix": "s3://<prod_ing_bucket>/fw_paloalto/<org1>/<org2>/2026/03/10/a1b2c3d4e5/",
   "timestamp": "2026-03-10T13:23:11Z",
   "feature_spec_version": "v1"
 }
@@ -32,7 +32,7 @@ For Task 1, this is a documentation foundation only.
     "network_capacity_forecasting"
   ],
   "batch_id": "a1b2c3d4e5",
-  "batch_s3_prefix": "s3://<prod_ing_bucket>/fw_paloalto/<org1>/<org2>/2026/03/10/a1b2c3d4e5/",
+  "raw_parsed_logs_s3_prefix": "s3://<prod_ing_bucket>/fw_paloalto/<org1>/<org2>/2026/03/10/a1b2c3d4e5/",
   "timestamp": "2026-03-10T13:23:11Z",
   "feature_spec_version": "v1"
 }
@@ -44,7 +44,7 @@ For Task 1, this is a documentation foundation only.
 - Exactly one of `ml_project_name` or `ml_project_names` must be present.
 - `ml_project_names` must be non-empty when present.
 - `batch_id` is non-empty.
-- `batch_s3_prefix` starts with `s3://` and ends with `/<batch_id>/`.
+- `raw_parsed_logs_s3_prefix` starts with `s3://` and ends with `/<batch_id>/`.
 - `timestamp` is ISO-8601 UTC (`...Z`).
 
 ## 2) Orchestration-resolved runtime fields
@@ -55,7 +55,8 @@ For Task 1, this is a documentation foundation only.
 - `ml_project_names` (only pre-Map)
 - `feature_spec_version`
 - `mini_batch_id` (= `batch_id`)
-- `mini_batch_s3_prefix` (= `batch_s3_prefix`)
+- `raw_parsed_logs_s3_prefix` (= ingestion batch prefix)
+- Compatibility aliases accepted at ingress only: `batch_s3_prefix`, `mini_batch_s3_prefix`
 - `batch_start_ts_iso`
 - `batch_end_ts_iso`
 - `date_utc` (YYYY-MM-DD)
@@ -69,7 +70,7 @@ For Task 1, this is a documentation foundation only.
 - `ProjectName`
 - `FeatureSpecVersion`
 - `MiniBatchId`
-- `MiniBatchS3Prefix`
+- `RawParsedLogsS3Prefix`
 - `BatchStartTsIso`
 - `BatchEndTsIso`
 
@@ -92,6 +93,6 @@ This behavior is replay-safe and required for recovery/backfill lookup paths.
 
 Compatibility toggles are removed and orchestration runs in vNext-only mode:
 
-- `MiniBatchS3Prefix` is required for the 15m path.
+- `RawParsedLogsS3Prefix` is required for the 15m path.
 - Canonical Palo Alto path parsing (`fw_paloalto/<org1>/<org2>/YYYY/MM/dd/<batch_id>/...`) is mandatory.
 - No legacy fallback/parser/listing compatibility flags are part of the contract.

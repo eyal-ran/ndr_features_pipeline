@@ -160,7 +160,7 @@ class TestPairCountsBuilderJob(unittest.TestCase):
         job.job_spec = mock_load_job_spec.return_value
         job.spark = MagicMock()
 
-        with self.assertRaisesRegex(ValueError, "mini_batch_s3_prefix is required"):
+        with self.assertRaisesRegex(ValueError, "raw_parsed_logs_s3_prefix is required"):
             job._read_traffic_for_batch()
 
 if __name__ == "__main__":

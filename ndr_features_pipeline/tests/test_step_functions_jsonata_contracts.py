@@ -73,3 +73,20 @@ def test_priority_item23_backfill_has_no_static_date_literals():
     text = (STEP_FUNCTIONS_DIR / "sfn_ndr_backfill_reprocessing.json").read_text(encoding="utf-8")
     assert "2025-01-01T00:00:00Z" not in text
     assert "2025-01-02T00:00:00Z" not in text
+
+
+def test_training_orchestrator_passes_control_plane_table_params_to_if_pipeline():
+    data = json.loads((STEP_FUNCTIONS_DIR / "sfn_ndr_training_orchestrator.json").read_text(encoding="utf-8"))
+    params = data["States"]["RunTrainingPerMlProject"]["ItemProcessor"]["States"]["StartTrainingPipeline"]["Arguments"]["PipelineParameters"]
+    names = {item["Name"] for item in params}
+    assert {"DppConfigTableName", "MlpConfigTableName", "BatchIndexTableName"}.issubset(names)
+
+
+def test_step_functions_do_not_source_table_names_from_eventbridge_payload():
+    for path in STEP_FUNCTIONS_DIR.glob("sfn_ndr_*.json"):
+        text = path.read_text(encoding="utf-8")
+        assert 'states.input.DppConfigTableName' not in text
+        assert 'states.input.MlpConfigTableName' not in text
+        assert 'states.input.BatchIndexTableName' not in text
+        assert 'states.input.table_name' not in text
+        assert 'states.input.TableName' not in text

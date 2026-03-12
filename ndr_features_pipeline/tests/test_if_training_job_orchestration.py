@@ -78,6 +78,9 @@ def test_run_orchestrates_artifact_before_deploy(monkeypatch):
         feature_spec_version="v1",
         run_id="run-1",
         execution_ts_iso="2025-01-01T00:00:00Z",
+        dpp_config_table_name="dpp_config",
+        mlp_config_table_name="mlp_config",
+        batch_index_table_name="batch_index",
         training_start_ts="2024-01-01T00:00:00Z",
         training_end_ts="2024-04-01T00:00:00Z",
         eval_start_ts="2024-04-01T00:00:00Z",
@@ -137,6 +140,9 @@ def test_run_failure_writes_failure_artifacts(monkeypatch):
         feature_spec_version="v1",
         run_id="run-2",
         execution_ts_iso="2025-01-01T00:00:00Z",
+        dpp_config_table_name="dpp_config",
+        mlp_config_table_name="mlp_config",
+        batch_index_table_name="batch_index",
         training_start_ts="2024-01-01T00:00:00Z",
         training_end_ts="2024-04-01T00:00:00Z",
         eval_start_ts="2024-04-01T00:00:00Z",
@@ -174,6 +180,9 @@ def test_write_preflight_failure_artifact_includes_resolved_payload(monkeypatch)
         feature_spec_version="v1",
         run_id="run-3",
         execution_ts_iso="2025-01-01T00:00:00Z",
+        dpp_config_table_name="dpp_config",
+        mlp_config_table_name="mlp_config",
+        batch_index_table_name="batch_index",
         training_start_ts="2024-01-01T00:00:00Z",
         training_end_ts="2024-04-01T00:00:00Z",
         eval_start_ts="2024-04-01T00:00:00Z",
@@ -237,6 +246,9 @@ def test_log_sagemaker_experiments_writes_rich_components(monkeypatch):
         feature_spec_version="v1",
         run_id="run-4",
         execution_ts_iso="2025-01-01T00:00:00Z",
+        dpp_config_table_name="dpp_config",
+        mlp_config_table_name="mlp_config",
+        batch_index_table_name="batch_index",
         training_start_ts="2024-01-01T00:00:00Z",
         training_end_ts="2024-04-01T00:00:00Z",
         eval_start_ts="2024-04-01T00:00:00Z",
@@ -274,6 +286,9 @@ def test_preflight_fails_on_underfilled_window(monkeypatch):
         feature_spec_version="v1",
         run_id="run-5",
         execution_ts_iso="2025-01-01T00:00:00Z",
+        dpp_config_table_name="dpp_config",
+        mlp_config_table_name="mlp_config",
+        batch_index_table_name="batch_index",
         training_start_ts="2024-01-01T00:00:00Z",
         training_end_ts="2024-04-01T00:00:00Z",
         eval_start_ts="2024-04-01T00:00:00Z",
@@ -339,6 +354,9 @@ def _runtime_with_stage(stage: str) -> IFTrainingRuntimeConfig:
         feature_spec_version="v1",
         run_id=f"run-{stage}",
         execution_ts_iso="2025-01-01T00:00:00Z",
+        dpp_config_table_name="dpp_config",
+        mlp_config_table_name="mlp_config",
+        batch_index_table_name="batch_index",
         training_start_ts="2024-01-01T00:00:00Z",
         training_end_ts="2024-04-01T00:00:00Z",
         eval_start_ts="2024-04-01T00:00:00Z",
@@ -876,3 +894,41 @@ def test_remediation_routes_fgb_only_when_only_fgb_missing(monkeypatch):
     record = observed["payload"]["records"][0]
     assert record["actions"]["backfill_15m_invoked"] is False
     assert record["actions"]["fgb_rebuild_invoked"] is True
+
+
+def test_write_inference_preprocessing_back_uses_dpp_table_and_job_name_version(monkeypatch):
+    runtime = IFTrainingRuntimeConfig(
+        project_name="proj",
+        feature_spec_version="v1",
+        run_id="run-3",
+        execution_ts_iso="2025-01-01T00:00:00Z",
+        dpp_config_table_name="dpp_config",
+        mlp_config_table_name="mlp_config",
+        batch_index_table_name="batch_index",
+        training_start_ts="2024-01-01T00:00:00Z",
+        training_end_ts="2024-04-01T00:00:00Z",
+    )
+    job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+
+    calls = {}
+
+    class _Table:
+        def get_item(self, Key):
+            calls["get_item"] = Key
+            return {"Item": {"spec": {"payload": {}}}}
+
+        def update_item(self, **kwargs):
+            calls["update_item"] = kwargs
+            return {}
+
+    class _DDB:
+        def Table(self, name):
+            calls["table_name"] = name
+            return _Table()
+
+    monkeypatch.setattr(sys.modules["boto3"], "resource", lambda *_a, **_k: _DDB(), raising=False)
+
+    job._write_inference_preprocessing_back(["f1"], {"f1": {}}, {"f1": {}})
+    assert calls["table_name"] == "dpp_config"
+    assert calls["get_item"] == {"project_name": "proj", "job_name_version": "inference_predictions#v1"}
+    assert calls["update_item"]["Key"] == {"project_name": "proj", "job_name_version": "inference_predictions#v1"}

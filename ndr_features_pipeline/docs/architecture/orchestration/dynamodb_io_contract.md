@@ -124,7 +124,8 @@ For `if_training#<feature_spec_version>.spec`, the following optional fields are
 
 Runtime precedence for orchestrator target selection is:
 1. DDB override in `if_training.spec.orchestration_targets`,
-2. code-known default target,
-3. legacy env fallback (compatibility path, warning telemetry emitted).
+2. code-known default target.
+
+For IF training execution, Step Functions passes canonical control-plane table names (`DppConfigTableName`, `MlpConfigTableName`, `BatchIndexTableName`) as pipeline parameters, and the IF runtime treats them as required inputs.
 
 Dependency readiness checks are required before expensive IF stages and are persisted in run-scoped artifacts for audit reproducibility.

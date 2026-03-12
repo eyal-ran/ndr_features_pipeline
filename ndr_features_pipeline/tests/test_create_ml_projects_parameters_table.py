@@ -27,7 +27,7 @@ from ndr.scripts.create_ml_projects_parameters_table import (
 
 
 def _items_by_job(items):
-    return {item["job_name"].split("#", 1)[0]: item for item in items}
+    return {item["job_name_version"].split("#", 1)[0]: item for item in items}
 
 
 def test_bootstrap_items_include_all_runtime_jobs():
@@ -144,6 +144,9 @@ def test_item19_pipeline_seed_items_present_with_expected_runtime_params():
         "FeatureSpecVersion",
         "RunId",
         "ExecutionTsIso",
+        "DppConfigTableName",
+        "MlpConfigTableName",
+        "BatchIndexTableName",
         "TrainingStartTs",
         "TrainingEndTs",
         "EvaluationWindowsJson",

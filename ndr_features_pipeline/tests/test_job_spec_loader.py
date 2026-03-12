@@ -122,3 +122,15 @@ def test_load_pair_counts_job_spec_requires_mapping(monkeypatch):
         raise AssertionError("Expected ValueError for missing mapping")
     except ValueError as exc:
         assert "field_mapping" in str(exc)
+
+
+def test_resolve_dpp_config_table_name_uses_only_canonical_env(monkeypatch):
+    from ndr.config.job_spec_loader import resolve_dpp_config_table_name
+
+    monkeypatch.delenv("DPP_CONFIG_TABLE_NAME", raising=False)
+    monkeypatch.setenv("ML_PROJECTS_PARAMETERS_TABLE_NAME", "legacy")
+    monkeypatch.setenv("JOB_SPEC_DDB_TABLE_NAME", "legacy2")
+    assert resolve_dpp_config_table_name() == "dpp_config"
+
+    monkeypatch.setenv("DPP_CONFIG_TABLE_NAME", "dpp-live")
+    assert resolve_dpp_config_table_name() == "dpp-live"

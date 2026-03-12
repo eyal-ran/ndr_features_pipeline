@@ -190,6 +190,18 @@
                   "Value": "{% $string($states.input.enable_eval_experiments_logging) %}"
                 },
                 {
+                  "Name": "DppConfigTableName",
+                  "Value": "${DppConfigTableName}"
+                },
+                {
+                  "Name": "MlpConfigTableName",
+                  "Value": "${MlpConfigTableName}"
+                },
+                {
+                  "Name": "BatchIndexTableName",
+                  "Value": "${BatchIndexTableName}"
+                },
+                {
                   "Name": "MlProjectName",
                   "Value": "{% $states.input.ml_project_name %}"
                 }

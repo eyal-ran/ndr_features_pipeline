@@ -202,6 +202,9 @@ class IFTrainingRuntimeConfig:
     feature_spec_version: str
     run_id: str
     execution_ts_iso: str
+    dpp_config_table_name: str | None = None
+    mlp_config_table_name: str | None = None
+    batch_index_table_name: str | None = None
     training_start_ts: str | None = None
     training_end_ts: str | None = None
     eval_start_ts: str | None = None

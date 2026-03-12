@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Tuple
 
 from ndr.catalog.feature_catalog import build_fg_c_metric_names
 from ndr.catalog.schema_manifest import build_fg_a_manifest, build_fg_c_manifest
-from ndr.config.job_spec_loader import DDB_TABLE_ENV_VAR, LEGACY_DDB_TABLE_ENV_VAR
 from ndr.processing.base_runner import BaseProcessingJobRunner
 from ndr.processing.if_training_preprocessing import split_metadata_and_feature_columns
 from ndr.processing.if_training_spec import IFTrainingRuntimeConfig, IFTrainingSpec, parse_if_training_spec
@@ -56,6 +55,9 @@ class IFTrainingJob(BaseProcessingJobRunner):
         required = {
             "training_start_ts": self.runtime_config.training_start_ts,
             "training_end_ts": self.runtime_config.training_end_ts,
+            "dpp_config_table_name": self.runtime_config.dpp_config_table_name,
+            "mlp_config_table_name": self.runtime_config.mlp_config_table_name,
+            "batch_index_table_name": self.runtime_config.batch_index_table_name,
         }
         missing = [name for name, value in required.items() if not value]
         if missing:
@@ -1900,7 +1902,9 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 "sklearn_version": sklearn.__version__,
                 "output_prefix": f"s3://{artifact_ctx['bucket']}/{artifact_ctx['run_prefix']}",
                 "runtime_env": {
-                    "table_env": os.environ.get(DDB_TABLE_ENV_VAR) or os.environ.get(LEGACY_DDB_TABLE_ENV_VAR),
+                    "dpp_config_table_name": self.runtime_config.dpp_config_table_name,
+                    "mlp_config_table_name": self.runtime_config.mlp_config_table_name,
+                    "batch_index_table_name": self.runtime_config.batch_index_table_name,
                 },
                 "resolved_job_spec_payload": self.resolved_spec_payload,
             },
@@ -2160,18 +2164,21 @@ class IFTrainingJob(BaseProcessingJobRunner):
         """Execute the write inference preprocessing back stage of the workflow."""
         import boto3
 
-        table_name = os.environ.get(DDB_TABLE_ENV_VAR) or os.environ.get(LEGACY_DDB_TABLE_ENV_VAR)
+        table_name = (self.runtime_config.dpp_config_table_name or "").strip()
         if not table_name:
-            logger.warning("Skipping inference spec update: DynamoDB table env var not set")
-            return
+            raise ValueError("Missing required runtime parameter: dpp_config_table_name")
 
         ddb = boto3.resource("dynamodb")
         table = ddb.Table(table_name)
-        job_name = f"inference_predictions#{self.runtime_config.feature_spec_version}"
-        item = table.get_item(Key={"project_name": self.runtime_config.project_name, "job_name": job_name}).get("Item")
+        job_name_version = f"inference_predictions#{self.runtime_config.feature_spec_version}"
+        item = table.get_item(
+            Key={
+                "project_name": self.runtime_config.project_name,
+                "job_name_version": job_name_version,
+            }
+        ).get("Item")
         if not item:
-            logger.warning("Skipping inference spec update: %s not found", job_name)
-            return
+            raise KeyError(f"Inference spec record not found: {job_name_version}")
 
         spec = item.get("spec", {})
         payload = spec.get("payload", {})
@@ -2182,7 +2189,10 @@ class IFTrainingJob(BaseProcessingJobRunner):
         spec["payload"] = payload
 
         table.update_item(
-            Key={"project_name": self.runtime_config.project_name, "job_name": job_name},
+            Key={
+                "project_name": self.runtime_config.project_name,
+                "job_name_version": job_name_version,
+            },
             UpdateExpression="SET #spec = :spec",
             ExpressionAttributeNames={"#spec": "spec"},
             ExpressionAttributeValues={":spec": spec},

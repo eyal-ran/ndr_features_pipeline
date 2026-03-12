@@ -16,6 +16,9 @@ def parse_args(argv=None):
     parser.add_argument("--project-name", required=True)
     parser.add_argument("--feature-spec-version", required=True)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--dpp-config-table-name", required=True)
+    parser.add_argument("--mlp-config-table-name", required=True)
+    parser.add_argument("--batch-index-table-name", required=True)
     parser.add_argument("--execution-ts-iso", required=True)
     parser.add_argument("--training-start-ts")
     parser.add_argument("--training-end-ts")
@@ -52,6 +55,9 @@ def main(argv=None) -> int:
             "project_name": args.project_name,
             "feature_spec_version": args.feature_spec_version,
             "run_id": args.run_id,
+            "dpp_config_table_name": args.dpp_config_table_name,
+            "mlp_config_table_name": args.mlp_config_table_name,
+            "batch_index_table_name": args.batch_index_table_name,
             "execution_ts_iso": args.execution_ts_iso,
             "training_start_ts": args.training_start_ts,
             "training_end_ts": args.training_end_ts,
@@ -66,6 +72,9 @@ def main(argv=None) -> int:
         feature_spec_version=args.feature_spec_version,
         run_id=args.run_id,
         execution_ts_iso=args.execution_ts_iso,
+        dpp_config_table_name=args.dpp_config_table_name,
+        mlp_config_table_name=args.mlp_config_table_name,
+        batch_index_table_name=args.batch_index_table_name,
         training_start_ts=args.training_start_ts,
         training_end_ts=args.training_end_ts,
         eval_start_ts=args.eval_start_ts,

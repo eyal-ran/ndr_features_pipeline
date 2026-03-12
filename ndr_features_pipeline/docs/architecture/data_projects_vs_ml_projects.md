@@ -67,11 +67,14 @@ Exactly one payload shape must be used.
 
 ## Deterministic routing model
 
-1. Ingestion payload provides authoritative `batch_id` and canonical `raw_parsed_logs_s3_prefix` (legacy aliases may be read at ingress during P0).
+1. Ingestion payload provides authoritative `batch_id` and canonical `raw_parsed_logs_s3_prefix`.
 2. Base contracts/prefixes resolve from DynamoDB control-plane records.
 3. Runtime composes only dynamic suffixes (`date/hour/slot/batch`) when needed.
 4. For fan-out, one DPP payload can produce N MLP branches, each with exactly one `ml_project_name`.
 
 ## Compatibility policy
 
-Compatibility toggles remain until Task 7 and are not removed in this phase.
+Compatibility toggles are removed. The active contract is canonical-only:
+
+- legacy aliases are unsupported,
+- canonical field names are required at ingress and runtime boundaries.

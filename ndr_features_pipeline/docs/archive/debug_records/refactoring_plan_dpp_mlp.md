@@ -1452,3 +1452,334 @@ No task may be marked complete unless this sequence is followed in order.
 - **Verdict:** approved/finalized.
 - **Blocking failures:** none.
 - **Rollback anchor:** revert this S5 closure commit to return plan metadata/changelog/sign-off evidence to pre-closure state.
+
+## 12) IF table-resolution hardening and orchestration-sourced table-name contract (authoritative implementation plan)
+
+### 12.0 Context and motivation
+
+This section defines a corrective implementation plan focused on IF-training orchestration/runtime table resolution and control-plane contract hygiene.
+
+A correction is required because the current implementation state violates the refactoring purposes and tactics from §11.1/§11.3 (single-source control-plane ownership, canonical naming/keying, deterministic orchestration contracts, and removal of legacy configuration ambiguity).
+
+#### 12.0.1 What was violated
+
+1. **Violation of canonical control-plane source-of-truth**
+   - IF runtime update paths still depend on environment-variable table selection instead of strictly using DPP/MLP control-plane tables resolved and passed by orchestration.
+   - This conflicts with the tactic to centralize routing/config in canonical DDB contracts and remove non-deterministic fallback sources.
+
+2. **Violation of canonical key contract**
+   - IF inference-spec read/update path still uses legacy key shape (`job_name`) instead of canonical split-table shape (`job_name_version`).
+   - This conflicts with the split-table contract and weakens deterministic compatibility with `dpp_config`/`mlp_config` primary-key definitions.
+
+3. **Violation of deterministic runtime integrity (import/runtime correctness)**
+   - IF runtime imports constants from `job_spec_loader` that are not exported there, producing runtime/test import failures.
+   - This is an execution-integrity violation because the flow cannot reliably initialize under normal module-import semantics.
+
+#### 12.0.2 Where and how the violations appear (code surfaces)
+
+- `src/ndr/processing/if_training_job.py`
+  - imports non-exported constants from `job_spec_loader`.
+  - reads table name from env fallbacks in IF write-back path.
+  - performs `get_item`/`update_item` with legacy `job_name` key in inference-spec update flow.
+
+- `src/ndr/config/job_spec_loader.py`
+  - does not export the constants expected by IF runtime import.
+
+- Adjacent drift context:
+  - legacy env/table fallback constants still exist in loaders/seeding helpers and must be scoped out of IF path under this corrective section.
+
+#### 12.0.3 When the violation was introduced and why this section exists now
+
+- The violation persisted through post-§11 closure because IF write-back and orchestration-adjacent runtime surfaces were not fully migrated to strict split-table, canonical-key, orchestration-sourced table-name behavior.
+- Item 12 is introduced as an explicit corrective plan to close that residual gap without ambiguity for future implementors.
+
+#### 12.0.4 Project-wide check results (executed with no file changes)
+
+A repository-wide static compliance check was re-executed (no file edits during the check) to identify **all currently observable violations or related gaps** against §12.2 constraints.
+
+Findings (violation register):
+
+- **V-01 (§12.2.5 / §12.2.1-§12.2.2): IF runtime uses env-driven table resolution and legacy constants import path**
+  - `src/ndr/processing/if_training_job.py` imports table-env constants from `job_spec_loader` and resolves table name through env fallbacks.
+
+- **V-02 (§12.2.1-§12.2.2): IF write-back still uses legacy key shape**
+  - IF inference-spec update path uses `job_name` key instead of canonical `job_name_version` split-table contract.
+
+- **V-03 (§12.2.6 / §12.2.8): SF-to-IF pipeline does not yet pass required table-name parameters**
+  - `sfn_ndr_training_orchestrator.json` resolves DPP/MLP tables for SF lookups but `StartPipelineExecution.PipelineParameters` does not yet include table-name pass-through to IF pipeline.
+
+- **V-04 (§12.2.6): IF pipeline/script/runtime surfaces lack explicit table-name parameter contract**
+  - `sagemaker_pipeline_definitions_if_training.py` and `run_if_training.py` do not expose/propagate DPP/MLP table-name parameters into IF runtime config.
+
+- **V-05 (§12.2.5): Non-IF loader surfaces still contain env fallback chains for runtime table resolution**
+  - `src/ndr/config/project_parameters_loader.py` and `src/ndr/config/job_spec_loader.py` resolve table names via env fallback and default literals.
+
+- **V-06 (§12.2.4 / §12.2.5): Seeding/provisioning helper still encodes legacy single-table/env contract**
+  - `src/ndr/scripts/create_ml_projects_parameters_table.py` still documents and accepts legacy single-table env vars/defaults (`ml_projects_parameters`, legacy env keys).
+  - Same file still seeds many records using `job_name` while split-table canonical contract requires `job_name_version` as the active sort key.
+
+- **V-07 (related quality-gap for §12.2 enforcement): tests currently encode legacy/env fallback behavior**
+  - Contract/unit tests around loaders and seed helpers still include expectations aligned to legacy env fallback behavior; these tests must be migrated to canonical-only assertions to prevent regression.
+
+Confirmed compliant area:
+
+- No evidence was found that EventBridge payload fields are currently consumed as table-name sources in state-machine JSONata logic.
+
+These project-wide findings are in-scope for Item 12 and are integrated into stages I12-S1 through I12-S4, file matrix, acceptance checks, and DoD rules below.
+
+This plan closes those gaps while enforcing a strict DPP/MLP/batch-index table-of-truth model.
+
+### 12.1 Governance and precedence
+
+- §12 is normative for IF-table-resolution behavior and orchestration-driven table-name wiring.
+- If predecessor text conflicts with §12 for this scope, §12 governs.
+- §11 global governance remains applicable for naming and acceptance posture.
+
+### 12.2 Non-negotiable constraints (expanded from operator directives)
+
+1. DPP-related configuration source of truth is only `dpp_config`.
+2. MLP-related configuration source of truth is only `mlp_config`.
+3. Shared exception: `batch_index` may serve both DPP and MLP flows for forward/reverse lookup.
+4. No other params/config tables are permitted.
+5. No environment-variable or ad-hoc config-source fallback is permitted for runtime table resolution.
+6. Any parameter needed by SageMaker Pipelines/steps must be passed from the triggering Step Function.
+7. Any parameter needed by Step Functions from ingestion events (e.g., `batch_id`, canonical raw prefix) is provided by EventBridge Pipe payload.
+8. **Additional hard constraint for point 5:** table names passed by Step Functions to triggered pipelines must be resolved by Step Functions from DPP/MLP config records; table names must not be hardcoded in state machine logic and must not be provided by EventBridge Pipe payload.
+
+### 12.3 Problem statement (implementation-specific)
+
+#### 12.3.1 Defect
+
+- `if_training_job.py` imports `DDB_TABLE_ENV_VAR` and `LEGACY_DDB_TABLE_ENV_VAR` from `job_spec_loader`, but those constants are not exported there.
+
+#### 12.3.2 Architectural drift
+
+- IF write-back logic uses env-driven table selection for inference spec update path.
+- This violates strict table-source constraints and weakens reproducibility/traceability.
+
+#### 12.3.3 Orchestration drift risk
+
+- Some table-name surfaces are still vulnerable to hardcoded or env-derived values rather than DPP/MLP control-plane resolution.
+
+### 12.4 Target-state architecture (post-fix)
+
+#### 12.4.1 Single source of truth by domain
+
+- DPP domain (project/job defaults and DPP-scoped job specs): `dpp_config` only.
+- MLP domain (ML-project defaults/specs): `mlp_config` only.
+- Batch identity and time/index lookup: `batch_index` only.
+
+#### 12.4.2 Table-name propagation contract
+
+- Step Functions resolve table names from DPP/MLP control-plane records/config and pass them explicitly into downstream SageMaker pipeline parameters.
+- IF pipeline definition exposes explicit table-name parameters (DPP/MLP and optionally batch-index if needed by the stage).
+- IF script entrypoint accepts those parameters and passes them into runtime config.
+- IF runtime code uses only runtime-config-provided table names; no env fallbacks.
+
+#### 12.4.3 Key contract
+
+- Canonical key usage for control-plane records is `<partition_key, job_name_version>`.
+- Legacy key (`job_name`) support is removed for IF write-back/update paths in this section’s scope.
+
+### 12.5 Deterministic implementation plan (ordered)
+
+#### Stage I12-S0 — Baseline and scope lock
+
+Deliverables:
+- Confirm and document all IF table-resolution call sites and all table-name sources in training orchestration and runtime.
+- Freeze scope to IF orchestration/runtime and directly adjacent loader interfaces.
+
+Validation:
+- Static inventory command outputs attached.
+
+#### Stage I12-S1 — Remove env/table-constant coupling from IF runtime
+
+Files (primary):
+- `src/ndr/processing/if_training_job.py`
+- `src/ndr/processing/if_training_spec.py` (if runtime config extension required)
+- `src/ndr/scripts/run_if_training.py`
+
+Required changes:
+1. Remove import usage of env-var constants from `job_spec_loader` (addresses V-01).
+2. Add explicit runtime-config fields for required table names (`dpp_config_table_name`, `mlp_config_table_name`; add `batch_index_table_name` only if actually consumed) (addresses V-04).
+3. Update IF write-back methods to use runtime-config table names exclusively (addresses V-01/V-04).
+4. Remove env fallback branches and warning-only skip behavior caused solely by missing env vars; missing required runtime table-name values must fail deterministically (addresses V-01).
+
+Validation:
+- `tests/test_if_training_job_orchestration.py` imports and runs without constant-import failures.
+- Static check confirms no IF runtime `os.environ.get(...TABLE...)` usage remains for table selection.
+
+#### Stage I12-S2 — Canonical key enforcement for IF write/update
+
+Files (primary):
+- `src/ndr/processing/if_training_job.py`
+- `src/ndr/config/job_spec_loader.py` (only if helper APIs are introduced)
+- tests for IF orchestration/write-back
+
+Required changes:
+1. Switch IF inference-spec read/update keys to canonical `job_name_version` shape (addresses V-02).
+2. Ensure IF update path targets DPP/MLP table according to ownership (do not use deprecated single-table contract) (addresses V-02).
+3. Add deterministic error messages when expected control-plane records are absent.
+
+Validation:
+- Unit tests for read/update key shape and failure modes.
+- Static grep confirms IF update path does not use `job_name`-only key.
+
+#### Stage I12-S3 — Step Functions table-name sourcing and pass-through
+
+Files (primary):
+- `docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json`
+- (if needed) other SF files that trigger IF-related pipelines
+- pipeline definition and IF script surfaces:
+  - `src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py`
+  - `src/ndr/scripts/run_if_training.py`
+
+Required changes:
+1. Ensure SF resolves required table names from DPP/MLP config context (control-plane-driven) and injects into `StartPipelineExecution.PipelineParameters` (addresses V-03).
+2. Ensure SF does not hardcode those table-name values in execution logic and does not accept them from EventBridge payload (addresses V-03).
+3. Ensure IF pipeline parameters include required table-name fields and script arguments pass them through (addresses V-04).
+4. Prove (via contract tests) that table-name values passed to pipelines are resolved from SF control-plane context and not accepted from EventBridge payload fields (addresses V-03).
+
+Validation:
+- Contract tests assert table-name parameters are present and sourced from SF-resolved context.
+- Static checks verify absence of EventBridge payload table-name consumption.
+
+#### Stage I12-S4 — Remove residual non-compliant fallback paths
+
+Files:
+- `src/ndr/config/project_parameters_loader.py`
+- `src/ndr/config/job_spec_loader.py`
+- any IF-adjacent helper with legacy table env fallback
+
+Required changes:
+1. In IF scope, eliminate legacy/single-table and env fallback dependencies.
+2. Extend the same removal to directly-adjacent loader surfaces identified by the project-wide check (`job_spec_loader`, `project_parameters_loader`) so runtime table resolution is not env-driven (addresses V-05).
+3. Rework/guard provisioning helper surfaces (`create_ml_projects_parameters_table.py`) to prevent legacy single-table/env fallback contracts from being used as active runtime guidance and migrate canonical seeding/key expectations to split-table `job_name_version` model (addresses V-06).
+4. Update tests that currently encode legacy fallback behavior so canonical-only behavior is asserted (addresses V-07).
+
+Validation:
+- targeted unit tests + static grep for legacy env/table constants in IF path and directly-adjacent loader/provisioning surfaces identified in §12.0.4.
+
+#### Stage I12-S5 — Documentation and runbook alignment
+
+Files:
+- `docs/architecture/orchestration/step_functions.md`
+- `docs/architecture/orchestration/dynamodb_io_contract.md`
+- `docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md`
+- `docs/feature_builders/current_state.md` (IF subsection)
+
+Required changes:
+1. Document strict table-source model and SF-derived table-name propagation for IF.
+2. Document canonical key use for IF write-back/update.
+3. Remove env-based fallback documentation in IF path.
+
+Validation:
+- docs coherence review complete; no contradictory active text.
+
+### 12.6 File-level change matrix (implementation checklist)
+
+1. `src/ndr/processing/if_training_job.py`
+   - remove env constant imports for table selection
+   - use runtime-config table names
+   - canonical key usage (`job_name_version`)
+2. `src/ndr/processing/if_training_spec.py`
+   - add runtime fields for DPP/MLP (and optional batch-index) table names
+3. `src/ndr/scripts/run_if_training.py`
+   - add required CLI args for table names
+   - wire to runtime config
+4. `src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py`
+   - add pipeline params for table names
+   - pass args into IF step invocation
+5. `docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json`
+   - pass resolved table names to IF pipeline parameters
+   - ensure they are not payload-driven nor hardcoded constants
+6. `src/ndr/config/project_parameters_loader.py`
+   - remove env fallback chains for runtime table resolution in Item 12 scope
+   - enforce canonical split-table source selection contract
+7. `src/ndr/config/job_spec_loader.py`
+   - remove env fallback chains for runtime table resolution in Item 12 scope
+   - keep canonical split-table lookup contract only
+8. `src/ndr/scripts/create_ml_projects_parameters_table.py`
+   - remove/guard legacy single-table/env fallback guidance so it cannot act as active runtime contract
+9. tests:
+   - `tests/test_if_training_job_orchestration.py`
+   - `tests/test_step_functions_jsonata_contracts.py`
+   - `tests/test_job_spec_loader.py`
+   - `tests/test_project_parameters_loader.py`
+   - `tests/test_create_ml_projects_parameters_table.py`
+   - add/update IF pipeline parameter contract checks and canonical-only seeding expectations
+
+### 12.7 Hard acceptance matrix for Item 12
+
+#### 12.7.1 Static compliance checks
+
+```bash
+rg -n "DDB_TABLE_ENV_VAR|LEGACY_DDB_TABLE_ENV_VAR|ML_PROJECTS_PARAMETERS_TABLE_NAME|JOB_SPEC_DDB_TABLE_NAME" src/ndr/processing/if_training_job.py src/ndr/scripts/run_if_training.py src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py
+```
+Expected:
+- zero matches in IF runtime/script/pipeline surfaces.
+
+```bash
+rg -n "job_name\"\s*:|Key=\{\"project_name\".*\"job_name\"" src/ndr/processing/if_training_job.py
+```
+Expected:
+- zero legacy key-shape matches in IF update/read path.
+
+```bash
+rg -n "DppConfigTableName|MlpConfigTableName|BatchIndexTableName" docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py src/ndr/scripts/run_if_training.py
+```
+Expected:
+- required parameter surfaces present.
+
+```bash
+rg -n "\"Name\":\s*\"(DppConfigTableName|MlpConfigTableName|BatchIndexTableName)\"" docs/step_functions_jsonata/sfn_ndr_training_orchestrator.json
+```
+Expected:
+- one or more matches in `StartPipelineExecution.PipelineParameters` for IF path.
+
+```bash
+rg -n "states\.input\..*(DppConfigTableName|MlpConfigTableName|BatchIndexTableName|table_name|TableName)" docs/step_functions_jsonata/sfn_ndr_*.json
+```
+Expected:
+- zero matches (table-name source is not EventBridge payload).
+
+```bash
+rg -n "ML_PROJECTS_PARAMETERS_TABLE_NAME|JOB_SPEC_DDB_TABLE_NAME|NDR_BATCH_INDEX_TABLE_NAME|BATCH_INDEX_DDB_TABLE_NAME" src/ndr/config/job_spec_loader.py src/ndr/config/project_parameters_loader.py src/ndr/scripts/create_ml_projects_parameters_table.py
+```
+Expected:
+- zero matches in post-fix active runtime/contract surfaces.
+
+#### 12.7.2 Unit/contract test gates
+
+```bash
+PYTHONPATH=src pytest -q tests/test_if_training_job_orchestration.py tests/test_step_functions_jsonata_contracts.py tests/test_job_spec_loader.py tests/test_project_parameters_loader.py tests/test_create_ml_projects_parameters_table.py
+```
+Expected:
+- exit code 0.
+
+#### 12.7.3 Runtime/config sanity gate
+
+```bash
+python -m py_compile src/ndr/processing/if_training_job.py src/ndr/processing/if_training_spec.py src/ndr/scripts/run_if_training.py src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py src/ndr/config/job_spec_loader.py src/ndr/config/project_parameters_loader.py
+```
+Expected:
+- exit code 0.
+
+### 12.8 Rollback strategy
+
+- Roll back in reverse stage order (S5 -> S0).
+- If runtime failure occurs after S2+, first restore IF write-back key behavior to last known good commit, then restore parameter pass-through contracts.
+- Keep schema/table data unchanged during rollback; only code/orchestration contracts revert.
+
+### 12.9 Completion criteria (Definition of Done for Item 12)
+
+Item 12 is complete only when all are true:
+
+1. IF runtime no longer imports undefined table constants or resolves control-plane table names from env vars.
+2. IF table access uses canonical split-table model and canonical key shape.
+3. Step Functions pass required table-name parameters to IF pipelines from SF-resolved DPP/MLP context.
+4. Table names are not hardcoded inside SF execution logic and are not provided by EventBridge payload.
+5. All §12.7 acceptance commands pass with no waivers.
+6. Project-wide findings from §12.0.4 are resolved (or explicitly re-scoped with approved exception notes).
+7. Active docs are aligned with implemented behavior and constraints.
+

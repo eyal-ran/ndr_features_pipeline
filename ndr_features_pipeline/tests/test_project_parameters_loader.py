@@ -88,3 +88,17 @@ def test_load_project_parameters_enforces_reciprocal_linkage(monkeypatch):
 def test_resolve_batch_index_table_name_prefers_canonical_env(monkeypatch):
     monkeypatch.setenv("BATCH_INDEX_TABLE_NAME", "idx-table")
     assert resolve_batch_index_table_name() == "idx-table"
+
+
+def test_resolve_table_names_ignore_legacy_env_vars(monkeypatch):
+    from ndr.config.project_parameters_loader import resolve_dpp_config_table_name, resolve_batch_index_table_name
+
+    monkeypatch.delenv("DPP_CONFIG_TABLE_NAME", raising=False)
+    monkeypatch.delenv("BATCH_INDEX_TABLE_NAME", raising=False)
+    monkeypatch.setenv("ML_PROJECTS_PARAMETERS_TABLE_NAME", "legacy")
+    monkeypatch.setenv("JOB_SPEC_DDB_TABLE_NAME", "legacy2")
+    monkeypatch.setenv("NDR_BATCH_INDEX_TABLE_NAME", "legacy3")
+    monkeypatch.setenv("BATCH_INDEX_DDB_TABLE_NAME", "legacy4")
+
+    assert resolve_dpp_config_table_name() == "dpp_config"
+    assert resolve_batch_index_table_name() == "batch_index"

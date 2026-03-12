@@ -1,7 +1,7 @@
 """Create and seed NDR control-plane DynamoDB configuration tables.
 
-Primary bootstrap remains compatible with legacy single-table seeding, and split-table
-helpers are provided for Stage S2 contracts (`dpp_config`, `mlp_config`, `batch_index`).
+Canonical bootstrap writes split-table control-plane contracts (`dpp_config`, `mlp_config`, `batch_index`)
+with `job_name_version` sort-key semantics.
 
 This module supports two invocation patterns for SageMaker JupyterLab users:
 
@@ -9,7 +9,7 @@ This module supports two invocation patterns for SageMaker JupyterLab users:
 
    .. code-block:: bash
 
-      PYTHONPATH=src python -m ndr.scripts.create_ml_projects_parameters_table \
+      PYTHONPATH=src python -m ndr.scripts.create_dpp_config_table \
           --project-name ndr-prod \
           --feature-spec-version v1 \
           --owner ndr-team \
@@ -19,7 +19,7 @@ This module supports two invocation patterns for SageMaker JupyterLab users:
 
    .. code-block:: python
 
-      from ndr.scripts.create_ml_projects_parameters_table import run_from_notebook
+      from ndr.scripts.create_dpp_config_table import run_from_notebook
 
       summary = run_from_notebook(
           {
@@ -28,7 +28,7 @@ This module supports two invocation patterns for SageMaker JupyterLab users:
               "owner": "ndr-team",
               "region_name": "us-east-1",
               # Optional:
-              # "table_name": "ml_projects_parameters",
+              # "table_name": "dpp_config",
               # "use_json_table_definition": True,
           }
       )
@@ -36,15 +36,14 @@ This module supports two invocation patterns for SageMaker JupyterLab users:
 
 The implementation follows ``docs/DYNAMODB_PROJECT_PARAMETERS_SPEC.md``:
 
-- DynamoDB table name default: ``ml_projects_parameters``.
+- DynamoDB table name default: ``dpp_config``.
 - Table-name env var precedence:
   1. explicit argument
-  2. ``ML_PROJECTS_PARAMETERS_TABLE_NAME``
-  3. ``JOB_SPEC_DDB_TABLE_NAME`` (legacy)
-  4. default constant
+  2. ``DPP_CONFIG_TABLE_NAME``
+  3. default constant
 - Composite primary key:
   - HASH ``project_name`` (string)
-  - RANGE ``job_name`` (string)
+  - RANGE ``job_name_version`` (string)
 - Sort-key value convention: ``<job_name>#<feature_spec_version>``.
 """
 
@@ -60,9 +59,8 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
-DDB_TABLE_ENV_VAR = "ML_PROJECTS_PARAMETERS_TABLE_NAME"
-LEGACY_DDB_TABLE_ENV_VAR = "JOB_SPEC_DDB_TABLE_NAME"
-DEFAULT_TABLE_NAME = "ml_projects_parameters"
+DPP_CONFIG_TABLE_ENV_VAR = "DPP_CONFIG_TABLE_NAME"
+DEFAULT_TABLE_NAME = "dpp_config"
 DEFAULT_ROUTING_TABLE_NAME = "ml_projects_routing"
 JOB_SPEC_SORT_KEY_DELIMITER = "#"
 
@@ -73,19 +71,18 @@ TABLE_SPEC_JSON: dict[str, Any] = {
             "NDR feature engineering pipeline."
         ),
         "environment_variables": [
-            DDB_TABLE_ENV_VAR,
-            LEGACY_DDB_TABLE_ENV_VAR,
+            DPP_CONFIG_TABLE_ENV_VAR,
         ],
         "table_name_example": DEFAULT_TABLE_NAME,
         "key_convention": {
             "partition_key": "project_name",
-            "sort_key": "job_name",
+            "sort_key": "job_name_version",
             "versioned_sort_key_format": "<job_name>#<feature_spec_version>",
             "sort_key_delimiter": JOB_SPEC_SORT_KEY_DELIMITER,
         },
         "required_attributes": [
             "project_name",
-            "job_name",
+            "job_name_version",
             "spec",
         ],
         "optional_attributes": [
@@ -101,11 +98,11 @@ TABLE_SPEC_JSON: dict[str, Any] = {
         "TableName": DEFAULT_TABLE_NAME,
         "AttributeDefinitions": [
             {"AttributeName": "project_name", "AttributeType": "S"},
-            {"AttributeName": "job_name", "AttributeType": "S"},
+            {"AttributeName": "job_name_version", "AttributeType": "S"},
         ],
         "KeySchema": [
             {"AttributeName": "project_name", "KeyType": "HASH"},
-            {"AttributeName": "job_name", "KeyType": "RANGE"},
+            {"AttributeName": "job_name_version", "KeyType": "RANGE"},
         ],
         "BillingMode": "PAY_PER_REQUEST",
     },
@@ -155,6 +152,9 @@ PIPELINE_RUNTIME_PARAMS = {
         "FeatureSpecVersion",
         "RunId",
         "ExecutionTsIso",
+        "DppConfigTableName",
+        "MlpConfigTableName",
+        "BatchIndexTableName",
         "TrainingStartTs",
         "TrainingEndTs",
         "EvaluationWindowsJson",
@@ -203,24 +203,8 @@ def _utc_now_iso8601() -> str:
 
 
 def resolve_table_name(explicit_table_name: str | None = None) -> str:
-    """Resolve DynamoDB table name using the documented precedence.
-
-    Parameters
-    ----------
-    explicit_table_name:
-        Table name explicitly supplied by caller.
-
-    Returns
-    -------
-    str
-        Resolved table name.
-    """
-    return (
-        explicit_table_name
-        or os.getenv(DDB_TABLE_ENV_VAR)
-        or os.getenv(LEGACY_DDB_TABLE_ENV_VAR)
-        or DEFAULT_TABLE_NAME
-    )
+    """Resolve DPP config table name using canonical precedence."""
+    return explicit_table_name or os.getenv(DPP_CONFIG_TABLE_ENV_VAR) or DEFAULT_TABLE_NAME
 
 
 def _build_create_table_payload(table_name: str, use_json_table_definition: bool) -> dict[str, Any]:
@@ -245,11 +229,11 @@ def _build_create_table_payload(table_name: str, use_json_table_definition: bool
         payload = {
             "AttributeDefinitions": [
                 {"AttributeName": "project_name", "AttributeType": "S"},
-                {"AttributeName": "job_name", "AttributeType": "S"},
+                {"AttributeName": "job_name_version", "AttributeType": "S"},
             ],
             "KeySchema": [
                 {"AttributeName": "project_name", "KeyType": "HASH"},
-                {"AttributeName": "job_name", "KeyType": "RANGE"},
+                {"AttributeName": "job_name_version", "KeyType": "RANGE"},
             ],
             "BillingMode": "PAY_PER_REQUEST",
         }
@@ -288,9 +272,9 @@ def _validate_create_table_payload(payload: dict[str, Any]) -> None:
         for item in attribute_definitions
         if isinstance(item, dict)
     }
-    if attributes.get("project_name") != "S" or attributes.get("job_name") != "S":
+    if attributes.get("project_name") != "S" or attributes.get("job_name_version") != "S":
         raise ValueError(
-            "AttributeDefinitions must include project_name(S) and job_name(S)"
+            "AttributeDefinitions must include project_name(S) and job_name_version(S)"
         )
 
     key_types = {
@@ -298,9 +282,9 @@ def _validate_create_table_payload(payload: dict[str, Any]) -> None:
         for item in key_schema
         if isinstance(item, dict)
     }
-    if key_types.get("project_name") != "HASH" or key_types.get("job_name") != "RANGE":
+    if key_types.get("project_name") != "HASH" or key_types.get("job_name_version") != "RANGE":
         raise ValueError(
-            "KeySchema must include project_name(HASH) and job_name(RANGE)"
+            "KeySchema must include project_name(HASH) and job_name_version(RANGE)"
         )
 
 
@@ -511,7 +495,7 @@ def _build_bootstrap_items(
     pipeline_items = [
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("pipeline_15m_streaming", feature_spec_version),
+            "job_name_version": _versioned_job_name("pipeline_15m_streaming", feature_spec_version),
             "spec": {
                 "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_15m_streaming"],
                 "scripts": {
@@ -558,7 +542,7 @@ def _build_bootstrap_items(
         },
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("pipeline_fg_b_baseline", feature_spec_version),
+            "job_name_version": _versioned_job_name("pipeline_fg_b_baseline", feature_spec_version),
             "spec": {
                 "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_fg_b_baseline"],
                 "scripts": {
@@ -580,7 +564,7 @@ def _build_bootstrap_items(
         },
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("pipeline_machine_inventory_unload", feature_spec_version),
+            "job_name_version": _versioned_job_name("pipeline_machine_inventory_unload", feature_spec_version),
             "spec": {
                 "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_machine_inventory_unload"],
                 "scripts": {
@@ -601,7 +585,7 @@ def _build_bootstrap_items(
         },
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("pipeline_inference_predictions", feature_spec_version),
+            "job_name_version": _versioned_job_name("pipeline_inference_predictions", feature_spec_version),
             "spec": {
                 "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_inference_predictions"],
                 "scripts": {
@@ -624,7 +608,7 @@ def _build_bootstrap_items(
         },
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("pipeline_prediction_feature_join", feature_spec_version),
+            "job_name_version": _versioned_job_name("pipeline_prediction_feature_join", feature_spec_version),
             "spec": {
                 "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_prediction_feature_join"],
                 "scripts": {
@@ -646,7 +630,7 @@ def _build_bootstrap_items(
         },
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("pipeline_if_training", feature_spec_version),
+            "job_name_version": _versioned_job_name("pipeline_if_training", feature_spec_version),
             "spec": {
                 "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_if_training"],
                 "scripts": {
@@ -712,7 +696,7 @@ def _build_bootstrap_items(
         },
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("pipeline_backfill_historical_extractor", feature_spec_version),
+            "job_name_version": _versioned_job_name("pipeline_backfill_historical_extractor", feature_spec_version),
             "spec": {
                 "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_backfill_historical_extractor"],
                 "scripts": {
@@ -737,7 +721,7 @@ def _build_bootstrap_items(
     job_items = [
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("delta_builder", feature_spec_version),
+            "job_name_version": _versioned_job_name("delta_builder", feature_spec_version),
             "spec": {
                 "project_name": project_name,
                 "job_name": "delta_builder",
@@ -792,7 +776,7 @@ def _build_bootstrap_items(
         },
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("fg_a_builder", feature_spec_version),
+            "job_name_version": _versioned_job_name("fg_a_builder", feature_spec_version),
             "spec": {
                 "delta_input": {"s3_prefix": "s3://REPLACE_ME/delta/"},
                 "fg_a_output": {"s3_prefix": "s3://REPLACE_ME/fg_a/"},
@@ -803,7 +787,7 @@ def _build_bootstrap_items(
         },
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("pair_counts_builder", feature_spec_version),
+            "job_name_version": _versioned_job_name("pair_counts_builder", feature_spec_version),
             "spec": {
                 "traffic_input": {
                     "s3_prefix": "s3://REPLACE_ME/traffic/",
@@ -829,7 +813,7 @@ def _build_bootstrap_items(
         },
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("fg_b_builder", feature_spec_version),
+            "job_name_version": _versioned_job_name("fg_b_builder", feature_spec_version),
             "spec": {
                 "horizons": ["7d", "30d"],
                 "fg_a_input": {"s3_prefix": "s3://REPLACE_ME/fg_a/"},
@@ -841,7 +825,7 @@ def _build_bootstrap_items(
         },
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("fg_c_builder", feature_spec_version),
+            "job_name_version": _versioned_job_name("fg_c_builder", feature_spec_version),
             "spec": {
                 "fg_a_input": {"s3_prefix": "s3://REPLACE_ME/fg_a/"},
                 "fg_b_input": {"s3_prefix": "s3://REPLACE_ME/fg_b/"},
@@ -858,7 +842,7 @@ def _build_bootstrap_items(
         },
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("machine_inventory_unload", feature_spec_version),
+            "job_name_version": _versioned_job_name("machine_inventory_unload", feature_spec_version),
             "spec": {
                 "processing_image_uri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/ndr-pyspark:latest",
                 "redshift": {
@@ -881,7 +865,7 @@ def _build_bootstrap_items(
         },
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("prediction_feature_join", feature_spec_version),
+            "job_name_version": _versioned_job_name("prediction_feature_join", feature_spec_version),
             "spec": {
                 "destination": {
                     "type": "s3",
@@ -897,7 +881,7 @@ def _build_bootstrap_items(
         },
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("inference_predictions", feature_spec_version),
+            "job_name_version": _versioned_job_name("inference_predictions", feature_spec_version),
             "spec": {
                 "feature_inputs": {
                     "fg_a": {"s3_prefix": "s3://REPLACE_ME/fg_a/", "required": True},
@@ -912,7 +896,7 @@ def _build_bootstrap_items(
         },
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("if_training", feature_spec_version),
+            "job_name_version": _versioned_job_name("if_training", feature_spec_version),
             "spec": {
                 "feature_inputs": {
                     "fg_a": {"s3_prefix": "s3://REPLACE_ME/fg_a/"},
@@ -941,7 +925,7 @@ def _build_bootstrap_items(
         },
         {
             "project_name": project_name,
-            "job_name": _versioned_job_name("project_parameters", feature_spec_version),
+            "job_name_version": _versioned_job_name("project_parameters", feature_spec_version),
             "spec": {
                 "ip_machine_mapping_s3_prefix": "s3://REPLACE_ME/config/ip_machine_mapping/",
                 "defaults": {
@@ -977,7 +961,7 @@ def _build_bootstrap_items(
 
 def _validate_seed_item_contracts(items: list[dict[str, Any]]) -> None:
     """Fail fast when seeded pipeline script/runtime contracts are incomplete."""
-    by_job_name = {item["job_name"].split(JOB_SPEC_SORT_KEY_DELIMITER, 1)[0]: item for item in items}
+    by_job_name = {item["job_name_version"].split(JOB_SPEC_SORT_KEY_DELIMITER, 1)[0]: item for item in items}
 
     for pipeline_job_name, required_params in PIPELINE_RUNTIME_PARAMS.items():
         item = by_job_name.get(pipeline_job_name)
@@ -1090,9 +1074,9 @@ def upsert_items(table_name: str, items: list[dict[str, Any]], region_name: str 
         Number of written items.
     """
     table = boto3.resource("dynamodb", region_name=region_name).Table(table_name)
-    required_item_keys = {"project_name", "job_name", "spec"}
+    required_item_keys = {"project_name", "job_name_version", "spec"}
 
-    with table.batch_writer(overwrite_by_pkeys=["project_name", "job_name"]) as writer:
+    with table.batch_writer(overwrite_by_pkeys=["project_name", "job_name_version"]) as writer:
         for item in items:
             missing = required_item_keys - set(item.keys())
             if missing:
@@ -1276,8 +1260,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--table-name",
         default=None,
         help=(
-            "Override table name. Defaults to ML_PROJECTS_PARAMETERS_TABLE_NAME, "
-            "then JOB_SPEC_DDB_TABLE_NAME, then ml_projects_parameters."
+            "Override table name. Defaults to DPP_CONFIG_TABLE_NAME, then dpp_config."
         ),
     )
     parser.add_argument(

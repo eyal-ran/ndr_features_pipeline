@@ -13,16 +13,12 @@ JOB_SPEC_SORT_KEY_DELIMITER = "#"
 DEFAULT_PROJECT_PARAMETERS_JOB_NAME = "project_parameters"
 
 DPP_CONFIG_TABLE_ENV_VAR = "DPP_CONFIG_TABLE_NAME"
-LEGACY_DPP_CONFIG_TABLE_ENV_VAR = "ML_PROJECTS_PARAMETERS_TABLE_NAME"
-LEGACY_DPP_CONFIG_TABLE_ENV_VAR_2 = "JOB_SPEC_DDB_TABLE_NAME"
 DEFAULT_DPP_CONFIG_TABLE_NAME = "dpp_config"
 
 MLP_CONFIG_TABLE_ENV_VAR = "MLP_CONFIG_TABLE_NAME"
 DEFAULT_MLP_CONFIG_TABLE_NAME = "mlp_config"
 
 BATCH_INDEX_TABLE_ENV_VAR = "BATCH_INDEX_TABLE_NAME"
-LEGACY_BATCH_INDEX_TABLE_ENV_VAR = "NDR_BATCH_INDEX_TABLE_NAME"
-LEGACY_BATCH_INDEX_TABLE_ENV_VAR_2 = "BATCH_INDEX_DDB_TABLE_NAME"
 DEFAULT_BATCH_INDEX_TABLE_NAME = "batch_index"
 
 
@@ -67,13 +63,6 @@ class ProjectParametersLoader:
             }
         )
         if "Item" not in response:
-            response = self._dpp_table.get_item(
-                Key={
-                    "project_name": project_name,
-                    "job_name": f"{job_name}{JOB_SPEC_SORT_KEY_DELIMITER}{feature_spec_version}",
-                }
-            )
-        if "Item" not in response:
             raise KeyError(
                 "No project parameters found for "
                 f"project={project_name}, job={job_name}, "
@@ -90,7 +79,7 @@ class ProjectParametersLoader:
         mlp_response = self._mlp_table.get_item(
             Key={
                 "ml_project_name": ml_project_name,
-                "job_name_version": dpp_item.get("job_name_version") or dpp_item.get("job_name"),
+                "job_name_version": dpp_item.get("job_name_version"),
             }
         )
         if "Item" not in mlp_response:
@@ -139,33 +128,21 @@ def resolve_feature_spec_version(
     )
     items = response.get("Items", [])
     if not items:
-        response = loader._dpp_table.query(
-            KeyConditionExpression=Key("project_name").eq(project_name)
-            & Key("job_name").begins_with(f"{job_name}{JOB_SPEC_SORT_KEY_DELIMITER}"),
-        )
-        items = response.get("Items", [])
-    if not items:
         raise KeyError(f"No project_parameters records found for project={project_name}")
 
     def _item_rank(item: Dict[str, Any]) -> tuple[str, str]:
         updated_at = str(item.get("updated_at", ""))
-        item_job_name = str(item.get("job_name_version") or item.get("job_name") or "")
+        item_job_name = str(item.get("job_name_version") or "")
         return (updated_at, item_job_name)
 
     best = sorted(items, key=_item_rank, reverse=True)[0]
-    job_name_value = str(best.get("job_name_version") or best.get("job_name"))
+    job_name_value = str(best.get("job_name_version"))
     _, feature_spec_version = job_name_value.split(JOB_SPEC_SORT_KEY_DELIMITER, 1)
     return feature_spec_version
 
 
 def resolve_dpp_config_table_name(table_name: str | None = None) -> str:
-    return (
-        table_name
-        or os.environ.get(DPP_CONFIG_TABLE_ENV_VAR)
-        or os.environ.get(LEGACY_DPP_CONFIG_TABLE_ENV_VAR)
-        or os.environ.get(LEGACY_DPP_CONFIG_TABLE_ENV_VAR_2)
-        or DEFAULT_DPP_CONFIG_TABLE_NAME
-    )
+    return table_name or os.environ.get(DPP_CONFIG_TABLE_ENV_VAR) or DEFAULT_DPP_CONFIG_TABLE_NAME
 
 
 def resolve_mlp_config_table_name(table_name: str | None = None) -> str:
@@ -173,10 +150,4 @@ def resolve_mlp_config_table_name(table_name: str | None = None) -> str:
 
 
 def resolve_batch_index_table_name(table_name: str | None = None) -> str:
-    return (
-        table_name
-        or os.environ.get(BATCH_INDEX_TABLE_ENV_VAR)
-        or os.environ.get(LEGACY_BATCH_INDEX_TABLE_ENV_VAR)
-        or os.environ.get(LEGACY_BATCH_INDEX_TABLE_ENV_VAR_2)
-        or DEFAULT_BATCH_INDEX_TABLE_NAME
-    )
+    return table_name or os.environ.get(BATCH_INDEX_TABLE_ENV_VAR) or DEFAULT_BATCH_INDEX_TABLE_NAME

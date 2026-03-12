@@ -9,13 +9,7 @@ JOB_SPEC_SORT_KEY_DELIMITER = "#"
 
 
 def resolve_dpp_config_table_name(table_name: str | None = None) -> str:
-    return (
-        table_name
-        or os.environ.get("DPP_CONFIG_TABLE_NAME")
-        or os.environ.get("ML_PROJECTS_PARAMETERS_TABLE_NAME")
-        or os.environ.get("JOB_SPEC_DDB_TABLE_NAME")
-        or "dpp_config"
-    )
+    return table_name or os.environ.get("DPP_CONFIG_TABLE_NAME") or "dpp_config"
 
 
 from .job_spec_models import (
@@ -61,9 +55,6 @@ class JobSpecLoader:
         else:
             key["job_name_version"] = job_name
         response = self._table.get_item(Key=key)
-        if "Item" not in response:
-            legacy_key = {"project_name": key["project_name"], "job_name": key["job_name_version"]}
-            response = self._table.get_item(Key=legacy_key)
         if "Item" not in response:
             raise KeyError(
                 "No JobSpec found for "
@@ -111,13 +102,6 @@ def load_job_spec(
             "job_name_version": f"{job_name}{JOB_SPEC_SORT_KEY_DELIMITER}{feature_spec_version}",
         }
     )
-    if "Item" not in response:
-        response = loader._table.get_item(
-            Key={
-                "project_name": project_name,
-                "job_name": f"{job_name}{JOB_SPEC_SORT_KEY_DELIMITER}{feature_spec_version}",
-            }
-        )
     if "Item" not in response:
         raise KeyError(
             "No JobSpec found for "

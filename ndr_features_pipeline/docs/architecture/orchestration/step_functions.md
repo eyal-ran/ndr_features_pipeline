@@ -171,3 +171,20 @@ Produced by the historical windows extractor and by training-triggered backfill 
   - satisfy dependency safety checks.
 - Dependency-safe rule (for selective recovery): `fg_c` requires `fg_a`, `pair_counts`, and `fg_b_baseline` coverage in the same request scope.
 - Non-requested families are encoded with `execute=false` and explicit `reason` values (`not_requested`, `no_missing_ranges`, `dependency_missing:<family>`), so map workers can deterministically skip.
+
+
+## 7) Task 7.2 manifest-to-map wiring contract
+
+Backfill map fanout must read the extractor-generated manifest object directly (not caller-provided `windows` arrays).
+
+Required orchestration behavior:
+- After extractor pipeline success, load `s3://<output_s3_prefix>/historical_windows/latest_manifest.json`.
+- Validate `contract_version == backfill_manifest.v1` and presence of `map_items`.
+- Set map `Items` from `extractor_manifest.map_items` only.
+- Map item shape is deterministic and family/range-driven:
+  - `project_name`
+  - `feature_spec_version`
+  - `family`
+  - `range_start_ts`
+  - `range_end_ts`
+- Any manifest-read/manifest-validation failure must fail fast before map fanout.

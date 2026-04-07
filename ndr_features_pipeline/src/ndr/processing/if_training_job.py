@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_REMEDIATION_CHUNK_SIZE = 25
 TARGET_CONTRACT_ERROR_CODE = "IFTrainingOrchestrationTargetContractError"
+TASK8_INTEGRATION_GATE_VERSION = "task8_integration_gate.v1"
 
 
 class IFTrainingJob(BaseProcessingJobRunner):
@@ -290,6 +291,85 @@ class IFTrainingJob(BaseProcessingJobRunner):
             )
         return readiness
 
+    def _run_task8_integration_gate(
+        self,
+        *,
+        stage: str,
+        verification: Dict[str, Any] | None = None,
+        history_plan: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """Enforce Task-8 integration order/dependency gates across 8.1–8.9 outputs."""
+        verification = verification or {}
+        history_plan = history_plan or {}
+        checks: List[Dict[str, Any]] = []
+
+        def _check(task_id: str, condition: bool, detail: str) -> None:
+            checks.append(
+                {
+                    "task_id": task_id,
+                    "passed": bool(condition),
+                    "detail": detail,
+                }
+            )
+
+        runtime_fields = [
+            self.runtime_config.project_name,
+            self.runtime_config.feature_spec_version,
+            self.runtime_config.run_id,
+            self.runtime_config.execution_ts_iso,
+            self.runtime_config.ml_project_name,
+            self.runtime_config.dpp_config_table_name,
+            self.runtime_config.mlp_config_table_name,
+            self.runtime_config.batch_index_table_name,
+        ]
+        _check("8.1", all(runtime_fields), "minimal runtime contract fields required by training are present")
+        _check("8.9", all(runtime_fields), "required runtime fields remain wired and non-empty for execution")
+        _check("8.6", bool(self.runtime_config.ml_project_name), "ml_project_name branch context is present")
+
+        verification_stage = str(verification.get("stage") or "")
+        if stage == "plan":
+            _check("8.2", verification_stage == "verify", "plan stage requires verify artifact as immediate dependency")
+        if stage == "remediate":
+            _check(
+                "8.2",
+                verification_stage in {"", "verify"},
+                "remediate stage requires verify artifact lineage",
+            )
+        if stage == "train":
+            _check("8.2", verification_stage == "reverify", "train stage requires successful reverify artifact")
+
+        manifest_payload = history_plan.get("missing_windows_manifest")
+        if manifest_payload is not None:
+            ensure_manifest(manifest_payload)
+            _check("8.3", True, "missing-window manifest follows canonical contract")
+            _check("8.4", all("ranges" in e for e in manifest_payload.get("entries", [])), "manifest entries are range-addressable for selective remediation")
+        elif stage in {"remediate", "train"}:
+            _check("8.3", False, "missing_windows_manifest is required before remediate/train")
+            _check("8.4", False, "range-addressable manifest is required before remediate/train")
+
+        readiness = history_plan.get("batch_index_readiness") if isinstance(history_plan, dict) else None
+        if readiness is not None:
+            selectors = ((readiness.get("batch_index_evidence") or {}).get("selectors") or {})
+            _check("8.5", bool(selectors.get("pk")), "batch index evidence selectors are present in readiness artifact")
+
+        report = {
+            "contract_version": TASK8_INTEGRATION_GATE_VERSION,
+            "stage": stage,
+            "run_id": self.runtime_config.run_id,
+            "project_name": self.runtime_config.project_name,
+            "ml_project_name": self.runtime_config.ml_project_name,
+            "checks": checks,
+            "status": "passed" if all(c["passed"] for c in checks) else "failed",
+        }
+        try:
+            self._write_stage_status("integration_gate", report)
+        except Exception:  # pylint: disable=broad-except
+            logger.warning("Unable to persist integration_gate status artifact", exc_info=True)
+        if report["status"] != "passed":
+            failed = [c["task_id"] for c in checks if not c["passed"]]
+            raise ValueError(f"Task 8 integration gate failed for stage '{stage}' on checks: {failed}")
+        return report
+
     def _run_verification_stage(self, stage_name: str) -> None:
         """Run deterministic data verification for verify/reverify stages."""
         import boto3
@@ -490,6 +570,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
             )
             return
         history_plan = self._load_required_history_plan()
+        self._run_task8_integration_gate(stage="remediate", verification=verification, history_plan=history_plan)
         missing_windows_manifest = ensure_manifest(history_plan.get("missing_windows_manifest"))
         missing_windows = missing_windows_manifest["entries"]
         missing_15m_manifest_all = next((entry["ranges"] for entry in missing_windows if entry["artifact_family"] == "fg_a_15m"), [])
@@ -668,6 +749,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
     def _run_planning_stage(self) -> None:
         """Compute and persist remediation planning artifacts before remediation/train."""
         verification = self._load_required_latest_verification_status()
+        self._run_task8_integration_gate(stage="plan", verification=verification)
         train_start, train_end = self._resolve_training_window()
         evaluation_windows = self._resolve_evaluation_windows()
         history_plan = self._compute_history_plan(train_start, train_end, evaluation_windows)
@@ -1287,8 +1369,9 @@ class IFTrainingJob(BaseProcessingJobRunner):
 
         train_start, train_end = self._resolve_training_window()
         evaluation_windows = self._resolve_evaluation_windows()
-        self._enforce_pre_train_reverify_gate()
+        verification = self._enforce_pre_train_reverify_gate()
         history_plan = self._load_required_history_plan()
+        self._run_task8_integration_gate(stage="train", verification=verification, history_plan=history_plan)
 
         planned_entries = ensure_manifest((history_plan or {}).get("missing_windows_manifest"))["entries"]
         missing_15m_manifest = next((entry["ranges"] for entry in planned_entries if entry["artifact_family"] == "fg_a_15m"), [])

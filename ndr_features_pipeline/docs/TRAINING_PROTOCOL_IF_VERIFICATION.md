@@ -81,6 +81,9 @@ The protocol is **substantially implemented to a fine standard** with strong orc
 - Verify `records_scored` reflects persisted inference output row counts for the evaluation window.
 - Verify final training report includes planner outputs and evaluation manifests.
 
+## Task 8.11 verification bundle evidence
+- Consolidated Task 8 closure report: `docs/archive/debug_records/task811_training_verification_bundle.md`
+
 ## Item 26 strict closure evidence
 Detailed closure matrix + non-prod scenario mapping are recorded in:
 - `docs/archive/debug_records/item26_closure_evidence.md`

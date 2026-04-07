@@ -1,6 +1,7 @@
 import sys
 import types
 from datetime import datetime, timezone
+import json
 
 boto3_stub = types.ModuleType("boto3")
 boto3_stub.client = lambda *_args, **_kwargs: None
@@ -70,11 +71,12 @@ def test_extractor_emits_expected_window_rows(monkeypatch):
     uri = HistoricalWindowsExtractorJob(runtime).run()
     assert uri.startswith("s3://bucket/out/historical_windows/")
     assert len(fake_s3.put_calls) == 1
-    body = fake_s3.put_calls[0]["Body"].decode("utf-8")
-    assert '"project_name": "fw_paloalto"' in body
-    assert '"feature_spec_version": "v9"' in body
-    assert '"batch_start_ts_iso": "2025-01-01T10:38:00Z"' in body
-    assert '"batch_end_ts_iso": "2025-01-01T10:40:00Z"' in body
+    body = json.loads(fake_s3.put_calls[0]["Body"].decode("utf-8"))
+    assert body["project_name"] == "fw_paloalto"
+    assert body["feature_spec_version"] == "v9"
+    assert body["rows"][0]["batch_start_ts_iso"] == "2025-01-01T10:38:00Z"
+    assert body["rows"][0]["batch_end_ts_iso"] == "2025-01-01T10:40:00Z"
+    assert body["contract_version"] == "backfill_manifest.v1"
 
 
 def test_extractor_prefers_batch_index_rows(monkeypatch):
@@ -106,9 +108,9 @@ def test_extractor_prefers_batch_index_rows(monkeypatch):
     )
     uri = HistoricalWindowsExtractorJob(runtime).run()
     assert uri.startswith("s3://bucket/out/historical_windows/")
-    body = fake_s3.put_calls[0]["Body"].decode("utf-8")
-    assert '"mini_batch_id": "mb-9"' in body
-    assert '"raw_parsed_logs_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-9/"' in body
+    body = json.loads(fake_s3.put_calls[0]["Body"].decode("utf-8"))
+    assert body["rows"][0]["mini_batch_id"] == "mb-9"
+    assert body["rows"][0]["raw_parsed_logs_s3_prefix"] == "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-9/"
 
 
 def test_extractor_errors_when_index_empty_and_fallback_disabled(monkeypatch):

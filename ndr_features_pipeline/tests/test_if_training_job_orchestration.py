@@ -727,7 +727,19 @@ def test_post_training_evaluation_skips_join_when_publication_disabled(monkeypat
 
 
 def test_remediation_stage_invokes_orchestrators(monkeypatch):
-    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("remediate"), _make_spec())
+    job = IFTrainingJob(
+        _DummyDF(),
+        _runtime_with_stage("remediate"),
+        _make_spec(),
+        resolved_spec_payload={
+            "orchestration_targets": {
+                "backfill_15m": "sfn_ndr_backfill_reprocessing",
+                "fg_b_baseline": "pipeline_fg_b_baseline",
+                "inference": "pipeline_inference_predictions",
+                "prediction_feature_join": "pipeline_prediction_feature_join",
+            }
+        },
+    )
 
     monkeypatch.setattr(
         job,
@@ -791,7 +803,6 @@ def test_remediation_stage_invokes_orchestrators(monkeypatch):
 
     monkeypatch.setattr(sys.modules["boto3"], "client", _client, raising=False)
     monkeypatch.setattr("ndr.processing.if_training_job.time.sleep", lambda *_args, **_kwargs: None)
-    monkeypatch.setenv("NDR_BACKFILL_STATE_MACHINE_ARN", "arn:aws:states:region:acct:stateMachine:ndr-backfill")
 
     observed = {}
     monkeypatch.setattr(job, "_write_stage_status", lambda stage, payload: observed.update({"stage": stage, "payload": payload}))
@@ -807,7 +818,6 @@ def test_remediation_stage_invokes_orchestrators(monkeypatch):
 
 def test_backfill_execution_already_exists_is_handled_as_idempotent_skip(monkeypatch):
     job = IFTrainingJob(_DummyDF(), _runtime_with_stage("remediate"), _make_spec())
-    monkeypatch.setenv("NDR_BACKFILL_STATE_MACHINE_ARN", "arn:aws:states:region:acct:stateMachine:ndr-backfill")
 
     class _SFN:
         def start_execution(self, **_kwargs):
@@ -939,7 +949,7 @@ def test_build_remediation_chunks_is_deterministic():
     assert "chunk_hash" in first[0]
 
 
-def test_resolve_orchestration_target_prefers_ddb_over_env(monkeypatch):
+def test_resolve_orchestration_target_uses_ddb_contract():
     runtime = _runtime_with_stage("train")
     spec = _make_spec()
     job = IFTrainingJob(
@@ -949,14 +959,13 @@ def test_resolve_orchestration_target_prefers_ddb_over_env(monkeypatch):
         resolved_spec_payload={"orchestration_targets": {"fg_b_baseline": "pipeline_fg_b_override"}},
     )
 
-    monkeypatch.setenv("NDR_PIPELINE_FG_B_BASELINE", "pipeline_env_fallback")
     resolved = job._resolve_orchestration_target(
         family="fg_b_baseline",
         sfn_client=object(),
         sagemaker_client=object(),
         required=True,
     )
-    assert resolved["resolution_source"] == "ddb_override"
+    assert resolved["resolution_source"] == "ddb_contract"
     assert resolved["resolved_target"] == "pipeline_fg_b_override"
 
 
@@ -965,7 +974,12 @@ def test_dependency_readiness_fails_fast_for_required_branch(monkeypatch):
     spec = _make_spec()
     spec.toggles.enable_auto_remediate_15m = True
     spec.remediation.enable_backfill_15m = True
-    job = IFTrainingJob(_DummyDF(), runtime, spec)
+    job = IFTrainingJob(
+        _DummyDF(),
+        runtime,
+        spec,
+        resolved_spec_payload={"orchestration_targets": {"backfill_15m": "sfn_ndr_backfill_reprocessing"}},
+    )
 
     class _SFN:
         def describe_state_machine(self, **_kwargs):
@@ -987,11 +1001,27 @@ def test_dependency_readiness_fails_fast_for_required_branch(monkeypatch):
 
     monkeypatch.setattr(sys.modules["boto3"], "client", _client, raising=False)
     monkeypatch.setattr(job, "_write_stage_status", lambda *_args, **_kwargs: None)
-    with pytest.raises(ValueError, match="Dependency readiness failed"):
+    with pytest.raises(ValueError, match="IFTrainingOrchestrationTargetContractError"):
         job._run_dependency_readiness_gate(
             stage="train",
             missing_15m_manifest=[{"start_ts_iso": "2024-01-01T00:00:00Z", "end_ts_iso": "2024-01-01T00:15:00Z"}],
             missing_fgb_manifest=[],
+        )
+
+
+def test_required_branch_target_missing_in_ddb_fails_with_contract_error():
+    runtime = _runtime_with_stage("train")
+    spec = _make_spec()
+    spec.toggles.enable_auto_remediate_15m = True
+    spec.remediation.enable_backfill_15m = True
+    job = IFTrainingJob(_DummyDF(), runtime, spec, resolved_spec_payload={})
+
+    with pytest.raises(ValueError, match="IFTrainingOrchestrationTargetContractError"):
+        job._resolve_orchestration_target(
+            family="backfill_15m",
+            sfn_client=object(),
+            sagemaker_client=object(),
+            required=True,
         )
 
 

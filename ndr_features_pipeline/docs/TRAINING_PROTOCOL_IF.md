@@ -94,10 +94,10 @@ Before expensive processing/tuning starts, validate:
   - inference pipeline,
   - prediction-feature-join pipeline.
 
-Target resolution precedence for these dependencies is:
-1. `if_training.spec.orchestration_targets` override from DynamoDB,
-2. code-known defaults,
-3. environment variable fallback (compatibility only; emits warning telemetry).
+Target resolution contract for these dependencies is:
+1. `if_training.spec.orchestration_targets` from DynamoDB (required for enabled branches),
+2. deterministic target validation (type + existence/readiness checks),
+3. fail-fast contract error when missing/invalid (`IFTrainingOrchestrationTargetContractError`).
 
 If any hard guardrail fails, stop the run and write failure context to the trial component
 and reproducibility report.
@@ -112,7 +112,7 @@ and reproducibility report.
 - Use a `SUCCESS`/manifest marker file only after all required artifacts are present.
 - Never overwrite “last-known-good” pointers until validation gates pass.
 - Persist machine-readable orchestration provenance and readiness artifacts so each run can be audited
-  for selected targets and source (`ddb_override`, `code_default`, `env_fallback`).
+  for selected targets and source (`ddb_contract`).
 
 ### D) Promotion Gates (model acceptance)
 Promote/deploy model only if all are true:
@@ -441,8 +441,8 @@ These values ensure inference replicates training preprocessing.
     - `source`
     - `ml_project_name`, `project_name`, `feature_spec_version`, `run_id`
   - Schema version mismatches are fail-fast (backward-incompatible guard).
-  - 15m remediation now invokes Step Functions backfill execution (`NDR_BACKFILL_STATE_MACHINE_ARN`) using explicit manifest ranges (no coarse global min/max collapse).
-  - FG-B remediation now invokes the FG-B baseline pipeline (`NDR_PIPELINE_FG_B_BASELINE` or `pipeline_fg_b_baseline`) for missing reference periods.
+  - 15m remediation now invokes Step Functions backfill execution from `if_training.spec.orchestration_targets.backfill_15m` using explicit manifest ranges (no coarse global min/max collapse).
+  - FG-B remediation now invokes the FG-B baseline pipeline from `if_training.spec.orchestration_targets.fg_b_baseline` for missing reference periods.
   - Backfill execution names are deterministic for idempotent reruns; duplicate execution names are treated as idempotent no-op skips.
   - FG-B remediation covers all missing references reported by planner manifests (no fixed partial cap).
 - Post-training evaluation replay is multi-window and reuse-first:

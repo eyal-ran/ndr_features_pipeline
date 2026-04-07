@@ -27,7 +27,7 @@ class DeltaBuilderRunner(BaseProcessingRunner):
     def __init__(self, spark: SparkSession, job_spec: JobSpec, runtime: RuntimeParams):
         """Initialize the instance with required clients and runtime configuration."""
         super().__init__(spark, job_spec, runtime)
-        self._s3_client = boto3.client("s3")
+        self._s3_client = None
         self.logger = get_logger("DeltaBuilderRunner")  # override name
         self._pair_context_df: DataFrame | None = None
 
@@ -98,6 +98,8 @@ class DeltaBuilderRunner(BaseProcessingRunner):
         if not uri.startswith("s3://"):
             self.logger.warning("Port sets location is not an s3:// URI: %s", uri)
             return {}
+        if self._s3_client is None:
+            self._s3_client = boto3.client("s3")
         bucket, key = uri[5:].split("/", 1)
         obj = self._s3_client.get_object(Bucket=bucket, Key=key)
         text = obj["Body"].read().decode("utf-8")

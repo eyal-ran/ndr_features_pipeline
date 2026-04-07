@@ -289,6 +289,7 @@ It includes:
 - **Likely implementation location:** `src/ndr/pipeline/sagemaker_pipeline_definitions_unified_with_fgc.py` (`build_15m_streaming_pipeline`).
 - **Purpose:** run the full 15m feature chain per extracted historical window.
 - **Steps/scripts:** same as `${PipelineName15m}` under section 1.
+- **Fallback processing utility:** `src/ndr/processing/backfill_redshift_fallback.py` provides deterministic ingestion-miss Redshift UNLOAD execution with flow-specific DPP query loading, multi-range retry semantics, and local FS staging before downstream reconstruction.
 
 ---
 

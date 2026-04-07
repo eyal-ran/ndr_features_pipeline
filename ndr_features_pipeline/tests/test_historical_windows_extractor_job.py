@@ -70,7 +70,9 @@ def test_extractor_emits_expected_window_rows(monkeypatch):
     )
     uri = HistoricalWindowsExtractorJob(runtime).run()
     assert uri.startswith("s3://bucket/out/historical_windows/")
-    assert len(fake_s3.put_calls) == 1
+    assert len(fake_s3.put_calls) == 2
+    keys = {call["Key"] for call in fake_s3.put_calls}
+    assert any(key.endswith("/historical_windows/latest_manifest.json") for key in keys)
     body = json.loads(fake_s3.put_calls[0]["Body"].decode("utf-8"))
     assert body["project_name"] == "fw_paloalto"
     assert body["feature_spec_version"] == "v9"
@@ -108,6 +110,8 @@ def test_extractor_prefers_batch_index_rows(monkeypatch):
     )
     uri = HistoricalWindowsExtractorJob(runtime).run()
     assert uri.startswith("s3://bucket/out/historical_windows/")
+    keys = {call["Key"] for call in fake_s3.put_calls}
+    assert any(key.endswith("/historical_windows/latest_manifest.json") for key in keys)
     body = json.loads(fake_s3.put_calls[0]["Body"].decode("utf-8"))
     assert body["rows"][0]["mini_batch_id"] == "mb-9"
     assert body["rows"][0]["raw_parsed_logs_s3_prefix"] == "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-9/"

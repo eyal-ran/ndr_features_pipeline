@@ -264,8 +264,8 @@ It includes:
 7. `ExtractorPipelineStatusChoice` — branch on extractor status.
 8. `WaitBeforeExtractorDescribe` — wait between extractor polls.
 9. `IncrementExtractorPollAttempt` — increment extractor poll counter.
-10. `ResolveBackfillWindows` — resolve emitted windows list.
-11. `RunBackfillWindows` (Map) — iterate each window and run per-item pipeline trigger.
+10. `ReadExtractorManifest` / `ValidateExtractorManifest` — read and validate extractor `backfill_manifest.v1` from S3.
+11. `ResolveBackfillWindows` / `RunBackfillWindows` (Map) — fan out only over `extractor_manifest.map_items` with deterministic family/range item shaping.
 12. `EmitBackfillReconciliationEvent` — emit backfill completion/reconciliation event.
 13. `WorkflowFailed` — terminal failure state.
 

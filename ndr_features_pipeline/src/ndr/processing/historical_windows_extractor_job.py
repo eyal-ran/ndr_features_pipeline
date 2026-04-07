@@ -166,7 +166,9 @@ class HistoricalWindowsExtractorJob:
     def _write_rows(self, rows: list[dict[str, str]]) -> str:
         out_bucket, out_prefix = _split_s3_uri(self.runtime_config.output_s3_prefix)
         now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        key = f"{out_prefix.rstrip('/')}/historical_windows/{now}.json"
+        base_prefix = out_prefix.rstrip('/')
+        key = f"{base_prefix}/historical_windows/{now}.json"
+        latest_key = f"{base_prefix}/historical_windows/latest_manifest.json"
         project_name = rows[0]["project_name"] if rows else (self._infer_project_name_from_input_prefix() or "")
         feature_spec_version = rows[0]["feature_spec_version"] if rows else (
             resolve_feature_spec_version(
@@ -190,7 +192,9 @@ class HistoricalWindowsExtractorJob:
         )
         manifest["rows"] = rows
         body = json.dumps(manifest, sort_keys=True) + "\n"
-        self._s3.put_object(Bucket=out_bucket, Key=key, Body=body.encode("utf-8"))
+        encoded_body = body.encode("utf-8")
+        self._s3.put_object(Bucket=out_bucket, Key=key, Body=encoded_body)
+        self._s3.put_object(Bucket=out_bucket, Key=latest_key, Body=encoded_body)
         return f"s3://{out_bucket}/{key}"
 
 

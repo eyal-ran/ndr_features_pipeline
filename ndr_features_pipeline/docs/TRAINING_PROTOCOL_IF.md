@@ -347,21 +347,23 @@ Log the following metrics at minimum:
 - Final model parameters
 
 ### S3 Artifacts (Partitioned)
-Persist artifacts under an S3 prefix partitioned by **model version** and **training time**:
+Persist artifacts under an S3 prefix partitioned by **ml_project_name branch**, **model version**, and **training time**:
 
 ```
 s3://<models-bucket>/if_training/
-  model_version=<version>/
-    training_start=<YYYY-MM-DD>/
-      training_end=<YYYY-MM-DD>/
-        model/
-        preprocessing/
-          scaler_params.json
-          outlier_params.json
-          feature_mask.json
-        metrics/
-          tuning_metrics.json
-          final_metrics.json
+  ml_project_name=<ml_project_name>/
+    model_version=<version>/
+      training_start=<YYYY-MM-DD>/
+        training_end=<YYYY-MM-DD>/
+          run_id=<run_id>/
+            model/
+            preprocessing/
+              scaler_params.json
+              outlier_params.json
+              feature_mask.json
+            metrics/
+              tuning_metrics.json
+              final_metrics.json
 ```
 
 These artifacts must be referenced during inference to guarantee
@@ -373,7 +375,7 @@ Emit a machine-readable final report for each successful run and store it in S3
 (alongside model artifacts).
 
 Recommended file name:
-- `reports/final_training_report.json`
+- `ml_project_name=<ml_project_name>/run_id=<run_id>/final_training_report.json`
 
 Required report fields:
 - run metadata: project, feature spec version, model version, training run ID

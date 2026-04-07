@@ -232,8 +232,79 @@ def test_write_preflight_failure_artifact_includes_resolved_payload(monkeypatch)
     )
 
     assert writes["key"].endswith("preflight_failure_context.json")
+    assert "ml_project_name=ml-proj" in writes["key"]
     assert writes["payload"]["resolved_job_spec_payload"] == resolved_payload
+    assert writes["payload"]["run_metadata"]["ml_project_name"] == "ml-proj"
     assert writes["payload"]["failure"]["stage"] == "preflight"
+
+
+def test_invoke_evaluation_pipeline_propagates_ml_project_name(monkeypatch):
+    runtime = IFTrainingRuntimeConfig(
+        project_name="proj",
+        ml_project_name="ml-proj",
+        feature_spec_version="v1",
+        run_id="run-eval",
+        execution_ts_iso="2025-01-01T00:00:00Z",
+        dpp_config_table_name="dpp_config",
+        mlp_config_table_name="mlp_config",
+        batch_index_table_name="batch_index",
+        training_start_ts="2024-01-01T00:00:00Z",
+        training_end_ts="2024-04-01T00:00:00Z",
+    )
+    job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+
+    class _SM:
+        def __init__(self):
+            self.params = None
+
+        def start_pipeline_execution(self, **kwargs):
+            self.params = kwargs["PipelineParameters"]
+            return {"PipelineExecutionArn": "arn:exec:1"}
+
+        def describe_pipeline_execution(self, **_kwargs):
+            return {"PipelineExecutionStatus": "Succeeded"}
+
+    sm = _SM()
+    monkeypatch.setattr("ndr.processing.if_training_job.time.sleep", lambda *_args, **_kwargs: None)
+    result = job._invoke_evaluation_pipeline(
+        sagemaker_client=sm,
+        pipeline_name="pipeline_inference_predictions",
+        window_id="window-1",
+        start_ts="2024-04-01T00:00:00Z",
+        end_ts="2024-04-01T01:00:00Z",
+        mode="inference",
+    )
+    param_names = {item["Name"] for item in sm.params}
+    mlp_value = next(item["Value"] for item in sm.params if item["Name"] == "MlProjectName")
+    assert result["status"] == "Succeeded"
+    assert "MlProjectName" in param_names
+    assert mlp_value == "ml-proj"
+
+
+def test_branch_scoped_output_prefixes_include_ml_project_name():
+    runtime = IFTrainingRuntimeConfig(
+        project_name="proj",
+        ml_project_name="ml-proj",
+        feature_spec_version="v1",
+        run_id="run-branch",
+        execution_ts_iso="2025-01-01T00:00:00Z",
+        dpp_config_table_name="dpp_config",
+        mlp_config_table_name="mlp_config",
+        batch_index_table_name="batch_index",
+        training_start_ts="2024-01-01T00:00:00Z",
+        training_end_ts="2024-04-01T00:00:00Z",
+    )
+    job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+    from datetime import datetime, timezone
+    report_prefix = job._report_run_prefix("reports")
+    artifact_prefix = job._artifact_run_prefix(
+        "artifacts",
+        datetime(2024, 1, 1, tzinfo=timezone.utc),
+        datetime(2024, 4, 1, tzinfo=timezone.utc),
+    )
+    assert report_prefix.startswith("reports/ml_project_name=ml-proj/")
+    assert "/run_id=run-branch" in report_prefix
+    assert artifact_prefix.startswith("artifacts/ml_project_name=ml-proj/")
 
 
 class _DummySageMakerClient:

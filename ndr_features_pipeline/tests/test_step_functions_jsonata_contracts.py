@@ -37,8 +37,7 @@ def test_priority_item23_required_runtime_validation_states_present():
             "ValidateResolvedRuntimeParams",
             "FailMissingProjectName",
             "FailMissingFeatureSpecVersion",
-            "FailMissingReferenceMonthIso",
-            "FailMissingReferenceTimeIso",
+            "FailMissingReferenceMonth",
         },
         "sfn_ndr_backfill_reprocessing.json": {
             "ValidateResolvedRuntimeParams",

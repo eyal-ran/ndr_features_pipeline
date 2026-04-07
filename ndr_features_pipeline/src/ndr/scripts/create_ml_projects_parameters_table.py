@@ -125,13 +125,12 @@ PIPELINE_RUNTIME_PARAMS = {
     "pipeline_fg_b_baseline": [
         "ProjectName",
         "FeatureSpecVersion",
-        "ReferenceTimeIso",
-        "Mode",
+        "ReferenceMonth",
     ],
     "pipeline_machine_inventory_unload": [
         "ProjectName",
         "FeatureSpecVersion",
-        "ReferenceMonthIso",
+        "ReferenceMonth",
     ],
     "pipeline_inference_predictions": [
         "ProjectName",
@@ -852,7 +851,10 @@ def _build_bootstrap_items(
                     "region": "REPLACE_ME",
                     "iam_role": "REPLACE_ME",
                 },
-                "query": {"schema": "public", "table": "REPLACE_ME"},
+                "query": {
+                    "descriptor_id": "machine_inventory_monthly_v1",
+                    "sql": "SELECT ip_address, machine_name FROM REPLACE_ME",
+                },
                 "output": {
                     "s3_prefix": "s3://REPLACE_ME/machine_inventory/",
                     "output_format": "PARQUET",
@@ -934,8 +936,7 @@ def _build_bootstrap_items(
                     "MiniBatchId": "auto-mini-batch",
                     "BatchStartTsIso": "<required:BatchStartTsIso>",
                     "BatchEndTsIso": "<required:BatchEndTsIso>",
-                    "ReferenceTimeIso": "<required:ReferenceTimeIso>",
-                    "ReferenceMonthIso": "<required:ReferenceMonthIso>",
+                    "ReferenceMonth": "<required:ReferenceMonth>",
                     "RunId": "manual-run",
                     "ExecutionTsIso": "<required:ExecutionTsIso>",
                     "WindowCronExpression": "8-59/15 * * * ? *",

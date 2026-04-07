@@ -63,13 +63,16 @@ The system is orchestrated through Step Functions and SageMaker Pipelines. Pipel
 - Runtime args include:
   - `--project-name`
   - `--feature-spec-version`
-  - `--reference-time-iso`
-  - `--mode` (for example REGULAR/BACKFILL)
+  - `--reference-month` (`YYYY/MM`, deterministic monthly token)
 
 ### Machine Inventory Unload (monthly)
 - Entrypoint: `ndr.scripts.run_machine_inventory_unload`
 - Job: `src/ndr/processing/machine_inventory_unload_job.py`
 - Purpose: refreshes inventory data used by baseline and cold-start/non-persistent logic.
+- Contract notes:
+  - Runtime now requires `--reference-month` (`YYYY/MM`).
+  - Execution is UNLOAD-only (no query-result fallback path).
+  - Redshift rows are unloaded to a staging S3 prefix, downloaded to local FS within the processing container, then written to the canonical `snapshot_month=YYYY-MM` partition for deterministic publish semantics.
 
 ## Model-scoring and post-processing path
 

@@ -29,9 +29,9 @@ def parse_args(argv=None):
         help="Feature specification version (schema id).",
     )
     parser.add_argument(
-        "--reference-month-iso",
+        "--reference-month",
         required=True,
-        help="Reference month (ISO8601, e.g. 2025-12-01T00:00:00Z).",
+        help="Reference month in YYYY/MM format (e.g. 2025/12).",
     )
     return parser.parse_args(argv)
 
@@ -44,14 +44,14 @@ def main(argv=None) -> int:
         extra={
             "project_name": args.project_name,
             "feature_spec_version": args.feature_spec_version,
-            "reference_month_iso": args.reference_month_iso,
+            "reference_month": args.reference_month,
         },
     )
 
     runtime_config = MachineInventoryUnloadRuntimeConfig(
         project_name=args.project_name,
         feature_spec_version=args.feature_spec_version,
-        reference_month_iso=args.reference_month_iso,
+        reference_month=args.reference_month,
     )
     run_machine_inventory_unload_from_runtime_config(runtime_config)
     return 0

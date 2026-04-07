@@ -23,9 +23,7 @@
       "Assign": {
         "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : ($exists($project_defaults.ProjectName.S) ? $project_defaults.ProjectName.S : '')) %}",
         "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : ($exists($project_defaults.FeatureSpecVersion.S) ? $project_defaults.FeatureSpecVersion.S : '${DefaultFeatureSpecVersion}')) %}",
-        "reference_month_iso": "{% $exists($states.input.reference_month_iso) ? $states.input.reference_month_iso : ($contains($raw_message,'reference_month_iso=') ? $split($split($raw_message,'reference_month_iso=')[1],';')[0] : ($exists($project_defaults.ReferenceMonthIso.S) ? $project_defaults.ReferenceMonthIso.S : '')) %}",
-        "reference_time_iso": "{% $exists($states.input.reference_time_iso) ? $states.input.reference_time_iso : ($contains($raw_message,'reference_time_iso=') ? $split($split($raw_message,'reference_time_iso=')[1],';')[0] : ($exists($project_defaults.ReferenceTimeIso.S) ? $project_defaults.ReferenceTimeIso.S : '')) %}",
-        "mode": "{% $exists($states.input.mode) ? $states.input.mode : ($contains($raw_message,'mode=') ? $split($split($raw_message,'mode=')[1],';')[0] : 'REGULAR') %}"
+        "reference_month": "{% $exists($states.input.reference_month) ? $states.input.reference_month : ($contains($raw_message,'reference_month=') ? $split($split($raw_message,'reference_month=')[1],';')[0] : ($exists($project_defaults.ReferenceMonth.S) ? $project_defaults.ReferenceMonth.S : '')) %}"
       },
       "Next": "ValidateResolvedRuntimeParams"
     },
@@ -44,8 +42,8 @@
             "Value": "{% $feature_spec_version %}"
           },
           {
-            "Name": "ReferenceMonthIso",
-            "Value": "{% $reference_month_iso %}"
+            "Name": "ReferenceMonth",
+            "Value": "{% $reference_month %}"
           }
         ]
       },
@@ -131,12 +129,8 @@
             "Value": "{% $feature_spec_version %}"
           },
           {
-            "Name": "ReferenceTimeIso",
-            "Value": "{% $reference_time_iso %}"
-          },
-          {
-            "Name": "Mode",
-            "Value": "{% $mode %}"
+            "Name": "ReferenceMonth",
+            "Value": "{% $reference_month %}"
           }
         ]
       },
@@ -216,7 +210,7 @@
             "Source": "ndr.orchestration",
             "DetailType": "NdrMonthlyBaselinesCompleted",
             "EventBusName": "${EventBusName}",
-            "Detail": "{% $string({'project_name': $project_name, 'feature_spec_version': $feature_spec_version, 'reference_month_iso': $reference_month_iso}) %}"
+            "Detail": "{% $string({'project_name': $project_name, 'feature_spec_version': $feature_spec_version, 'reference_month': $reference_month}) %}"
           }
         ]
       },
@@ -239,12 +233,8 @@
           "Next": "FailMissingFeatureSpecVersion"
         },
         {
-          "Condition": "{% $reference_month_iso = \"\" %}",
-          "Next": "FailMissingReferenceMonthIso"
-        },
-        {
-          "Condition": "{% $reference_time_iso = \"\" %}",
-          "Next": "FailMissingReferenceTimeIso"
+          "Condition": "{% $reference_month = \"\" %}",
+          "Next": "FailMissingReferenceMonth"
         }
       ],
       "Default": "StartMachineInventoryRefresh"
@@ -259,15 +249,10 @@
       "Error": "RuntimeParameterValidationError",
       "Cause": "Missing required runtime parameter: feature_spec_version"
     },
-    "FailMissingReferenceMonthIso": {
+    "FailMissingReferenceMonth": {
       "Type": "Fail",
       "Error": "RuntimeParameterValidationError",
-      "Cause": "Missing required runtime parameter: reference_month_iso"
-    },
-    "FailMissingReferenceTimeIso": {
-      "Type": "Fail",
-      "Error": "RuntimeParameterValidationError",
-      "Cause": "Missing required runtime parameter: reference_time_iso"
+      "Cause": "Missing required runtime parameter: reference_month"
     },
     "LoadDppConfigFromDynamo": {
       "Type": "Task",

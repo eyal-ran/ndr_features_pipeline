@@ -71,6 +71,16 @@ def resolve_step_code_uri(
     table_name: str | None = None,
 ) -> str:
     """Load pipeline spec from DynamoDB and resolve a step's script S3 URI."""
+    for field_name, value in {
+        "project_name": project_name,
+        "feature_spec_version": feature_spec_version,
+        "pipeline_job_name": pipeline_job_name,
+    }.items():
+        if not value or value.startswith("<required:"):
+            raise ValueError(
+                f"{field_name} must be a concrete value for step code resolution; received {value!r}"
+            )
+
     pipeline_spec = load_job_spec(
         project_name=project_name,
         job_name=pipeline_job_name,

@@ -55,6 +55,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         required = {
             "training_start_ts": self.runtime_config.training_start_ts,
             "training_end_ts": self.runtime_config.training_end_ts,
+            "ml_project_name": self.runtime_config.ml_project_name,
             "dpp_config_table_name": self.runtime_config.dpp_config_table_name,
             "mlp_config_table_name": self.runtime_config.mlp_config_table_name,
             "batch_index_table_name": self.runtime_config.batch_index_table_name,
@@ -293,6 +294,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
             "stage": stage,
             "run_id": self.runtime_config.run_id,
             "project_name": self.runtime_config.project_name,
+            "ml_project_name": self.runtime_config.ml_project_name,
             "feature_spec_version": self.runtime_config.feature_spec_version,
             "checks": checks,
             "status": "passed" if all(c["status"] in {"passed", "skipped"} for c in checks) else "failed",

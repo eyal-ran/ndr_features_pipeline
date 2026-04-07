@@ -14,6 +14,7 @@ def parse_args(argv=None):
     """Parse command-line arguments for this script."""
     parser = argparse.ArgumentParser(description="Run Isolation Forest training job.")
     parser.add_argument("--project-name", required=True)
+    parser.add_argument("--ml-project-name", required=True)
     parser.add_argument("--feature-spec-version", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--dpp-config-table-name", required=True)
@@ -54,6 +55,7 @@ def main(argv=None) -> int:
         extra={
             "project_name": args.project_name,
             "feature_spec_version": args.feature_spec_version,
+            "ml_project_name": args.ml_project_name,
             "run_id": args.run_id,
             "dpp_config_table_name": args.dpp_config_table_name,
             "mlp_config_table_name": args.mlp_config_table_name,
@@ -69,6 +71,7 @@ def main(argv=None) -> int:
     )
     runtime_config = IFTrainingRuntimeConfig(
         project_name=args.project_name,
+        ml_project_name=args.ml_project_name,
         feature_spec_version=args.feature_spec_version,
         run_id=args.run_id,
         execution_ts_iso=args.execution_ts_iso,

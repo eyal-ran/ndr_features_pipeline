@@ -75,6 +75,7 @@ def _make_spec():
 def test_run_orchestrates_artifact_before_deploy(monkeypatch):
     runtime = IFTrainingRuntimeConfig(
         project_name="proj",
+        ml_project_name="ml-proj",
         feature_spec_version="v1",
         run_id="run-1",
         execution_ts_iso="2025-01-01T00:00:00Z",
@@ -137,6 +138,7 @@ def test_run_orchestrates_artifact_before_deploy(monkeypatch):
 def test_run_failure_writes_failure_artifacts(monkeypatch):
     runtime = IFTrainingRuntimeConfig(
         project_name="proj",
+        ml_project_name="ml-proj",
         feature_spec_version="v1",
         run_id="run-2",
         execution_ts_iso="2025-01-01T00:00:00Z",
@@ -177,6 +179,7 @@ def test_run_failure_writes_failure_artifacts(monkeypatch):
 def test_write_preflight_failure_artifact_includes_resolved_payload(monkeypatch):
     runtime = IFTrainingRuntimeConfig(
         project_name="proj",
+        ml_project_name="ml-proj",
         feature_spec_version="v1",
         run_id="run-3",
         execution_ts_iso="2025-01-01T00:00:00Z",
@@ -243,6 +246,7 @@ class _DummySageMakerClient:
 def test_log_sagemaker_experiments_writes_rich_components(monkeypatch):
     runtime = IFTrainingRuntimeConfig(
         project_name="proj",
+        ml_project_name="ml-proj",
         feature_spec_version="v1",
         run_id="run-4",
         execution_ts_iso="2025-01-01T00:00:00Z",
@@ -283,6 +287,7 @@ def test_log_sagemaker_experiments_writes_rich_components(monkeypatch):
 def test_preflight_fails_on_underfilled_window(monkeypatch):
     runtime = IFTrainingRuntimeConfig(
         project_name="proj",
+        ml_project_name="ml-proj",
         feature_spec_version="v1",
         run_id="run-5",
         execution_ts_iso="2025-01-01T00:00:00Z",
@@ -351,6 +356,7 @@ def test_preflight_fails_on_underfilled_window(monkeypatch):
 def _runtime_with_stage(stage: str) -> IFTrainingRuntimeConfig:
     return IFTrainingRuntimeConfig(
         project_name="proj",
+        ml_project_name="ml-proj",
         feature_spec_version="v1",
         run_id=f"run-{stage}",
         execution_ts_iso="2025-01-01T00:00:00Z",
@@ -899,6 +905,7 @@ def test_remediation_routes_fgb_only_when_only_fgb_missing(monkeypatch):
 def test_write_inference_preprocessing_back_uses_dpp_table_and_job_name_version(monkeypatch):
     runtime = IFTrainingRuntimeConfig(
         project_name="proj",
+        ml_project_name="ml-proj",
         feature_spec_version="v1",
         run_id="run-3",
         execution_ts_iso="2025-01-01T00:00:00Z",

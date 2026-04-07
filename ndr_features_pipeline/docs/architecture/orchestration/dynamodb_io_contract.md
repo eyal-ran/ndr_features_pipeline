@@ -60,3 +60,11 @@ Every step metadata entry under `s3_prefixes.*.code_metadata.*` must include:
 - `artifact_sha256`
 
 This is the reproducibility boundary for deployed single-file step artifacts.
+
+## 6) Canonical RT/backfill Batch Index writer API (Task 3)
+
+- Prefixes must be fully precomputed and written once using `precompute_batch_index_prefixes(...)` before child execution starts.
+- `BatchIndexWriter.upsert_dual_items(...)` is idempotent and always writes both item types:
+  - Item A (`SK=<batch_id>`)
+  - Item B (`SK=<YYYY/MM/dd>#<hh>#<within_hour_run_number>`)
+- Post-write mutation is intentionally narrow: `BatchIndexWriter.update_status(...)` may only update status/timestamp fields.

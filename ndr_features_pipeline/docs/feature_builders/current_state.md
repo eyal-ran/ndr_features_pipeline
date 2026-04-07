@@ -12,17 +12,27 @@ The system is orchestrated through Step Functions and SageMaker Pipelines. Pipel
 - Entrypoint: `ndr.scripts.run_delta_builder`
 - Job: `src/ndr/processing/delta_builder_job.py`
 - Purpose: reads parsed traffic logs and writes 15-minute host-level deltas.
+- Contract notes:
+  - Delta output now enforces deterministic `mini_batch_id` and `feature_spec_version` columns before schema enforcement/write.
+  - Delta write partition contract is strict: `output.partition_keys` must be exactly `["dt", "hh", "mm"]`.
+  - If `--raw-parsed-logs-s3-prefix` is omitted, the runtime resolves input/output prefixes from Batch Index (`raw_parsed_logs_s3_prefix`, `s3_prefixes.dpp.delta`).
 - Typical runtime args:
   - `--project-name`
   - `--feature-spec-version`
   - `--mini-batch-id`
   - `--batch-start-ts-iso`
   - `--batch-end-ts-iso`
+  - `--raw-parsed-logs-s3-prefix` (optional when Batch Index has the batch record)
+  - `--batch-index-table-name` (optional override table for path resolution)
 
 ### 2) FG-A Builder
 - Entrypoint: `ndr.scripts.run_fg_a_builder`
 - Job: `src/ndr/processing/fg_a_builder_job.py`
 - Purpose: computes multi-window current-behavior features from delta slices and writes FG-A outputs.
+- Contract notes:
+  - FG-A keeps strict Delta mini-batch enforcement by default (`mini_batch_id` must exist in Delta input); compatibility mode remains explicit via JobSpec (`allow_missing_mini_batch_id_column`).
+  - FG-A runtime now prefers Batch Index prefixes (`s3_prefixes.dpp.delta`, `s3_prefixes.dpp.fg_a`) when available for deterministic exact-batch IO path resolution.
+  - When Batch Index FG-A prefix is resolved, FG-A writes directly to that canonical prefix (no timestamp-derived output reconstruction).
 
 ### 3) Pair-Counts Builder
 - Entrypoint: `ndr.scripts.run_pair_counts_builder`

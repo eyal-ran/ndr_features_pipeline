@@ -48,6 +48,8 @@ def build_delta_manifest(port_set_names: Sequence[str] | None = None) -> SchemaM
         SchemaField("role", "string", False),
         SchemaField("slice_start_ts", "timestamp", False),
         SchemaField("slice_end_ts", "timestamp", False),
+        SchemaField("mini_batch_id", "string", False),
+        SchemaField("feature_spec_version", "string", False),
         SchemaField("dt", "string", False),
         SchemaField("hh", "string", False),
         SchemaField("mm", "string", False),
@@ -269,4 +271,3 @@ def build_fg_c_manifest(
 def build_fg_c_default_metrics() -> List[str]:
     """Execute the build fg c default metrics stage of the workflow."""
     return build_default_metric_list()
-

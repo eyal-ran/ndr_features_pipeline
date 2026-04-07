@@ -17,7 +17,7 @@ It includes:
     1h, 8h, 24h) for both outbound and inbound roles,
   - adds time-of-day and weekday/weekend context features,
   - writes a partitioned Parquet dataset to S3 under a batch-scoped prefix
-    (e.g., `.../fg_a/ts=YYYY/MM/DD/HH/MM-batch_id=<mini_batch_id>/`).
+    (preferably Batch-Index-resolved canonical prefix for the specific batch; legacy timestamp-derived output path is retained only when Batch Index path is unavailable).
 - `test_fg_a_builder_job.py` – unit tests that validate window
   aggregation logic and basic schema expectations.
 
@@ -33,6 +33,10 @@ defined delta table schema and does not modify the delta builder
 behaviour. Baseline and correlation features are handled by FG-B and
 FG-C builder jobs, and may be joined to FG-A outputs in later steps of
 the pipeline.
+
+Mini-batch contract:
+- FG-A strict mode requires `mini_batch_id` to exist in Delta output and fails fast with explicit context if missing.
+- Temporary compatibility mode (process all rows under the resolved Delta prefix when `mini_batch_id` column is missing) must be explicitly enabled via JobSpec (`allow_missing_mini_batch_id_column=true`).
 
 
 ## FG-A to FG-B contract note

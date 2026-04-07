@@ -427,14 +427,14 @@ These values ensure inference replicates training preprocessing.
   - `W_15m = [U_start - L_A, U_end)` with `L_A=24h` default.
   - `B_start = U_start - max_h(d + g_t + g_h)` and `B_end = U_end - min_h(g_h)`.
   - Under current known constants, planner resolves concrete `W_required.start = U_start - 44d`.
-- Remediation is orchestration-backed metadata and bounded retries (`remediation.max_retries`), with independent toggles for 15m backfill and FG-B rebuild paths.
+- Remediation is orchestration-backed metadata with selective manifest execution, deterministic chunking metadata (`chunk_index`, `chunk_size`, `chunk_hash`), and idempotent retries per chunk (`remediation.max_retries`), with independent toggles for 15m backfill and FG-B rebuild paths.
   - Missing-window artifacts now use one canonical schema (`if_training_missing_windows.v1`) across verify, plan, remediate, and reverify with fields:
     - `artifact_family`
     - `ranges` (`[{start_ts_iso,end_ts_iso}]`, normalized disjoint/sorted)
     - `source`
     - `ml_project_name`, `project_name`, `feature_spec_version`, `run_id`
   - Schema version mismatches are fail-fast (backward-incompatible guard).
-  - 15m remediation now invokes Step Functions backfill execution (`NDR_BACKFILL_STATE_MACHINE_ARN`).
+  - 15m remediation now invokes Step Functions backfill execution (`NDR_BACKFILL_STATE_MACHINE_ARN`) using explicit manifest ranges (no coarse global min/max collapse).
   - FG-B remediation now invokes the FG-B baseline pipeline (`NDR_PIPELINE_FG_B_BASELINE` or `pipeline_fg_b_baseline`) for missing reference periods.
   - Backfill execution names are deterministic for idempotent reruns; duplicate execution names are treated as idempotent no-op skips.
   - FG-B remediation covers all missing references reported by planner manifests (no fixed partial cap).

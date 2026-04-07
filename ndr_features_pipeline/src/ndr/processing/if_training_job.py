@@ -7,7 +7,6 @@ import hashlib
 import io
 import json
 import logging
-import os
 import tarfile
 import time
 from dataclasses import asdict, replace
@@ -29,15 +28,8 @@ from ndr.processing.schema_enforcement import enforce_schema
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_BACKFILL_STATE_MACHINE_ENV = "NDR_BACKFILL_STATE_MACHINE_ARN"
-DEFAULT_BACKFILL_STATE_MACHINE_NAME = "sfn_ndr_backfill_reprocessing"
-DEFAULT_FGB_PIPELINE_ENV = "NDR_PIPELINE_FG_B_BASELINE"
-DEFAULT_FGB_PIPELINE_NAME = "pipeline_fg_b_baseline"
-DEFAULT_INFERENCE_PIPELINE_ENV = "NDR_PIPELINE_INFERENCE_PREDICTIONS"
-DEFAULT_INFERENCE_PIPELINE_NAME = "pipeline_inference_predictions"
-DEFAULT_PREDICTION_JOIN_PIPELINE_ENV = "NDR_PIPELINE_PREDICTION_FEATURE_JOIN"
-DEFAULT_PREDICTION_JOIN_PIPELINE_NAME = "pipeline_prediction_feature_join"
 DEFAULT_REMEDIATION_CHUNK_SIZE = 25
+TARGET_CONTRACT_ERROR_CODE = "IFTrainingOrchestrationTargetContractError"
 
 
 class IFTrainingJob(BaseProcessingJobRunner):
@@ -153,26 +145,18 @@ class IFTrainingJob(BaseProcessingJobRunner):
         sagemaker_client,
         required: bool,
     ) -> Dict[str, Any]:
-        """Resolve orchestrator target with DDB-first precedence and provenance."""
+        """Resolve orchestrator target strictly from DDB contract with provenance."""
         family_defaults = {
             "backfill_15m": {
-                "env": DEFAULT_BACKFILL_STATE_MACHINE_ENV,
-                "default": DEFAULT_BACKFILL_STATE_MACHINE_NAME,
                 "type": "stepfunctions",
             },
             "fg_b_baseline": {
-                "env": DEFAULT_FGB_PIPELINE_ENV,
-                "default": DEFAULT_FGB_PIPELINE_NAME,
                 "type": "sagemaker_pipeline",
             },
             "inference": {
-                "env": DEFAULT_INFERENCE_PIPELINE_ENV,
-                "default": DEFAULT_INFERENCE_PIPELINE_NAME,
                 "type": "sagemaker_pipeline",
             },
             "prediction_feature_join": {
-                "env": DEFAULT_PREDICTION_JOIN_PIPELINE_ENV,
-                "default": DEFAULT_PREDICTION_JOIN_PIPELINE_NAME,
                 "type": "sagemaker_pipeline",
             },
         }
@@ -182,34 +166,27 @@ class IFTrainingJob(BaseProcessingJobRunner):
         defaults = family_defaults[family]
         overrides = self._get_orchestration_target_overrides()
         ddb_value = overrides.get(family)
-        env_value = os.environ.get(defaults["env"])
-        if ddb_value:
-            selected, source = ddb_value, "ddb_override"
-        elif defaults["default"]:
-            selected, source = defaults["default"], "code_default"
-        else:
-            selected, source = env_value, "env_fallback"
+        if required and not ddb_value:
+            raise ValueError(
+                f"{TARGET_CONTRACT_ERROR_CODE}: missing required DDB orchestration target for family '{family}' "
+                f"at if_training.spec.orchestration_targets.{family}"
+            )
 
-        if source != "env_fallback" and env_value and env_value != selected:
-            logger.info(
-                "Ignoring env orchestrator value because DDB/code precedence won",
-                extra={"family": family, "env_var": defaults["env"], "env_value": env_value, "selected": selected},
-            )
-        if source == "env_fallback":
-            logger.warning(
-                "Using deprecated env fallback for orchestration target resolution",
-                extra={"family": family, "env_var": defaults["env"]},
-            )
+        selected = ddb_value
+        source = "ddb_contract"
 
         resolved_value = selected
-        resolved_kind = "name"
+        resolved_kind = "name" if selected else "unresolved"
         if defaults["type"] == "stepfunctions" and selected and not selected.startswith("arn:"):
             resolved_arn = self._resolve_state_machine_arn_from_name(sfn_client, selected)
             if resolved_arn:
                 resolved_value = resolved_arn
                 resolved_kind = "arn"
             elif required:
-                raise ValueError(f"Unable to resolve required Step Functions target '{selected}' for {family}")
+                raise ValueError(
+                    f"{TARGET_CONTRACT_ERROR_CODE}: unable to resolve Step Functions state machine name "
+                    f"'{selected}' for family '{family}'"
+                )
         elif selected and selected.startswith("arn:"):
             resolved_kind = "arn"
 
@@ -220,11 +197,12 @@ class IFTrainingJob(BaseProcessingJobRunner):
             "resolved_target": resolved_value,
             "resolved_target_kind": resolved_kind,
             "resolution_source": source,
-            "env_var": defaults["env"],
             "required": required,
         }
         if required and not resolved_value:
-            raise ValueError(f"Missing required orchestration target for {family}")
+            raise ValueError(
+                f"{TARGET_CONTRACT_ERROR_CODE}: required orchestration target resolved empty value for family '{family}'"
+            )
         return result
 
     def _run_dependency_readiness_gate(
@@ -283,7 +261,15 @@ class IFTrainingJob(BaseProcessingJobRunner):
                     sagemaker.describe_pipeline(PipelineName=target["resolved_target"])
                 check["status"] = "passed"
             except Exception as exc:  # pylint: disable=broad-except
-                check.update({"status": "failed", "reason": str(exc)})
+                check.update(
+                    {
+                        "status": "failed",
+                        "reason": (
+                            f"{TARGET_CONTRACT_ERROR_CODE}: readiness validation failed for family "
+                            f"'{family}': {exc}"
+                        ),
+                    }
+                )
             checks.append(check)
 
         readiness = {
@@ -298,7 +284,10 @@ class IFTrainingJob(BaseProcessingJobRunner):
         self._write_stage_status("dependency_readiness", readiness)
         failures = [c for c in checks if c["status"] == "failed"]
         if failures:
-            raise ValueError(f"Dependency readiness failed for required dependencies: {[f['family'] for f in failures]}")
+            raise ValueError(
+                f"{TARGET_CONTRACT_ERROR_CODE}: dependency readiness failed for required dependencies "
+                f"{[f['family'] for f in failures]}"
+            )
         return readiness
 
     def _run_verification_stage(self, stage_name: str) -> None:

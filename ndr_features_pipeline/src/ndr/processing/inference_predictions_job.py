@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-import uuid
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Sequence, Tuple, TYPE_CHECKING
@@ -21,6 +21,7 @@ from ndr.processing.inference_predictions_spec import (
 )
 from ndr.processing.output_paths import build_batch_output_prefix
 from ndr.processing.schema_enforcement import enforce_schema
+from ndr.config.batch_index_loader import BatchIndexLoader
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, Row, SparkSession
@@ -28,6 +29,15 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_exact_batch_index_prefix(prefix: str) -> str:
+    cleaned = prefix.rstrip("/")
+    suffixes = ("/part-00000.parquet", "/publication_payload.json", "/schema.json", "/model.tar.gz")
+    for suffix in suffixes:
+        if cleaned.endswith(suffix):
+            return cleaned[: -len(suffix)]
+    return cleaned
 
 
 class SagemakerEndpointInvoker:
@@ -114,7 +124,9 @@ class SagemakerEndpointInvoker:
 
         results: List[Dict[str, Any]] = []
         batches = list(self._chunk_records(records))
-        inference_ts = datetime.now(timezone.utc)
+        inference_ts = datetime.fromisoformat(runtime.batch_end_ts_iso.replace("Z", "+00:00")).astimezone(
+            timezone.utc
+        )
 
         if self.model_spec.max_workers > 1 and len(batches) > 1:
             with ThreadPoolExecutor(max_workers=self.model_spec.max_workers) as executor:
@@ -159,7 +171,7 @@ class SagemakerEndpointInvoker:
                 f"({len(predictions)} vs {len(batch)})"
             )
 
-        model_version = self.model_spec.model_version or response.get("ModelVersion")
+        model_version = self.model_spec.model_version or response.get("ModelVersion") or "unknown"
         outputs: List[Dict[str, Any]] = []
         for (meta, _), prediction in zip(batch, predictions):
             score, label = self._extract_prediction(prediction, schema)
@@ -168,14 +180,43 @@ class SagemakerEndpointInvoker:
                 "mini_batch_id": runtime.mini_batch_id,
                 schema.score_column: score,
                 "model_version": model_version,
-                "model_name": self.model_spec.model_name,
+                "model_name": self.model_spec.model_name or self.model_spec.endpoint_name,
                 "inference_ts": inference_ts,
-                "record_id": str(uuid.uuid4()),
+                "record_id": self._build_record_id(meta, runtime, inference_ts, model_version),
             }
             if schema.label_column:
                 record[schema.label_column] = label
+            self._validate_metadata_contract(record)
             outputs.append(record)
         return outputs
+
+    @staticmethod
+    def _build_record_id(
+        meta: Dict[str, Any],
+        runtime: InferencePredictionsRuntimeConfig,
+        inference_ts: datetime,
+        model_version: str | None,
+    ) -> str:
+        fingerprint = "|".join(
+            [
+                runtime.project_name,
+                runtime.ml_project_name,
+                runtime.mini_batch_id,
+                str(meta.get("host_ip", "")),
+                str(meta.get("window_label", "")),
+                str(meta.get("window_end_ts", "")),
+                str(model_version or "unknown"),
+                inference_ts.isoformat(),
+            ]
+        )
+        return hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _validate_metadata_contract(record: Dict[str, Any]) -> None:
+        for required in ("model_version", "model_name", "inference_ts", "record_id"):
+            value = record.get(required)
+            if value is None or (isinstance(value, str) and value.strip() == ""):
+                raise ValueError(f"Inference metadata contract violation: missing required field '{required}'")
 
     def _extract_prediction(
         self, prediction: Any, schema: PredictionSchemaSpec
@@ -244,12 +285,15 @@ class InferencePredictionsJob(BaseProcessingJobRunner):
 
         for name, spec in input_specs.items():
             dataset = spec.dataset or name
-            input_prefix = build_batch_output_prefix(
-                base_prefix=spec.s3_prefix,
-                dataset=dataset,
-                batch_start_ts_iso=self.runtime_config.batch_start_ts_iso,
-                batch_id=self.runtime_config.mini_batch_id,
-            )
+            if spec.exact_prefix:
+                input_prefix = _normalize_exact_batch_index_prefix(spec.s3_prefix)
+            else:
+                input_prefix = build_batch_output_prefix(
+                    base_prefix=spec.s3_prefix,
+                    dataset=dataset,
+                    batch_start_ts_iso=self.runtime_config.batch_start_ts_iso,
+                    batch_id=self.runtime_config.mini_batch_id,
+                )
             logger.info("Reading features %s from %s", name, input_prefix)
             df = (
                 self.spark.read
@@ -349,12 +393,15 @@ class InferencePredictionsJob(BaseProcessingJobRunner):
         if "model_version" not in df.columns:
             df = df.withColumn("model_version", F.lit(self.inference_spec.model.model_version))
 
-        output_prefix = build_batch_output_prefix(
-            base_prefix=output_spec.s3_prefix,
-            dataset=output_spec.dataset,
-            batch_start_ts_iso=self.runtime_config.batch_start_ts_iso,
-            batch_id=self.runtime_config.mini_batch_id,
-        )
+        if output_spec.exact_prefix:
+            output_prefix = _normalize_exact_batch_index_prefix(output_spec.s3_prefix)
+        else:
+            output_prefix = build_batch_output_prefix(
+                base_prefix=output_spec.s3_prefix,
+                dataset=output_spec.dataset,
+                batch_start_ts_iso=self.runtime_config.batch_start_ts_iso,
+                batch_id=self.runtime_config.mini_batch_id,
+            )
 
         partition_cols = output_spec.partition_keys
         logger.info("Writing predictions to %s partitioned by %s", output_prefix, partition_cols)
@@ -443,6 +490,25 @@ def run_inference_predictions_from_runtime_config(
         feature_spec_version=runtime_config.feature_spec_version,
     )
     inference_spec = parse_inference_spec(job_spec)
+    record = BatchIndexLoader(table_name=runtime_config.batch_index_table_name).get_batch(
+        project_name=runtime_config.project_name,
+        batch_id=runtime_config.mini_batch_id,
+    )
+    if record is not None:
+        dpp = record.s3_prefixes.get("dpp", {})
+        mlp_branch = record.s3_prefixes.get("mlp", {}).get(runtime_config.ml_project_name, {})
+        fg_a = dpp.get("fg_a")
+        fg_c = dpp.get("fg_c")
+        if fg_a and "fg_a" in inference_spec.feature_inputs:
+            inference_spec.feature_inputs["fg_a"].s3_prefix = str(fg_a)
+            inference_spec.feature_inputs["fg_a"].exact_prefix = True
+        if fg_c and "fg_c" in inference_spec.feature_inputs:
+            inference_spec.feature_inputs["fg_c"].s3_prefix = str(fg_c)
+            inference_spec.feature_inputs["fg_c"].exact_prefix = True
+        predictions_prefix = mlp_branch.get("predictions")
+        if predictions_prefix:
+            inference_spec.output.s3_prefix = str(predictions_prefix)
+            inference_spec.output.exact_prefix = True
     from pyspark.sql import SparkSession
 
     spark = SparkSession.builder.getOrCreate()

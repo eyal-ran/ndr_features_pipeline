@@ -13,6 +13,7 @@ class InferenceFeatureInputSpec:
     s3_prefix: str
     dataset: str | None = None
     required: bool = True
+    exact_prefix: bool = False
 
 
 @dataclass
@@ -55,6 +56,7 @@ class InferenceOutputSpec:
     partition_keys: List[str] = field(default_factory=lambda: ["feature_spec_version", "dt"])
     write_mode: str = "overwrite"
     dataset: str = "inference_predictions"
+    exact_prefix: bool = False
 
 
 @dataclass
@@ -78,6 +80,7 @@ class InferencePredictionsRuntimeConfig:
     batch_start_ts_iso: str
     batch_end_ts_iso: str
     ml_project_name: str
+    batch_index_table_name: str | None = None
 
 
 def _parse_output_spec(payload: Dict[str, Any], default_dataset: str) -> InferenceOutputSpec:
@@ -90,6 +93,7 @@ def _parse_output_spec(payload: Dict[str, Any], default_dataset: str) -> Inferen
         partition_keys=payload.get("partition_keys", ["feature_spec_version", "dt"]),
         write_mode=payload.get("write_mode", "overwrite"),
         dataset=payload.get("dataset", default_dataset),
+        exact_prefix=bool(payload.get("exact_prefix", False)),
     )
 
 
@@ -107,6 +111,7 @@ def parse_inference_spec(job_spec: Dict[str, Any]) -> InferenceSpec:
             s3_prefix=payload["s3_prefix"],
             dataset=payload.get("dataset") or name,
             required=payload.get("required", True),
+            exact_prefix=bool(payload.get("exact_prefix", False)),
         )
 
     join_keys = job_spec.get("join_keys", ["host_ip", "window_label", "window_end_ts"])

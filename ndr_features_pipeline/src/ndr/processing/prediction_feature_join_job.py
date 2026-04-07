@@ -13,6 +13,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from ndr.config.job_spec_loader import load_job_spec
+from ndr.config.batch_index_loader import BatchIndexLoader
 from ndr.processing.base_runner import BaseProcessingJobRunner
 from ndr.processing.inference_predictions_spec import (
     InferencePredictionsRuntimeConfig,
@@ -43,9 +44,10 @@ def _validate_publication_output_contract(
     join_keys: List[str],
     output_spec: InferenceOutputSpec,
     destination_type: str,
+    score_column: str,
 ) -> None:
     """Validate publication output contract and sink-specific requirements."""
-    required_publication_keys = join_keys + ["feature_spec_version", "prediction_score", "dt"]
+    required_publication_keys = join_keys + ["feature_spec_version", score_column, "dt"]
     _validate_required_columns(columns, required_publication_keys, "prediction_feature_join output")
 
     _validate_required_columns(columns, list(output_spec.partition_keys), "prediction_feature_join partition")
@@ -55,7 +57,7 @@ def _validate_publication_output_contract(
         )
 
     if destination_type == "redshift":
-        redshift_required = join_keys + ["feature_spec_version", "prediction_score"]
+        redshift_required = join_keys + ["feature_spec_version", score_column]
         _validate_required_columns(columns, redshift_required, "prediction_feature_join redshift")
 
 
@@ -68,6 +70,15 @@ class PredictionFeatureJoinRuntimeConfig:
     batch_start_ts_iso: str
     batch_end_ts_iso: str
     ml_project_name: str
+    batch_index_table_name: str | None = None
+
+
+def _normalize_exact_batch_index_prefix(prefix: str) -> str:
+    cleaned = prefix.rstrip("/")
+    for suffix in ("/part-00000.parquet", "/publication_payload.json"):
+        if cleaned.endswith(suffix):
+            return cleaned[: -len(suffix)]
+    return cleaned
 
 
 class PredictionFeatureJoinJob(BaseProcessingJobRunner):
@@ -106,12 +117,15 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
     def _load_predictions(self) -> DataFrame:
         """Execute the load predictions stage of the workflow."""
         output_spec = self.inference_spec.output
-        predictions_prefix = build_batch_output_prefix(
-            base_prefix=output_spec.s3_prefix,
-            dataset=output_spec.dataset,
-            batch_start_ts_iso=self.runtime_config.batch_start_ts_iso,
-            batch_id=self.runtime_config.mini_batch_id,
-        )
+        if output_spec.exact_prefix:
+            predictions_prefix = _normalize_exact_batch_index_prefix(output_spec.s3_prefix)
+        else:
+            predictions_prefix = build_batch_output_prefix(
+                base_prefix=output_spec.s3_prefix,
+                dataset=output_spec.dataset,
+                batch_start_ts_iso=self.runtime_config.batch_start_ts_iso,
+                batch_id=self.runtime_config.mini_batch_id,
+            )
         logger.info("Reading predictions from %s", predictions_prefix)
         df = self.spark.read.option("mergeSchema", "true").parquet(predictions_prefix)
         if "feature_spec_version" in df.columns:
@@ -152,7 +166,11 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
             if not self.join_spec.s3_output:
                 raise ValueError("prediction_feature_join requires s3_output for S3 destination")
             _validate_publication_output_contract(
-                df.columns, self.inference_spec.join_keys, self.join_spec.s3_output, "s3"
+                df.columns,
+                self.inference_spec.join_keys,
+                self.join_spec.s3_output,
+                "s3",
+                self.inference_spec.prediction_schema.score_column,
             )
             self._write_joined_to_s3(df, self.join_spec.s3_output)
             return
@@ -161,7 +179,11 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
             if not self.join_spec.s3_output or not self.join_spec.redshift_output:
                 raise ValueError("prediction_feature_join requires staging s3_output and redshift_output")
             _validate_publication_output_contract(
-                df.columns, self.inference_spec.join_keys, self.join_spec.s3_output, "redshift"
+                df.columns,
+                self.inference_spec.join_keys,
+                self.join_spec.s3_output,
+                "redshift",
+                self.inference_spec.prediction_schema.score_column,
             )
             output_prefix = self._write_joined_to_s3(df, self.join_spec.s3_output)
             self._copy_to_redshift(output_prefix, self.join_spec.redshift_output)
@@ -173,12 +195,15 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
         """Execute the write joined to s3 stage of the workflow."""
         if output_spec.format.lower() != "parquet":
             raise ValueError("prediction_feature_join currently supports parquet output only")
-        output_prefix = build_batch_output_prefix(
-            base_prefix=output_spec.s3_prefix,
-            dataset=output_spec.dataset,
-            batch_start_ts_iso=self.runtime_config.batch_start_ts_iso,
-            batch_id=self.runtime_config.mini_batch_id,
-        )
+        if output_spec.exact_prefix:
+            output_prefix = _normalize_exact_batch_index_prefix(output_spec.s3_prefix)
+        else:
+            output_prefix = build_batch_output_prefix(
+                base_prefix=output_spec.s3_prefix,
+                dataset=output_spec.dataset,
+                batch_start_ts_iso=self.runtime_config.batch_start_ts_iso,
+                batch_id=self.runtime_config.mini_batch_id,
+            )
         partition_cols = output_spec.partition_keys
         logger.info("Writing joined predictions to %s", output_prefix)
         (
@@ -262,6 +287,29 @@ def run_prediction_feature_join_from_runtime_config(
         feature_spec_version=runtime_config.feature_spec_version,
     )
     join_spec = parse_prediction_feature_join_spec(join_job_spec)
+    record = BatchIndexLoader(table_name=runtime_config.batch_index_table_name).get_batch(
+        project_name=runtime_config.project_name,
+        batch_id=runtime_config.mini_batch_id,
+    )
+    if record is not None:
+        dpp = record.s3_prefixes.get("dpp", {})
+        mlp_branch = record.s3_prefixes.get("mlp", {}).get(runtime_config.ml_project_name, {})
+        fg_a = dpp.get("fg_a")
+        fg_c = dpp.get("fg_c")
+        if fg_a and "fg_a" in inference_spec.feature_inputs:
+            inference_spec.feature_inputs["fg_a"].s3_prefix = str(fg_a)
+            inference_spec.feature_inputs["fg_a"].exact_prefix = True
+        if fg_c and "fg_c" in inference_spec.feature_inputs:
+            inference_spec.feature_inputs["fg_c"].s3_prefix = str(fg_c)
+            inference_spec.feature_inputs["fg_c"].exact_prefix = True
+        predictions_prefix = mlp_branch.get("predictions")
+        if predictions_prefix:
+            inference_spec.output.s3_prefix = str(predictions_prefix)
+            inference_spec.output.exact_prefix = True
+        join_prefix = mlp_branch.get("prediction_join")
+        if join_prefix and join_spec.s3_output is not None:
+            join_spec.s3_output.s3_prefix = str(join_prefix)
+            join_spec.s3_output.exact_prefix = True
     spark = SparkSession.builder.getOrCreate()
     job = PredictionFeatureJoinJob(spark, runtime_config, inference_spec, join_spec)
     job.run()

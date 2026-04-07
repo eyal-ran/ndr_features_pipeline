@@ -13,6 +13,9 @@ sys.modules.setdefault("pyspark.sql", sql_module)
 boto3_module = types.ModuleType("boto3")
 boto3_module.client = lambda *args, **kwargs: object()
 sys.modules.setdefault("boto3", boto3_module)
+conditions_module = types.ModuleType("boto3.dynamodb.conditions")
+conditions_module.Key = type("Key", (), {})
+sys.modules.setdefault("boto3.dynamodb.conditions", conditions_module)
 
 from ndr.processing.inference_predictions_spec import InferenceOutputSpec
 from ndr.processing.prediction_feature_join_job import _validate_publication_output_contract
@@ -32,6 +35,7 @@ def test_validate_publication_output_contract_requires_prediction_keys():
             join_keys=["host_ip", "window_label", "window_end_ts"],
             output_spec=output_spec,
             destination_type="s3",
+            score_column="prediction_score",
         )
     except ValueError as exc:
         assert "prediction_score" in str(exc)
@@ -61,8 +65,33 @@ def test_validate_publication_output_contract_requires_overwrite_for_idempotency
             join_keys=["host_ip", "window_label", "window_end_ts"],
             output_spec=output_spec,
             destination_type="redshift",
+            score_column="prediction_score",
         )
     except ValueError as exc:
         assert "write_mode='overwrite'" in str(exc)
     else:
         raise AssertionError("Expected ValueError for non-idempotent write_mode")
+
+
+def test_validate_publication_output_contract_uses_inference_score_column_contract():
+    output_spec = InferenceOutputSpec(
+        s3_prefix="s3://bucket/prefix",
+        format="parquet",
+        partition_keys=["feature_spec_version", "dt"],
+        write_mode="overwrite",
+        dataset="prediction_feature_join",
+    )
+    _validate_publication_output_contract(
+        columns=[
+            "host_ip",
+            "window_label",
+            "window_end_ts",
+            "feature_spec_version",
+            "anomaly_score",
+            "dt",
+        ],
+        join_keys=["host_ip", "window_label", "window_end_ts"],
+        output_spec=output_spec,
+        destination_type="s3",
+        score_column="anomaly_score",
+    )

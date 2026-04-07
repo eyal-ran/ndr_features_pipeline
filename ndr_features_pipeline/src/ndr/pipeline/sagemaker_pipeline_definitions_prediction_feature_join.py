@@ -59,6 +59,10 @@ def build_prediction_feature_join_pipeline(
         name="MlProjectName",
         default_value="",
     )
+    batch_index_table_name = ParameterString(
+        name="BatchIndexTableName",
+        default_value="",
+    )
 
     processing_image_uri = ParameterString(
         name="ProcessingImageUri",
@@ -111,6 +115,8 @@ def build_prediction_feature_join_pipeline(
             batch_end_ts_iso,
             "--ml-project-name",
             ml_project_name,
+            "--batch-index-table-name",
+            batch_index_table_name,
         ],
         inputs=[],
         outputs=[],
@@ -125,6 +131,7 @@ def build_prediction_feature_join_pipeline(
             batch_start_ts_iso,
             batch_end_ts_iso,
             ml_project_name,
+            batch_index_table_name,
             processing_image_uri,
             processing_instance_type,
             processing_instance_count,

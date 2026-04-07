@@ -1,4 +1,4 @@
-"""Write helpers for deterministic idempotent batch_index upserts."""
+"""Write helpers for the greenfield dual-item Batch Index contract."""
 
 from __future__ import annotations
 
@@ -7,106 +7,83 @@ from datetime import datetime, timezone
 from typing import Any
 
 import boto3
-from botocore.exceptions import ClientError
 
 from ndr.config.project_parameters_loader import resolve_batch_index_table_name
+from ndr.contracts import BATCH_INDEX_PK, BATCH_INDEX_SK, date_lookup_sk
 
 
 @dataclass(frozen=True)
 class BatchIndexWriteRequest:
-    pk: str
-    sk: str
     project_name: str
-    data_source_name: str
-    version: str
-    date_utc: str
-    hour_utc: str
-    slot15: int
     batch_id: str
-    raw_parsed_logs_s3_prefix: str
-    event_ts_utc: str
+    date_partition: str
+    hour: str
+    within_hour_run_number: str
+    etl_ts: str
     org1: str
     org2: str
-    status: str
-    gsi1pk: str
-    gsi1sk: str
-    ml_project_name: str = ""
-    ml_project_names_json: str = ""
-    ttl_epoch: int | None = None
+    raw_parsed_logs_s3_prefix: str
+    ml_project_names: list[str]
+    s3_prefixes: dict[str, Any]
+    rt_flow_status: str = "PENDING"
+    backfill_status: str = "NOT_STARTED"
+    source_mode: str = "ingestion"
 
 
 class BatchIndexWriter:
-    """Persists index records with the vNext idempotent write contract."""
-
     def __init__(self, table_name: str | None = None) -> None:
         self._ddb = boto3.resource("dynamodb")
         self._table = self._ddb.Table(resolve_batch_index_table_name(table_name))
 
+    def upsert_dual_items(self, write_request: BatchIndexWriteRequest) -> None:
+        self._table.put_item(Item=self._build_batch_lookup_item(write_request))
+        self._table.put_item(Item=self._build_date_lookup_item(write_request))
+
+    # Compatibility method retained until flow migrations move to upsert_dual_items.
     def upsert(self, write_request: BatchIndexWriteRequest) -> None:
-        item = self._build_item(write_request)
-        try:
-            self._table.put_item(
-                Item=item,
-                ConditionExpression="attribute_not_exists(pk) AND attribute_not_exists(sk)",
-            )
-            return
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-                raise
+        self.upsert_dual_items(write_request)
 
-        self._table.update_item(
-            Key={"pk": write_request.pk, "sk": write_request.sk},
-            UpdateExpression=(
-                "SET raw_parsed_logs_s3_prefix = :raw_parsed_logs_s3_prefix, "
-                "event_ts_utc = :event_ts_utc, "
-                "ingested_at_utc = :ingested_at_utc, "
-                "#status = :status, "
-                "ml_project_name = if_not_exists(ml_project_name, :ml_project_name), "
-                "ml_project_names_json = if_not_exists(ml_project_names_json, :ml_project_names_json), "
-                "GSI1PK = :gsi1pk, "
-                "GSI1SK = :gsi1sk"
-            ),
-            ExpressionAttributeNames={"#status": "status"},
-            ExpressionAttributeValues={
-                ":raw_parsed_logs_s3_prefix": write_request.raw_parsed_logs_s3_prefix,
-                ":event_ts_utc": write_request.event_ts_utc,
-                ":ingested_at_utc": _now_iso(),
-                ":status": write_request.status,
-                ":ml_project_name": write_request.ml_project_name,
-                ":ml_project_names_json": write_request.ml_project_names_json,
-                ":gsi1pk": write_request.gsi1pk,
-                ":gsi1sk": write_request.gsi1sk,
-            },
-            ConditionExpression="attribute_exists(pk) AND attribute_exists(sk)",
-        )
-
-    def _build_item(self, write_request: BatchIndexWriteRequest) -> dict[str, Any]:
-        item: dict[str, Any] = {
-            "pk": write_request.pk,
-            "sk": write_request.sk,
-            "project_name": write_request.project_name,
-            "data_source_name": write_request.data_source_name,
-            "version": write_request.version,
-            "date_utc": write_request.date_utc,
-            "hour_utc": write_request.hour_utc,
-            "slot15": write_request.slot15,
-            "batch_id": write_request.batch_id,
-            "raw_parsed_logs_s3_prefix": write_request.raw_parsed_logs_s3_prefix,
-            "event_ts_utc": write_request.event_ts_utc,
-            "org1": write_request.org1,
-            "org2": write_request.org2,
-            "ingested_at_utc": _now_iso(),
-            "status": write_request.status,
-            "GSI1PK": write_request.gsi1pk,
-            "GSI1SK": write_request.gsi1sk,
+    def _build_batch_lookup_item(self, request: BatchIndexWriteRequest) -> dict[str, Any]:
+        return {
+            BATCH_INDEX_PK: request.project_name,
+            BATCH_INDEX_SK: request.batch_id,
+            "item_kind": "BATCH_LOOKUP",
+            "batch_id": request.batch_id,
+            "date_partition": request.date_partition,
+            "hour": request.hour,
+            "within_hour_run_number": request.within_hour_run_number,
+            "etl_ts": request.etl_ts,
+            "org1": request.org1,
+            "org2": request.org2,
+            "raw_parsed_logs_s3_prefix": request.raw_parsed_logs_s3_prefix,
+            "ml_project_names": request.ml_project_names,
+            "s3_prefixes": request.s3_prefixes,
+            "rt_flow_status": request.rt_flow_status,
+            "backfill_status": request.backfill_status,
+            "source_mode": request.source_mode,
+            "last_updated_at": _now_iso(),
         }
-        if write_request.ml_project_name:
-            item["ml_project_name"] = write_request.ml_project_name
-        if write_request.ml_project_names_json:
-            item["ml_project_names_json"] = write_request.ml_project_names_json
-        if write_request.ttl_epoch is not None:
-            item["ttl_epoch"] = write_request.ttl_epoch
-        return item
+
+    def _build_date_lookup_item(self, request: BatchIndexWriteRequest) -> dict[str, Any]:
+        return {
+            BATCH_INDEX_PK: request.project_name,
+            BATCH_INDEX_SK: date_lookup_sk(
+                date_partition=request.date_partition,
+                hour=request.hour,
+                within_hour_run_number=request.within_hour_run_number,
+            ),
+            "item_kind": "DATE_LOOKUP",
+            "batch_id": request.batch_id,
+            "batch_lookup_sk": request.batch_id,
+            "date_partition": request.date_partition,
+            "hour": request.hour,
+            "within_hour_run_number": request.within_hour_run_number,
+            "etl_ts": request.etl_ts,
+            "org1": request.org1,
+            "org2": request.org2,
+            "raw_parsed_logs_s3_prefix": request.raw_parsed_logs_s3_prefix,
+            "last_updated_at": _now_iso(),
+        }
 
 
 def _now_iso() -> str:

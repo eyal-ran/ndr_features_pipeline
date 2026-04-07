@@ -55,6 +55,27 @@ class ProjectParametersLoader:
             f"feature_spec_version={feature_spec_version}"
         )
 
+    def load_ml_project_names(
+        self,
+        *,
+        project_name: str,
+        feature_spec_version: str,
+        job_name: str = DEFAULT_PROJECT_PARAMETERS_JOB_NAME,
+    ) -> list[str]:
+        item = self._load_dpp_item(project_name, feature_spec_version, job_name)
+        return self._normalized_ml_project_names(item)
+
+    def load_dpp_s3_roots(self, *, project_name: str) -> Dict[str, Any]:
+        return self._load_family_item(self._dpp_table, pk_name="project_name", pk_value=project_name, sk_value="S3_ROOTS")
+
+    def load_mlp_s3_roots(self, *, ml_project_name: str) -> Dict[str, Any]:
+        return self._load_family_item(
+            self._mlp_table,
+            pk_name="ml_project_name",
+            pk_value=ml_project_name,
+            sk_value="S3_ROOTS",
+        )
+
     def _load_dpp_item(self, project_name: str, feature_spec_version: str, job_name: str) -> Dict[str, Any]:
         response = self._dpp_table.get_item(
             Key={
@@ -70,30 +91,54 @@ class ProjectParametersLoader:
             )
         return response["Item"]
 
+    def _load_family_item(self, table: Any, *, pk_name: str, pk_value: str, sk_value: str) -> Dict[str, Any]:
+        response = table.get_item(Key={pk_name: pk_value, "job_name_version": sk_value})
+        if "Item" in response:
+            return response["Item"]
+        response = table.get_item(Key={pk_name: pk_value, "SK": sk_value})
+        if "Item" not in response:
+            raise KeyError(f"Missing family item pk={pk_value}, sk={sk_value}")
+        return response["Item"]
+
+    def _normalized_ml_project_names(self, dpp_item: Dict[str, Any]) -> list[str]:
+        names = dpp_item.get("ml_project_names")
+        if names is None:
+            scalar = str(dpp_item.get("ml_project_name", "")).strip()
+            names = [scalar] if scalar else []
+
+        normalized: list[str] = []
+        for value in names:
+            candidate = str(value).strip()
+            if not candidate:
+                raise ValueError("ml_project_names cannot contain empty values")
+            if candidate not in normalized:
+                normalized.append(candidate)
+        if not normalized:
+            project_name = str(dpp_item.get("project_name", "")).strip()
+            raise KeyError(f"DPP config for project={project_name} missing required ml_project_names linkage")
+        return normalized
+
     def _validate_reciprocal_linkage(self, dpp_item: Dict[str, Any]) -> None:
-        ml_project_name = str(dpp_item.get("ml_project_name", "")).strip()
         project_name = str(dpp_item.get("project_name", "")).strip()
-        if not ml_project_name:
-            raise KeyError(f"DPP config for project={project_name} missing required ml_project_name linkage")
-
-        mlp_response = self._mlp_table.get_item(
-            Key={
-                "ml_project_name": ml_project_name,
-                "job_name_version": dpp_item.get("job_name_version"),
-            }
-        )
-        if "Item" not in mlp_response:
-            raise KeyError(
-                f"MLP config linkage missing for ml_project_name={ml_project_name}; required reciprocal mapping to project_name"
+        for ml_project_name in self._normalized_ml_project_names(dpp_item):
+            mlp_response = self._mlp_table.get_item(
+                Key={
+                    "ml_project_name": ml_project_name,
+                    "job_name_version": dpp_item.get("job_name_version"),
+                }
             )
+            if "Item" not in mlp_response:
+                raise KeyError(
+                    f"MLP config linkage missing for ml_project_name={ml_project_name}; required reciprocal mapping to project_name"
+                )
 
-        linked_project_name = str(mlp_response["Item"].get("project_name", "")).strip()
-        if linked_project_name != project_name:
-            raise ValueError(
-                "Reciprocal linkage mismatch: "
-                f"project_name={project_name} points to ml_project_name={ml_project_name}, "
-                f"but mlp_config maps back to project_name={linked_project_name}"
-            )
+            linked_project_name = str(mlp_response["Item"].get("project_name", "")).strip()
+            if linked_project_name != project_name:
+                raise ValueError(
+                    "Reciprocal linkage mismatch: "
+                    f"project_name={project_name} points to ml_project_name={ml_project_name}, "
+                    f"but mlp_config maps back to project_name={linked_project_name}"
+                )
 
 
 def load_project_parameters(

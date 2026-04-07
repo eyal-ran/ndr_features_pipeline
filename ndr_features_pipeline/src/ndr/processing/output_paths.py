@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-
 from datetime import datetime, timezone
 
 
 def _parse_iso8601(value: str) -> datetime:
-    """Parse an ISO8601 timestamp, accepting a trailing Z."""
     if value.endswith("Z"):
         value = value.replace("Z", "+00:00")
     dt = datetime.fromisoformat(value)
@@ -21,11 +19,12 @@ def build_batch_output_prefix(
     dataset: str,
     batch_start_ts_iso: str,
     batch_id: str,
+    within_hour_run_number: str | None = None,
 ) -> str:
-    """Build an S3 prefix including dataset name and batch timestamp/id.
+    """Build canonical DPP/MLP output prefixes.
 
-    Example:
-        s3://bucket/fg_a/ts=YYYY/MM/DD/HH/MM-batch_id=<id>
+    Canonical contract is date/hour/run-number based. Legacy callers that do not yet
+    provide ``within_hour_run_number`` retain timestamp-derived minute compatibility.
     """
     cleaned = base_prefix.rstrip("/")
     dataset_suffix = f"/{dataset}"
@@ -33,6 +32,9 @@ def build_batch_output_prefix(
         cleaned = f"{cleaned}{dataset_suffix}"
 
     dt = _parse_iso8601(batch_start_ts_iso)
+    if within_hour_run_number is not None:
+        return f"{cleaned}/{dt.strftime('%Y/%m/%d/%H')}/{within_hour_run_number}"
+
     ts_path = dt.strftime("ts=%Y/%m/%d/%H/%M")
     return f"{cleaned}/{ts_path}-batch_id={batch_id}"
 
@@ -47,11 +49,6 @@ def build_fg_b_publication_metadata(
     baseline_start_ts: str,
     baseline_end_ts: str,
 ) -> dict[str, str]:
-    """Build deterministic FG-B publication metadata for canonical monthly snapshots.
-
-    The created fields are derived from ``reference_time_iso`` to keep replay behavior
-    deterministic under retries/re-executions.
-    """
     reference_dt = _parse_iso8601(reference_time_iso).replace(microsecond=0)
     created_at = reference_dt.isoformat().replace('+00:00', 'Z')
     created_date = reference_dt.strftime('%Y-%m-%d')

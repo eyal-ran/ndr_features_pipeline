@@ -37,40 +37,40 @@ class _Table:
     def __init__(self):
         self.query_calls = []
 
+    def get_item(self, **kwargs):
+        if kwargs["Key"]["SK"] == "mb-2":
+            return {
+                "Item": {
+                    "PK": "fw_paloalto",
+                    "SK": "mb-2",
+                    "batch_id": "mb-2",
+                    "date_partition": "2025/01/01",
+                    "hour": "10",
+                    "within_hour_run_number": "2",
+                    "etl_ts": "2025-01-01T10:30:00Z",
+                    "org1": "org1",
+                    "org2": "org2",
+                    "raw_parsed_logs_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-2/",
+                    "ml_project_names": ["ml-a"],
+                    "s3_prefixes": {"mlp": {"ml-a": {"predictions": "s3://x"}}},
+                }
+            }
+        return {}
+
     def query(self, **kwargs):
         self.query_calls.append(kwargs)
-        if kwargs.get("IndexName") == "GSI1":
-            return {
-                "Items": [
-                    {
-                        "project_name": "fw_paloalto",
-                        "data_source_name": "fw_paloalto",
-                        "version": "v1",
-                        "batch_id": "mb-2",
-                        "raw_parsed_logs_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-2/",
-                        "event_ts_utc": "2025-01-01T10:30:00Z",
-                    }
-                ]
-            }
-
         return {
             "Items": [
                 {
-                    "project_name": "fw_paloalto",
-                    "data_source_name": "fw_paloalto",
-                    "version": "v1",
-                    "batch_id": "mb-1",
-                    "raw_parsed_logs_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-1/",
-                    "event_ts_utc": "2025-01-01T10:15:00Z",
-                },
-                {
-                    "project_name": "fw_paloalto",
-                    "data_source_name": "fw_paloalto",
-                    "version": "v1",
+                    "PK": "fw_paloalto",
+                    "SK": "2025/01/01#10#2",
                     "batch_id": "mb-2",
-                    "raw_parsed_logs_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-2/",
-                    "event_ts_utc": "2025-01-01T10:30:00Z",
-                },
+                    "batch_lookup_sk": "mb-2",
+                    "date_partition": "2025/01/01",
+                    "hour": "10",
+                    "within_hour_run_number": "2",
+                    "etl_ts": "2025-01-01T10:30:00Z",
+                }
             ]
         }
 
@@ -83,24 +83,18 @@ class _Resource:
         return self.table
 
 
-def test_lookup_forward_filters_by_time_window(monkeypatch):
+def test_lookup_by_date_partition_returns_reverse_items(monkeypatch):
     import ndr.config.batch_index_loader as module
 
     fake_table = _Table()
     monkeypatch.setattr(module.boto3, "resource", lambda *_a, **_k: _Resource(fake_table), raising=False)
     loader = BatchIndexLoader(table_name="idx")
-    rows = loader.lookup_forward(
-        project_name="fw_paloalto",
-        data_source_name="fw_paloalto",
-        version="v1",
-        start_ts_iso="2025-01-01T10:20:00Z",
-        end_ts_iso="2025-01-01T11:00:00Z",
-    )
+    rows = loader.lookup_by_date_partition(project_name="fw_paloalto", date_partition="2025/01/01")
     assert len(rows) == 1
-    assert rows[0].batch_id == "mb-2"
+    assert rows[0]["batch_lookup_sk"] == "mb-2"
 
 
-def test_lookup_reverse_uses_gsi1(monkeypatch):
+def test_lookup_reverse_reads_primary_key_not_gsi(monkeypatch):
     import ndr.config.batch_index_loader as module
 
     fake_table = _Table()
@@ -116,47 +110,15 @@ def test_lookup_reverse_uses_gsi1(monkeypatch):
     assert row.raw_parsed_logs_s3_prefix.endswith("/mb-2/")
 
 
-def test_lookup_forward_handles_paginated_query(monkeypatch):
+def test_resolve_mlp_branch_prefixes(monkeypatch):
     import ndr.config.batch_index_loader as module
 
-    class _PagedTable(_Table):
-        def query(self, **kwargs):
-            self.query_calls.append(kwargs)
-            if "ExclusiveStartKey" not in kwargs:
-                return {
-                    "Items": [
-                        {
-                            "project_name": "fw_paloalto",
-                            "data_source_name": "fw_paloalto",
-                            "version": "v1",
-                            "batch_id": "mb-1",
-                            "raw_parsed_logs_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-1/",
-                            "event_ts_utc": "2025-01-01T10:10:00Z",
-                        }
-                    ],
-                    "LastEvaluatedKey": {"pk": "x", "sk": "y"},
-                }
-            return {
-                "Items": [
-                    {
-                        "project_name": "fw_paloalto",
-                        "data_source_name": "fw_paloalto",
-                        "version": "v1",
-                        "batch_id": "mb-2",
-                        "raw_parsed_logs_s3_prefix": "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-2/",
-                        "event_ts_utc": "2025-01-01T10:20:00Z",
-                    }
-                ]
-            }
-
-    fake_table = _PagedTable()
+    fake_table = _Table()
     monkeypatch.setattr(module.boto3, "resource", lambda *_a, **_k: _Resource(fake_table), raising=False)
     loader = BatchIndexLoader(table_name="idx")
-    rows = loader.lookup_forward(
+    branch = loader.resolve_mlp_branch_prefixes(
         project_name="fw_paloalto",
-        data_source_name="fw_paloalto",
-        version="v1",
-        start_ts_iso="2025-01-01T10:00:00Z",
-        end_ts_iso="2025-01-01T11:00:00Z",
+        batch_id="mb-2",
+        ml_project_name="ml-a",
     )
-    assert [row.batch_id for row in rows] == ["mb-1", "mb-2"]
+    assert branch["predictions"] == "s3://x"

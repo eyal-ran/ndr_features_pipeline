@@ -33,6 +33,11 @@ def parse_args(argv=None):
         required=True,
         help="Batch end timestamp (ISO8601).",
     )
+    parser.add_argument(
+        "--ml-project-name",
+        required=True,
+        help="ML project name for branch-scoped publication join.",
+    )
     return parser.parse_args(argv)
 
 
@@ -47,6 +52,7 @@ def main(argv=None) -> int:
             "mini_batch_id": args.mini_batch_id,
             "batch_start_ts_iso": args.batch_start_ts_iso,
             "batch_end_ts_iso": args.batch_end_ts_iso,
+            "ml_project_name": args.ml_project_name,
         },
     )
 
@@ -56,6 +62,7 @@ def main(argv=None) -> int:
         mini_batch_id=args.mini_batch_id,
         batch_start_ts_iso=args.batch_start_ts_iso,
         batch_end_ts_iso=args.batch_end_ts_iso,
+        ml_project_name=args.ml_project_name,
     )
     run_prediction_feature_join_from_runtime_config(runtime_config)
     return 0

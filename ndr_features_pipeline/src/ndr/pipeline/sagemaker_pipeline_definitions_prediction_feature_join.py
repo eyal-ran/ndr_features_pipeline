@@ -28,6 +28,7 @@ def build_prediction_feature_join_pipeline(
       --mini-batch-id
       --batch-start-ts-iso
       --batch-end-ts-iso
+      --ml-project-name
     """
 
     session = sagemaker.session.Session(default_bucket=default_bucket)
@@ -106,6 +107,8 @@ def build_prediction_feature_join_pipeline(
             batch_start_ts_iso,
             "--batch-end-ts-iso",
             batch_end_ts_iso,
+            "--ml-project-name",
+            ml_project_name,
         ],
         inputs=[],
         outputs=[],

@@ -67,6 +67,7 @@ class PredictionFeatureJoinRuntimeConfig:
     mini_batch_id: str
     batch_start_ts_iso: str
     batch_end_ts_iso: str
+    ml_project_name: str
 
 
 class PredictionFeatureJoinJob(BaseProcessingJobRunner):
@@ -125,6 +126,7 @@ class PredictionFeatureJoinJob(BaseProcessingJobRunner):
             mini_batch_id=self.runtime_config.mini_batch_id,
             batch_start_ts_iso=self.runtime_config.batch_start_ts_iso,
             batch_end_ts_iso=self.runtime_config.batch_end_ts_iso,
+            ml_project_name=self.runtime_config.ml_project_name,
         )
         from ndr.processing.inference_predictions_job import InferencePredictionsJob
 

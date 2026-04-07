@@ -144,6 +144,26 @@ def build_if_training_pipeline(
         eval_end_ts=eval_end_ts,
         stage="verify",
     )
+    planning_step = _build_if_training_step(
+        processor=processor,
+        step_name="RemediationPlanningStep",
+        project_name=project_name,
+        feature_spec_version=feature_spec_version,
+        ml_project_name=ml_project_name,
+        project_name_for_contracts=project_name_for_contracts,
+        feature_spec_version_for_contracts=feature_spec_version_for_contracts,
+        run_id=run_id,
+        execution_ts_iso=execution_ts_iso,
+        dpp_config_table_name=dpp_config_table_name,
+        mlp_config_table_name=mlp_config_table_name,
+        batch_index_table_name=batch_index_table_name,
+        training_start_ts=training_start_ts,
+        training_end_ts=training_end_ts,
+        eval_start_ts=eval_start_ts,
+        eval_end_ts=eval_end_ts,
+        stage="plan",
+        depends_on=[verifier_step],
+    )
     remediation_step = _build_if_training_step(
         processor=processor,
         step_name="MissingFeatureCreationStep",
@@ -162,7 +182,7 @@ def build_if_training_pipeline(
         eval_start_ts=eval_start_ts,
         eval_end_ts=eval_end_ts,
         stage="remediate",
-        depends_on=[verifier_step],
+        depends_on=[planning_step],
     )
     reverification_step = _build_if_training_step(
         processor=processor,
@@ -286,6 +306,7 @@ def build_if_training_pipeline(
         ],
         steps=[
             verifier_step,
+            planning_step,
             remediation_step,
             reverification_step,
             training_step,

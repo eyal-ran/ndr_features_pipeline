@@ -1,7 +1,7 @@
 from ndr.processing.output_paths import build_batch_output_prefix, build_fg_b_publication_metadata
 
 
-def test_build_batch_output_prefix_has_dataset_suffix_and_timestamp_path():
+def test_build_batch_output_prefix_has_legacy_timestamp_path_when_run_number_missing():
     out = build_batch_output_prefix(
         base_prefix="s3://bucket/projects/p1/features",
         dataset="fg_b",
@@ -9,6 +9,17 @@ def test_build_batch_output_prefix_has_dataset_suffix_and_timestamp_path():
         batch_id="batch-1",
     )
     assert out == "s3://bucket/projects/p1/features/fg_b/ts=2025/01/31/12/34-batch_id=batch-1"
+
+
+def test_build_batch_output_prefix_supports_canonical_date_hour_run_layout():
+    out = build_batch_output_prefix(
+        base_prefix="s3://bucket/dpp/fw_paloalto/org1/org2",
+        dataset="fg_a",
+        batch_start_ts_iso="2025-01-31T12:34:56Z",
+        batch_id="batch-1",
+        within_hour_run_number="3",
+    )
+    assert out == "s3://bucket/dpp/fw_paloalto/org1/org2/fg_a/2025/01/31/12/3"
 
 
 def test_build_fg_b_publication_metadata_uses_reference_time_as_created_fields():

@@ -31,6 +31,7 @@ conditions_module.Key = _Key
 sys.modules["boto3.dynamodb.conditions"] = conditions_module
 
 from ndr.config.project_parameters_loader import (
+    ProjectParametersLoader,
     resolve_batch_index_table_name,
     resolve_feature_spec_version,
     load_project_parameters,
@@ -47,11 +48,13 @@ class DummyDppTable:
         }
 
     def get_item(self, Key):
+        if Key.get("job_name_version") == "S3_ROOTS":
+            return {"Item": {"project_name": "proj1", "job_name_version": "S3_ROOTS", "delta_root": "s3://d"}}
         return {
             "Item": {
                 "project_name": "proj1",
                 "job_name_version": "project_parameters#v2",
-                "ml_project_name": "ml-proj1",
+                "ml_project_names": ["ml-proj1", "ml-proj2"],
                 "spec": {"ok": True},
             }
         }
@@ -59,6 +62,8 @@ class DummyDppTable:
 
 class DummyMlpTable:
     def get_item(self, Key):
+        if Key.get("job_name_version") == "S3_ROOTS":
+            return {"Item": {"ml_project_name": "ml-proj1", "job_name_version": "S3_ROOTS", "predictions_root": "s3://m"}}
         return {"Item": {"project_name": "proj1"}}
 
 
@@ -83,6 +88,16 @@ def test_load_project_parameters_enforces_reciprocal_linkage(monkeypatch):
     monkeypatch.setattr(module.boto3, "resource", lambda *_a, **_k: DummyResource(), raising=False)
     out = load_project_parameters(project_name="proj1", feature_spec_version="v2", dpp_table_name="dpp-table")
     assert out == {"ok": True}
+
+
+def test_load_ml_project_names_and_roots(monkeypatch):
+    import ndr.config.project_parameters_loader as module
+
+    monkeypatch.setattr(module.boto3, "resource", lambda *_a, **_k: DummyResource(), raising=False)
+    loader = ProjectParametersLoader(dpp_table_name="dpp-table", mlp_table_name="mlp-table")
+    assert loader.load_ml_project_names(project_name="proj1", feature_spec_version="v2") == ["ml-proj1", "ml-proj2"]
+    assert loader.load_dpp_s3_roots(project_name="proj1")["delta_root"] == "s3://d"
+    assert loader.load_mlp_s3_roots(ml_project_name="ml-proj1")["predictions_root"] == "s3://m"
 
 
 def test_resolve_batch_index_table_name_prefers_canonical_env(monkeypatch):

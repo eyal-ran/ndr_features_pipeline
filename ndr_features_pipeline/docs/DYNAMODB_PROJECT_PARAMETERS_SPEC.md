@@ -1,34 +1,26 @@
-# DynamoDB Contract Spec: DPP/MLP Control Plane + Batch Index (vNext)
+# DynamoDB Contract Spec: DPP/MLP Control Plane + Batch Index (Task 1 freeze)
 
 ## Scope
 
-This spec defines the exact DynamoDB contracts for the DPP/MLP decoupling refactor:
+This spec freezes foundational contracts for:
 
-1. `dpp_config` (control plane)
-2. `mlp_config` (control plane)
-3. `batch_index` (data plane)
-
-Table count is fixed to these three tables in this refactor scope.
+1. `dpp_config` (DPP ownership)
+2. `mlp_config` (MLP ownership)
+3. `batch_index` (dual-item batch/run index)
 
 ## 1) `dpp_config`
 
 ### Keys
 
 - PK: `project_name` (S)
-- SK: `job_name_version` (S), format: `<job_name>#<version>`
+- SK: `job_name_version` (S), format: `<job_name>#<feature_spec_version>`
 
-### Required attributes on DPP project-parameter records
+### Mandatory ownership (frozen)
 
-- `data_source_name` (S)
-- `ml_project_name` (S)
-- `ml_project_names` (L of S, optional)
-- `spec` (M)
-- `updated_at` (S, ISO8601Z)
-
-### Notes
-
-- `project_name` is always the DPP id.
-- `data_source_name` must match the same DPP id in vNext payload validation.
+- DPP↔MLP linkage (`ml_project_names`, array-first)
+- DPP S3 root ownership for shared processing domains (`delta`, `pair_counts`, `fg_a`, `fg_b`, `fg_c`, `machine_inventory`)
+- DPP-owned code prefix roots and DPP step `code_metadata` roots
+- DPP-owned unload source descriptors for monthly/backfill flows
 
 ## 2) `mlp_config`
 
@@ -37,78 +29,75 @@ Table count is fixed to these three tables in this refactor scope.
 - PK: `ml_project_name` (S)
 - SK: `job_name_version` (S)
 
-### Required attributes
+### Mandatory ownership (frozen)
 
-- `project_name` (S) — source DPP id
-- `spec` (M)
-- `updated_at` (S)
+- MLP S3 roots for branch-scoped outputs (`predictions`, `prediction_join`, `publication`)
+- MLP training/production artifact roots
+- MLP model definition and evaluation policy contracts (authoritative source for training/evaluation consumers)
 
 ## 3) `batch_index`
 
 ### Primary key (exact)
 
-- PK: `pk` (S) = `project_name#data_source_name#version#date_utc`
-- SK: `sk` (S) = `hour_utc#slot15#batch_id`
+- PK: `PK` (S) = `<project_name>`
+- SK: `SK` (S)
 
-### Required attributes
+### Dual-item schema (exact)
 
-- `project_name` (S)
-- `data_source_name` (S)
-- `version` (S)
-- `date_utc` (S, YYYY-MM-DD)
-- `hour_utc` (S, 00..23)
-- `slot15` (N, 1..4)
-- `batch_id` (S)
-- `raw_parsed_logs_s3_prefix` (S)
-- `event_ts_utc` (S)
-- `org1` (S)
-- `org2` (S)
-- `ml_project_name` (S, optional for fan-out pre-branch rows)
-- `ml_project_names_json` (S, JSON array string, optional)
-- `ingested_at_utc` (S)
-- `status` (S: `RECEIVED|PROCESSING|SUCCEEDED|FAILED`)
-- `ttl_epoch` (N, optional)
+- Item A (direct): `SK = <batch_id>`
+- Item B (reverse date): `SK = <YYYY/MM/dd>#<hh>#<within_hour_run_number>`
 
-### Reverse lookup GSI
+### Required Item A fields
 
-- `GSI1PK` (S) = `project_name#data_source_name#version#batch_id`
-- `GSI1SK` (S) = `event_ts_utc`
+- `PK`, `SK`, `batch_id`
+- `date_partition`, `hour`, `within_hour_run_number`, `etl_ts`
+- `org1`, `org2`, `raw_parsed_logs_s3_prefix`
+- `ml_project_names`
+- `s3_prefixes` with canonical DPP + per-MLP branches
+- `rt_flow_status`, `backfill_status`, `source_mode`, `last_updated_at`
 
-## 4) Idempotent batch-index write contract (exact)
+### Required Item B fields
 
-All writes happen in 15m SF before starting the 15m pipeline.
+- `PK`, `SK`, `batch_id`, `batch_lookup_sk`
+- `date_partition`, `hour`, `within_hour_run_number`, `etl_ts`
+- `org1`, `org2`
 
-### 4.1 Insert-if-absent
+### Reverse lookup policy
 
-Use `PutItem` with:
+No GSI is part of the frozen greenfield contract. Reverse/date scans are done by `begins_with(SK, '<YYYY/MM/dd>#')` under `PK=<project_name>`.
 
-- `ConditionExpression`: `attribute_not_exists(pk) AND attribute_not_exists(sk)`
+## 4) Canonical `s3_prefixes` and `code_metadata` keys
 
-If condition fails, treat as idempotent duplicate and continue.
+### DPP branch keys
 
-### 4.2 Deterministic enrichment update
+- `s3_prefixes.dpp.delta`
+- `s3_prefixes.dpp.pair_counts`
+- `s3_prefixes.dpp.fg_a`
+- `s3_prefixes.dpp.fg_a_subpaths.features`
+- `s3_prefixes.dpp.fg_a_subpaths.metadata`
+- `s3_prefixes.dpp.fg_c`
+- `s3_prefixes.dpp.machine_inventory`
+- `s3_prefixes.dpp.fg_b.machines_manifest`
+- `s3_prefixes.dpp.fg_b.machines_unload_for_update`
+- `s3_prefixes.dpp.fg_b.machines_base_stats`
+- `s3_prefixes.dpp.fg_b.segment_base_stats`
+- `s3_prefixes.dpp.code.<step_key>`
+- `s3_prefixes.dpp.code_metadata.<step_key>`
 
-Use `UpdateItem` with:
+### MLP branch keys
 
-- `Key`: `pk`, `sk`
-- `UpdateExpression`:
-  `SET raw_parsed_logs_s3_prefix = :raw_parsed_logs_s3_prefix, event_ts_utc = :event_ts_utc, ingested_at_utc = :ingested_at_utc, #status = :status, ml_project_name = if_not_exists(ml_project_name, :ml_project_name), ml_project_names_json = if_not_exists(ml_project_names_json, :ml_project_names_json), GSI1PK = :gsi1pk, GSI1SK = :gsi1sk`
-- `ExpressionAttributeNames`:
-  - `#status` -> `status`
-- `ConditionExpression`:
-  `attribute_exists(pk) AND attribute_exists(sk)`
+- `s3_prefixes.mlp.<ml_project_name>.predictions`
+- `s3_prefixes.mlp.<ml_project_name>.prediction_join`
+- `s3_prefixes.mlp.<ml_project_name>.publication`
+- `s3_prefixes.mlp.<ml_project_name>.training_events.training_reports`
+- `s3_prefixes.mlp.<ml_project_name>.training_events.training_artifacts`
+- `s3_prefixes.mlp.<ml_project_name>.production_artifacts.inference_model`
+- `s3_prefixes.mlp.<ml_project_name>.code.<step_key>`
+- `s3_prefixes.mlp.<ml_project_name>.code_metadata.<step_key>`
 
-## 5) Runtime contract linkage
+### `code_metadata` required fields
 
-The index schema above is bound to the runtime contract fields:
-
-- `batch_id` -> `mini_batch_id`
-- `raw_parsed_logs_s3_prefix` -> canonical runtime/pipeline surfaces
-- Legacy aliases are unsupported; canonical names are required for all writes/reads.
-- `timestamp` + derived calendar components -> `date_utc`, `hour_utc`, `slot15`
-
-Pipeline parameters for 15m path:
-
-- Required: `ProjectName`, `FeatureSpecVersion`, `MiniBatchId`, `RawParsedLogsS3Prefix`, `BatchStartTsIso`, `BatchEndTsIso`
-- Optional by predicate: `MlProjectName`, `MlProjectNamesJson`
+- `artifact_mode`
+- `artifact_build_id`
+- `artifact_sha256`
 

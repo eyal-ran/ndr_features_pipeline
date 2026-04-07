@@ -1,0 +1,56 @@
+{
+  "item_a_batch_lookup": {
+    "PK": "fw_paloalto",
+    "SK": "mb-2025-01-01-10-2",
+    "item_kind": "BATCH_LOOKUP",
+    "batch_id": "mb-2025-01-01-10-2",
+    "date_partition": "2025/01/01",
+    "hour": "10",
+    "within_hour_run_number": "2",
+    "etl_ts": "2025-01-01T10:20:00Z",
+    "org1": "org-a",
+    "org2": "org-b",
+    "raw_parsed_logs_s3_prefix": "s3://raw/fw_paloalto/org-a/org-b/2025/01/01/mb-2025-01-01-10-2/",
+    "ml_project_names": [
+      "ml-a",
+      "ml-b"
+    ],
+    "s3_prefixes": {
+      "dpp": {
+        "delta": "s3://ml/dpp/fw_paloalto/org-a/org-b/2025/01/01/10/2/delta/part-00000.parquet",
+        "pair_counts": "s3://ml/dpp/fw_paloalto/org-a/org-b/2025/01/01/10/2/pair_counts/part-00000.parquet",
+        "fg_a": "s3://ml/dpp/fw_paloalto/org-a/org-b/2025/01/01/10/2/fg_a/features/part-00000.parquet",
+        "fg_c": "s3://ml/dpp/fw_paloalto/org-a/org-b/2025/01/01/10/2/fg_c/part-00000.parquet"
+      },
+      "mlp": {
+        "ml-a": {
+          "predictions": "s3://ml/mlp/ml-a/org-a/org-b/2025/01/01/10/2/predictions/part-00000.parquet",
+          "prediction_join": "s3://ml/mlp/ml-a/org-a/org-b/2025/01/01/10/2/prediction_join/part-00000.parquet",
+          "publication": "s3://ml/mlp/ml-a/org-a/org-b/2025/01/01/10/2/publication/publication_payload.json"
+        },
+        "ml-b": {
+          "predictions": "s3://ml/mlp/ml-b/org-a/org-b/2025/01/01/10/2/predictions/part-00000.parquet",
+          "prediction_join": "s3://ml/mlp/ml-b/org-a/org-b/2025/01/01/10/2/prediction_join/part-00000.parquet",
+          "publication": "s3://ml/mlp/ml-b/org-a/org-b/2025/01/01/10/2/publication/publication_payload.json"
+        }
+      }
+    },
+    "rt_flow_status": "PENDING",
+    "backfill_status": "NOT_STARTED",
+    "source_mode": "ingestion",
+    "last_updated_at": "2025-01-01T10:20:00Z"
+  },
+  "item_b_reverse_date_lookup": {
+    "PK": "fw_paloalto",
+    "SK": "2025/01/01#10#2",
+    "item_kind": "DATE_LOOKUP",
+    "batch_id": "mb-2025-01-01-10-2",
+    "batch_lookup_sk": "mb-2025-01-01-10-2",
+    "date_partition": "2025/01/01",
+    "hour": "10",
+    "within_hour_run_number": "2",
+    "etl_ts": "2025-01-01T10:20:00Z",
+    "org1": "org-a",
+    "org2": "org-b"
+  }
+}

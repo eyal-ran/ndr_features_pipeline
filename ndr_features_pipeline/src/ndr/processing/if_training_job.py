@@ -19,8 +19,8 @@ from ndr.catalog.schema_manifest import build_fg_a_manifest, build_fg_c_manifest
 from ndr.orchestration.backfill_contracts import (
     build_execution_manifest,
     build_family_range_plan,
-    build_training_trigger_family_ranges,
 )
+from ndr.orchestration.training_missing_manifest import ensure_manifest, from_missing_sources
 from ndr.processing.base_runner import BaseProcessingJobRunner
 from ndr.processing.if_training_preprocessing import split_metadata_and_feature_columns
 from ndr.processing.if_training_spec import IFTrainingRuntimeConfig, IFTrainingSpec, parse_if_training_spec
@@ -313,12 +313,12 @@ class IFTrainingJob(BaseProcessingJobRunner):
             logger,
         )
         preflight = self._preflight_validation(fg_a_df, fg_c_df, train_start, train_end)
-        missing_windows = self._extract_missing_windows(preflight)
+        missing_windows_manifest = self._extract_missing_windows_manifest(preflight)
         verification_summary = {
             "stage": stage_name,
             "run_id": self.runtime_config.run_id,
-            "needs_remediation": bool(missing_windows),
-            "missing_windows": missing_windows,
+            "needs_remediation": bool(missing_windows_manifest["entries"]),
+            "missing_windows_manifest": missing_windows_manifest,
             "preflight": preflight,
         }
         bucket, key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
@@ -360,6 +360,14 @@ class IFTrainingJob(BaseProcessingJobRunner):
 
         missing_15m_windows = self._derive_missing_15m_windows(w_required_start, u_end)
         missing_fgb_windows = self._derive_missing_fgb_windows(u_start, u_end, resolved_horizons)
+        missing_windows_manifest = from_missing_sources(
+            missing_15m_windows=missing_15m_windows,
+            missing_fgb_windows=missing_fgb_windows,
+            project_name=self.runtime_config.project_name,
+            feature_spec_version=self.runtime_config.feature_spec_version,
+            ml_project_name=self.runtime_config.ml_project_name,
+            run_id=self.runtime_config.run_id,
+        )
 
         return {
             "inputs": {
@@ -378,10 +386,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 "b_end": b_end.isoformat().replace("+00:00", "Z"),
                 "w_required": {"start": w_required_start.isoformat().replace("+00:00", "Z"), "end": u_end.isoformat().replace("+00:00", "Z")},
             },
-            "manifests": {
-                "missing_15m_windows": missing_15m_windows,
-                "missing_fgb_windows": missing_fgb_windows,
-            },
+            "missing_windows_manifest": missing_windows_manifest,
         }
 
     def _derive_missing_15m_windows(self, start: datetime, end: datetime) -> List[Dict[str, str]]:
@@ -465,10 +470,6 @@ class IFTrainingJob(BaseProcessingJobRunner):
         import boto3
 
         verification = self._load_required_latest_verification_status()
-        history_plan = self._load_required_history_plan()
-        missing_windows = verification.get("missing_windows", [])
-        missing_15m_manifest = (history_plan.get("manifests") or {}).get("missing_15m_windows", [])
-        missing_fgb_manifest = (history_plan.get("manifests") or {}).get("missing_fgb_windows", [])
         if not verification.get("needs_remediation", False):
             self._write_stage_status(
                 stage="remediation",
@@ -478,6 +479,11 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 },
             )
             return
+        history_plan = self._load_required_history_plan()
+        missing_windows_manifest = ensure_manifest(history_plan.get("missing_windows_manifest"))
+        missing_windows = missing_windows_manifest["entries"]
+        missing_15m_manifest = next((entry["ranges"] for entry in missing_windows if entry["artifact_family"] == "fg_a_15m"), [])
+        missing_fgb_manifest = next((entry["ranges"] for entry in missing_windows if entry["artifact_family"] == "fg_b_daily"), [])
 
         max_attempts = max(1, int(self.training_spec.remediation.max_retries))
         attempts = min(max(len(missing_windows), 1), max_attempts)
@@ -543,7 +549,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 "status": "completed",
                 "attempts": attempts,
                 "max_attempts": max_attempts,
-                "missing_windows": missing_windows,
+                "missing_windows_manifest": missing_windows_manifest,
                 "missing_15m_manifest_count": len(missing_15m_manifest),
                 "missing_fgb_manifest_count": len(missing_fgb_manifest),
                 "processed_windows": windows_to_process,
@@ -569,9 +575,8 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 "run_id": self.runtime_config.run_id,
                 "verification_stage": verification.get("stage"),
                 "verification_needs_remediation": bool(verification.get("needs_remediation")),
-                "missing_windows_count": len(verification.get("missing_windows", [])),
-                "missing_15m_manifest_count": len((history_plan.get("manifests") or {}).get("missing_15m_windows", [])),
-                "missing_fgb_manifest_count": len((history_plan.get("manifests") or {}).get("missing_fgb_windows", [])),
+                "missing_windows_count": len(ensure_manifest(verification.get("missing_windows_manifest"))["entries"]),
+                "planned_missing_windows_count": len(ensure_manifest(history_plan.get("missing_windows_manifest"))["entries"]),
             },
         )
 
@@ -582,6 +587,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
             raise ValueError("verification/latest_status artifact is malformed")
         if not verification.get("stage"):
             raise ValueError("verification/latest_status must include stage metadata")
+        ensure_manifest(verification.get("missing_windows_manifest"))
         return verification
 
     def _load_required_history_plan(self) -> Dict[str, Any]:
@@ -589,13 +595,14 @@ class IFTrainingJob(BaseProcessingJobRunner):
         history_plan = self._load_stage_status("history_planner")
         if not isinstance(history_plan, dict):
             raise ValueError("history_planner artifact is malformed")
+        ensure_manifest(history_plan.get("missing_windows_manifest"))
         return history_plan
 
     def _enforce_pre_train_reverify_gate(self) -> Dict[str, Any]:
         """Hard gate training on successful reverify with no unresolved windows."""
         verification = self._load_required_latest_verification_status()
         stage_name = str(verification.get("stage") or "")
-        unresolved = verification.get("missing_windows") or []
+        unresolved = ensure_manifest(verification.get("missing_windows_manifest"))["entries"]
         needs_remediation = bool(verification.get("needs_remediation"))
         gate_payload = {
             "status": "passed",
@@ -622,17 +629,15 @@ class IFTrainingJob(BaseProcessingJobRunner):
         if not state_machine_arn:
             raise ValueError("Backfill remediation branch required but no Step Functions target was resolved")
 
-        start_ts = min(window["window_start_ts"] for window in missing_15m)
-        end_ts = max(window["window_end_ts"] for window in missing_15m)
+        start_ts = min(window["start_ts_iso"] for window in missing_15m)
+        end_ts = max(window["end_ts_iso"] for window in missing_15m)
         signature = hashlib.sha1(
             f"{self.runtime_config.project_name}|{self.runtime_config.feature_spec_version}|{self.runtime_config.run_id}|{attempt}|{start_ts}|{end_ts}".encode("utf-8")
         ).hexdigest()[:16]
         name = f"if-remediate-{self.runtime_config.run_id}-a{attempt}-{signature}"[:80]
+        family_ranges = [{"start_ts": window["start_ts_iso"], "end_ts": window["end_ts_iso"]} for window in missing_15m]
         planner = build_family_range_plan(
-            family_ranges=build_training_trigger_family_ranges(
-                missing_15m_windows=missing_15m,
-                missing_fgb_windows=[],
-            ),
+            family_ranges={"delta": family_ranges, "fg_a": family_ranges, "pair_counts": family_ranges, "fg_c": family_ranges},
             requested_families=["delta", "fg_a", "pair_counts", "fg_c"],
         )
         payload = {
@@ -680,7 +685,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         pipeline_name = target.get("resolved_target")
         if not pipeline_name:
             raise ValueError("FG-B remediation branch required but no pipeline target was resolved")
-        references = sorted({entry["reference_time_iso"] for entry in missing_fgb})
+        references = sorted({entry["start_ts_iso"] for entry in missing_fgb})
         runs: List[Dict[str, Any]] = []
         for idx, reference_time_iso in enumerate(references, start=1):
             params = [
@@ -793,18 +798,42 @@ class IFTrainingJob(BaseProcessingJobRunner):
             },
         )
 
-    def _extract_missing_windows(self, preflight: Dict[str, Any]) -> List[str]:
-        """Extract missing date partitions from preflight coverage payload."""
+    def _extract_missing_windows_manifest(self, preflight: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract canonical missing-window manifest from preflight coverage payload."""
         partition_coverage = preflight.get("partition_coverage", {})
         missing: set[str] = set()
         for dataset in ("fg_a", "fg_c"):
             details = partition_coverage.get(dataset) or {}
             missing.update(details.get("missing_partitions", []))
-        return sorted(missing)
+        missing_15m_windows = [
+            {"window_start_ts": f"{day}T00:00:00Z", "window_end_ts": f"{day}T23:59:59Z"}
+            for day in sorted(missing)
+        ]
+        return from_missing_sources(
+            missing_15m_windows=missing_15m_windows,
+            missing_fgb_windows=[],
+            project_name=self.runtime_config.project_name,
+            feature_spec_version=self.runtime_config.feature_spec_version,
+            ml_project_name=self.runtime_config.ml_project_name,
+            run_id=self.runtime_config.run_id,
+        )
 
     def _load_latest_verification_status(self) -> Dict[str, Any]:
         """Load verification status persisted by verify stage."""
-        return self._load_stage_status("verification/latest_status", default={"needs_remediation": False, "missing_windows": []})
+        return self._load_stage_status(
+            "verification/latest_status",
+            default={
+                "needs_remediation": False,
+                "missing_windows_manifest": from_missing_sources(
+                    missing_15m_windows=[],
+                    missing_fgb_windows=[],
+                    project_name=self.runtime_config.project_name,
+                    feature_spec_version=self.runtime_config.feature_spec_version,
+                    ml_project_name=self.runtime_config.ml_project_name,
+                    run_id=self.runtime_config.run_id,
+                ),
+            },
+        )
 
     def _load_final_training_report(self) -> Dict[str, Any]:
         """Load final training report artifact produced by train stage."""
@@ -1014,8 +1043,9 @@ class IFTrainingJob(BaseProcessingJobRunner):
         self._enforce_pre_train_reverify_gate()
         history_plan = self._load_required_history_plan()
 
-        missing_15m_manifest = ((history_plan or {}).get("manifests") or {}).get("missing_15m_windows", [])
-        missing_fgb_manifest = ((history_plan or {}).get("manifests") or {}).get("missing_fgb_windows", [])
+        planned_entries = ensure_manifest((history_plan or {}).get("missing_windows_manifest"))["entries"]
+        missing_15m_manifest = next((entry["ranges"] for entry in planned_entries if entry["artifact_family"] == "fg_a_15m"), [])
+        missing_fgb_manifest = next((entry["ranges"] for entry in planned_entries if entry["artifact_family"] == "fg_b_daily"), [])
         self._run_dependency_readiness_gate(
             stage="train",
             missing_15m_manifest=missing_15m_manifest,

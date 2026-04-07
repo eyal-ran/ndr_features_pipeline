@@ -11,6 +11,7 @@ import boto3
 
 from ndr.config.batch_index_loader import BatchIndexLoader
 from ndr.config.project_parameters_loader import resolve_feature_spec_version
+from ndr.orchestration.backfill_contracts import build_execution_manifest, build_family_range_plan
 from ndr.orchestration.palo_alto_batch_utils import (
     parse_batch_path_from_s3_key,
     derive_window_bounds,
@@ -165,8 +166,30 @@ class HistoricalWindowsExtractorJob:
     def _write_rows(self, rows: list[dict[str, str]]) -> str:
         out_bucket, out_prefix = _split_s3_uri(self.runtime_config.output_s3_prefix)
         now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        key = f"{out_prefix.rstrip('/')}/historical_windows/{now}.jsonl"
-        body = "\n".join(json.dumps(row, sort_keys=True) for row in rows) + ("\n" if rows else "")
+        key = f"{out_prefix.rstrip('/')}/historical_windows/{now}.json"
+        project_name = rows[0]["project_name"] if rows else (self._infer_project_name_from_input_prefix() or "")
+        feature_spec_version = rows[0]["feature_spec_version"] if rows else (
+            resolve_feature_spec_version(
+                project_name=project_name,
+                preferred_feature_spec_version=self.runtime_config.preferred_feature_spec_version,
+            ) if project_name else (self.runtime_config.preferred_feature_spec_version or "")
+        )
+        family_ranges = {
+            "delta": [{"start_ts": row["batch_start_ts_iso"], "end_ts": row["batch_end_ts_iso"]} for row in rows],
+            "fg_a": [{"start_ts": row["batch_start_ts_iso"], "end_ts": row["batch_end_ts_iso"]} for row in rows],
+            "pair_counts": [{"start_ts": row["batch_start_ts_iso"], "end_ts": row["batch_end_ts_iso"]} for row in rows],
+            "fg_b_baseline": [],
+            "fg_c": [{"start_ts": row["batch_start_ts_iso"], "end_ts": row["batch_end_ts_iso"]} for row in rows],
+        }
+        manifest = build_execution_manifest(
+            project_name=project_name,
+            feature_spec_version=feature_spec_version,
+            planner_mode="self_detect",
+            source="historical_windows_extractor",
+            family_plan=build_family_range_plan(family_ranges=family_ranges),
+        )
+        manifest["rows"] = rows
+        body = json.dumps(manifest, sort_keys=True) + "\n"
         self._s3.put_object(Bucket=out_bucket, Key=key, Body=body.encode("utf-8"))
         return f"s3://{out_bucket}/{key}"
 

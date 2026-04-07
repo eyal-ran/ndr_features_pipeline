@@ -1,5 +1,6 @@
 import sys
 import types
+import json
 
 import pytest
 
@@ -647,6 +648,9 @@ def test_remediation_stage_invokes_orchestrators(monkeypatch):
             return None
 
     class _SFN:
+        def __init__(self):
+            self.last_input = None
+
         def list_state_machines(self, **_kwargs):
             return {
                 "stateMachines": [
@@ -661,6 +665,7 @@ def test_remediation_stage_invokes_orchestrators(monkeypatch):
             return {"name": "sfn_ndr_backfill_reprocessing"}
 
         def start_execution(self, **_kwargs):
+            self.last_input = json.loads(_kwargs["input"])
             return {"executionArn": "arn:aws:states:region:acct:execution:sm:1"}
 
         def describe_execution(self, **_kwargs):
@@ -676,11 +681,13 @@ def test_remediation_stage_invokes_orchestrators(monkeypatch):
         def describe_pipeline_execution(self, **_kwargs):
             return {"PipelineExecutionStatus": "Succeeded"}
 
+    sfn_client = _SFN()
+
     def _client(name):
         if name == "s3":
             return _S3()
         if name == "stepfunctions":
-            return _SFN()
+            return sfn_client
         if name == "sagemaker":
             return _SM()
         raise AssertionError(name)
@@ -697,6 +704,8 @@ def test_remediation_stage_invokes_orchestrators(monkeypatch):
     assert observed["payload"]["status"] == "completed"
     assert observed["payload"]["records"][0]["backfill_execution"]["status"] == "Succeeded"
     assert observed["payload"]["records"][0]["fgb_execution"]["status"] == "Succeeded"
+    assert sfn_client.last_input["manifest"]["contract_version"] == "backfill_manifest.v1"
+    assert sfn_client.last_input["manifest"]["planner_mode"] == "caller_guided"
 
 
 def test_backfill_execution_already_exists_is_handled_as_idempotent_skip(monkeypatch):

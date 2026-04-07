@@ -16,6 +16,11 @@ from typing import Any, Dict, List, Tuple
 
 from ndr.catalog.feature_catalog import build_fg_c_metric_names
 from ndr.catalog.schema_manifest import build_fg_a_manifest, build_fg_c_manifest
+from ndr.orchestration.backfill_contracts import (
+    build_execution_manifest,
+    build_family_range_plan,
+    build_training_trigger_family_ranges,
+)
 from ndr.processing.base_runner import BaseProcessingJobRunner
 from ndr.processing.if_training_preprocessing import split_metadata_and_feature_columns
 from ndr.processing.if_training_spec import IFTrainingRuntimeConfig, IFTrainingSpec, parse_if_training_spec
@@ -584,6 +589,13 @@ class IFTrainingJob(BaseProcessingJobRunner):
             f"{self.runtime_config.project_name}|{self.runtime_config.feature_spec_version}|{self.runtime_config.run_id}|{attempt}|{start_ts}|{end_ts}".encode("utf-8")
         ).hexdigest()[:16]
         name = f"if-remediate-{self.runtime_config.run_id}-a{attempt}-{signature}"[:80]
+        planner = build_family_range_plan(
+            family_ranges=build_training_trigger_family_ranges(
+                missing_15m_windows=missing_15m,
+                missing_fgb_windows=[],
+            ),
+            requested_families=["delta", "fg_a", "pair_counts", "fg_c"],
+        )
         payload = {
             "project_name": self.runtime_config.project_name,
             "feature_spec_version": self.runtime_config.feature_spec_version,
@@ -591,6 +603,14 @@ class IFTrainingJob(BaseProcessingJobRunner):
             "end_ts": end_ts,
             "source": "if_training_remediation",
             "run_id": self.runtime_config.run_id,
+            "manifest": build_execution_manifest(
+                project_name=self.runtime_config.project_name,
+                feature_spec_version=self.runtime_config.feature_spec_version,
+                planner_mode="caller_guided",
+                source="if_training_remediation",
+                family_plan=planner,
+                run_id=self.runtime_config.run_id,
+            ),
         }
         try:
             response = sfn_client.start_execution(

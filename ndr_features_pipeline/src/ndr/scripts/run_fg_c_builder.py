@@ -69,6 +69,11 @@ def _parse_args() -> argparse.Namespace:
         required=True,
         help="Batch window end timestamp (exclusive, ISO8601).",
     )
+    parser.add_argument(
+        "--batch-index-table-name",
+        default="",
+        help="Optional Batch Index table override used to resolve canonical FG-A/FG-B/FG-C prefixes.",
+    )
 
     return parser.parse_args()
 
@@ -85,6 +90,7 @@ def main() -> None:
             "mini_batch_id": args.mini_batch_id,
             "batch_start_ts_iso": args.batch_start_ts_iso,
             "batch_end_ts_iso": args.batch_end_ts_iso,
+            "batch_index_table_name": args.batch_index_table_name,
         },
     )
 
@@ -94,6 +100,7 @@ def main() -> None:
         mini_batch_id=args.mini_batch_id,
         batch_start_ts_iso=args.batch_start_ts_iso,
         batch_end_ts_iso=args.batch_end_ts_iso,
+        batch_index_table_name=args.batch_index_table_name or None,
     )
 
     run_fg_c_builder_from_runtime_config(runtime_cfg)

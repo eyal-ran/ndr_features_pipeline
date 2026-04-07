@@ -15,8 +15,9 @@ unsupervised models. It is a purely *derived* layer:
   `(host_ip, window_label, window_end_ts, baseline_horizon)`.
 
 The output is written as Parquet to S3 and is suitable for registration as an
-offline feature group in SageMaker Feature Store. Output prefixes include the
-batch start timestamp and mini_batch_id (e.g., `.../fg_c/ts=YYYY/MM/DD/HH/MM-batch_id=<mini_batch_id>/`).
+offline feature group in SageMaker Feature Store. In contract-hardened runtime
+paths, FG-C prefers canonical Batch Index prefixes (for example, `s3_prefixes.dpp.fg_c`)
+for deterministic exact-batch read/write routing.
 
 FG-C does not ingest into Feature Store directly; ingestion is orchestrated
 outside the builder job.
@@ -40,9 +41,12 @@ outside the builder job.
 - `--mini-batch-id`
 - `--batch-start-ts-iso`
 - `--batch-end-ts-iso`
+- `--batch-index-table-name` (optional)
 
 All structural configuration (S3 prefixes, metric lists, horizons, thresholds)
 is resolved in the job via `load_job_spec(project_name, "fg_c_builder", feature_spec_version)`.
+If Batch Index data is available for the batch, FG-A / FG-B / pair-context / FG-C
+prefixes are overridden from Batch Index.
 
 ## Main Flow in `FGCorrBuilderJob.run()`
 
@@ -53,13 +57,20 @@ is resolved in the job via `load_job_spec(project_name, "fg_c_builder", feature_
      `[batch_start_ts_iso, batch_end_ts_iso)` over `window_end_ts`.
    - Read FG‑B from `fg_b_input.s3_prefix`, filter by the same `feature_spec_version`
      and `baseline_horizon`.
-   - Join FG‑A and FG‑B on `join_keys` (default `["host_ip", "window_label"]`).
+   - Join FG‑A and FG‑B on `join_keys` that match FG-B host-baseline granularity
+     (default `["host_ip", "role", "segment_id", "time_band", "window_label"]`).
    - Derive FG‑C features for each metric.
    - Add metadata (baseline_horizon, baseline_start_ts, baseline_end_ts,
      record_id, mini_batch_id, feature_spec_version).
    - Write Parquet to `fg_c_output.s3_prefix`, partitioned by
      `feature_spec_version`, `baseline_horizon`, and `dt = date(window_end_ts)`.
 4. Stop Spark.
+
+## Contract hardening behavior
+
+- FG-C fails fast when required FG-B baselines/metadata are missing for a horizon.
+- FG-C enforces host join-key granularity parity with FG-B host baselines.
+- FG-C rejects under-specified segment fallback join key sets.
 
 ## Correlation Feature Logic
 

@@ -57,6 +57,11 @@ def parse_args(argv=None):
         "--batch-end-ts-iso",
         required=True,
         help="Batch end time (ISO8601, e.g. 2025-12-31T00:15:00Z).",        )
+    parser.add_argument(
+        "--batch-index-table-name",
+        default="",
+        help="Optional Batch Index table override used to resolve canonical raw/pair-counts prefixes.",
+    )
 
     return parser.parse_args(argv)
 
@@ -78,6 +83,7 @@ def main(argv=None) -> int:
             "raw_parsed_logs_s3_prefix": raw_parsed_logs_s3_prefix,
             "batch_start_ts_iso": args.batch_start_ts_iso,
             "batch_end_ts_iso": args.batch_end_ts_iso,
+            "batch_index_table_name": args.batch_index_table_name,
         },
     )
 
@@ -88,6 +94,7 @@ def main(argv=None) -> int:
         raw_parsed_logs_s3_prefix=raw_parsed_logs_s3_prefix,
         batch_start_ts_iso=args.batch_start_ts_iso,
         batch_end_ts_iso=args.batch_end_ts_iso,
+        batch_index_table_name=args.batch_index_table_name or None,
     )
 
     run_pair_counts_builder_from_runtime_config(runtime_config)

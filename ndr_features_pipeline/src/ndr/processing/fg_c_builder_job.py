@@ -42,6 +42,7 @@ from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
 from ndr.logging.logger import get_logger
+from ndr.config.batch_index_loader import BatchIndexLoader
 from ndr.config.job_spec_loader import load_job_spec
 from ndr.processing.base_runner import BaseRunner
 from ndr.processing.output_paths import build_batch_output_prefix
@@ -80,6 +81,7 @@ class FGCorrJobRuntimeConfig:
     mini_batch_id: str
     batch_start_ts_iso: str
     batch_end_ts_iso: str
+    batch_index_table_name: str | None = None
 
 
 class FGCorrBuilderJob(BaseRunner):
@@ -129,11 +131,12 @@ class FGCorrBuilderJob(BaseRunner):
         )
         try:
             # 1. Load JobSpec from DynamoDB / config source
-            self.job_spec = load_job_spec(
-                project_name=self.runtime_config.project_name,
-                job_name="fg_c_builder",
-                feature_spec_version=self.runtime_config.feature_spec_version,
-            )
+            if not self.job_spec:
+                self.job_spec = load_job_spec(
+                    project_name=self.runtime_config.project_name,
+                    job_name="fg_c_builder",
+                    feature_spec_version=self.runtime_config.feature_spec_version,
+                )
             LOGGER.info("Loaded JobSpec for FG-C builder.", extra={"job_spec_keys": list(self.job_spec.keys())})
 
             # 2. Build SparkSession
@@ -182,6 +185,40 @@ class FGCorrBuilderJob(BaseRunner):
         default_keys = ["host_ip", "window_label"]
         join_keys = self.job_spec.get("join_keys", default_keys)
         return join_keys
+
+    def _validate_host_join_contract(self, join_keys: List[str]) -> None:
+        """Enforce host-join granularity parity with FG-B host baselines."""
+        expected = self.job_spec.get(
+            "host_baseline_join_keys",
+            ["host_ip", "role", "segment_id", "time_band", "window_label"],
+        )
+        if sorted(join_keys) != sorted(expected):
+            raise ValueError(
+                "FG-C join_keys must match FG-B host baseline granularity. "
+                f"expected={expected}, actual={join_keys}"
+            )
+
+    def _require_non_empty_baselines(
+        self,
+        *,
+        horizon: str,
+        host_baselines: DataFrame,
+        segment_baselines: DataFrame,
+        metadata_df: DataFrame,
+    ) -> None:
+        """Fail fast when required FG-B dependencies are missing."""
+        missing_inputs: list[str] = []
+        if host_baselines.rdd.isEmpty():
+            missing_inputs.append("fg_b.host")
+        if segment_baselines.rdd.isEmpty():
+            missing_inputs.append("fg_b.segment")
+        if metadata_df.rdd.isEmpty():
+            missing_inputs.append("fg_b.ip_metadata")
+        if missing_inputs:
+            raise ValueError(
+                "FG-C missing required FG-B baseline dependencies for "
+                f"horizon={horizon}: {missing_inputs}"
+            )
 
     def _load_pair_context(self, feature_spec_version: str) -> Optional[DataFrame]:
         """Execute the load pair context stage of the workflow."""
@@ -322,6 +359,7 @@ class FGCorrBuilderJob(BaseRunner):
             )
 
         join_keys = self._get_join_keys()
+        self._validate_host_join_contract(join_keys)
 
         # ------------------------------------------------------------------
         # 2. Read FG-B baselines + metadata for cold-start routing
@@ -332,21 +370,12 @@ class FGCorrBuilderJob(BaseRunner):
             horizon=horizon,
         )
 
-        if host_baselines.rdd.isEmpty():
-            LOGGER.warning("No FG-B host baselines found for horizon '%s'; FG-C will be empty.", horizon)
-            empty_schema = T.StructType(
-                [
-                    T.StructField("host_ip", T.StringType(), True),
-                    T.StructField("window_label", T.StringType(), True),
-                    T.StructField("window_start_ts", T.TimestampType(), True),
-                    T.StructField("window_end_ts", T.TimestampType(), True),
-                    T.StructField("baseline_horizon", T.StringType(), True),
-                    T.StructField("record_id", T.StringType(), True),
-                    T.StructField("mini_batch_id", T.StringType(), True),
-                    T.StructField("feature_spec_version", T.StringType(), True),
-                ]
-            )
-            return self.spark.createDataFrame([], schema=empty_schema), []
+        self._require_non_empty_baselines(
+            horizon=horizon,
+            host_baselines=host_baselines,
+            segment_baselines=segment_baselines,
+            metadata_df=metadata_df,
+        )
 
         metrics = self._get_metrics_to_compare(fg_a_df)
         self._validate_baseline_schema(metrics, host_baselines, segment_baselines)
@@ -522,9 +551,25 @@ class FGCorrBuilderJob(BaseRunner):
         segment_join_keys = self.job_spec.get(
             "segment_join_keys", ["segment_id", "role", "time_band", "window_label"]
         )
-        if "segment_id" not in segment_join_keys:
-            segment_join_keys = ["segment_id"] + segment_join_keys
-        segment_join_keys = [k for k in segment_join_keys if k in cold_df.columns]
+        required_segment_join_keys = {"segment_id", "role", "time_band", "window_label"}
+        missing_required_from_config = sorted(required_segment_join_keys - set(segment_join_keys))
+        if missing_required_from_config:
+            raise ValueError(
+                "FG-C segment fallback join_keys are under-specified. "
+                f"Missing required keys: {missing_required_from_config}"
+            )
+        missing_required_from_fg_a = sorted(required_segment_join_keys - set(cold_df.columns))
+        if missing_required_from_fg_a:
+            raise ValueError(
+                "FG-C cold-start rows missing required segment fallback keys: "
+                f"{missing_required_from_fg_a}"
+            )
+        missing_required_from_segment_baselines = sorted(required_segment_join_keys - set(segment_baselines.columns))
+        if missing_required_from_segment_baselines:
+            raise ValueError(
+                "FG-B segment baselines missing required join keys for FG-C fallback: "
+                f"{missing_required_from_segment_baselines}"
+            )
         cold_join = cold_df.join(segment_baselines, on=segment_join_keys + ["baseline_horizon"], how="left")
 
         combined = warm_join.unionByName(cold_join, allowMissingColumns=True)
@@ -930,4 +975,27 @@ class FGCorrBuilderJob(BaseRunner):
 def run_fg_c_builder_from_runtime_config(runtime_config: FGCorrJobRuntimeConfig) -> None:
     """Helper to run FG-C builder from a typed runtime config."""
     job = FGCorrBuilderJob(runtime_config=runtime_config)
+    record = BatchIndexLoader(table_name=runtime_config.batch_index_table_name).get_batch(
+        project_name=runtime_config.project_name,
+        batch_id=runtime_config.mini_batch_id,
+    )
+    if record is not None:
+        dpp_prefixes = record.s3_prefixes.get("dpp", {})
+        job.job_spec = load_job_spec(
+            project_name=runtime_config.project_name,
+            job_name="fg_c_builder",
+            feature_spec_version=runtime_config.feature_spec_version,
+        )
+        fg_a_prefix = dpp_prefixes.get("fg_a")
+        fg_b_prefix = dpp_prefixes.get("fg_b")
+        fg_c_prefix = dpp_prefixes.get("fg_c")
+        pair_prefix = dpp_prefixes.get("pair_counts")
+        if fg_a_prefix:
+            job.job_spec.setdefault("fg_a_input", {})["s3_prefix"] = str(fg_a_prefix)
+        if fg_b_prefix:
+            job.job_spec.setdefault("fg_b_input", {})["s3_prefix"] = str(fg_b_prefix)
+        if fg_c_prefix:
+            job.job_spec.setdefault("fg_c_output", {})["s3_prefix"] = str(fg_c_prefix)
+        if pair_prefix:
+            job.job_spec.setdefault("pair_context_input", {})["s3_prefix"] = str(pair_prefix)
     job.run()

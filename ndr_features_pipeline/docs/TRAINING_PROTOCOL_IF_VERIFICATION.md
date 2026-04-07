@@ -61,6 +61,9 @@ The protocol is **substantially implemented to a fine standard** with strong orc
 - Verify train stage hard-fails when reverify status still reports unresolved required windows.
 - Verify `history_planner.json` exists and includes formula outputs (`w_15m`, `b_start`, `b_end`, `w_required`) and provenance (`from_job_spec` vs `from_default_constants`).
 - Verify remediation stage records orchestrated actions for both branches (`backfill_15m`, `fg_b_baseline`) and honors bounded retries.
+- Verify verify/plan/remediate/reverify all exchange one canonical missing-window manifest (`if_training_missing_windows.v1`) with per-entry fields:
+  `artifact_family`, `ranges`, `source`, `ml_project_name`, `project_name`, `feature_spec_version`, `run_id`.
+- Verify schema-version guard fails fast on any manifest `contract_version` mismatch.
 - Verify remediation stage stores real execution IDs/ARNs and terminal states for both orchestrations.
 - Verify backfill remediation uses deterministic execution naming and safely handles duplicate execution-name responses as idempotent skip.
 - Verify FG-B remediation covers the full missing-reference manifest (not a fixed subset).

@@ -27,6 +27,7 @@ if "pyspark" not in sys.modules:
 
 from ndr.processing.if_training_job import IFTrainingJob
 from ndr.processing.if_training_spec import EvaluationWindowSpec, IFTrainingRuntimeConfig, parse_if_training_spec
+from ndr.orchestration.training_missing_manifest import from_missing_sources
 
 
 
@@ -70,6 +71,19 @@ def _make_spec():
             },
             "model": {"version": "v2"},
         }
+    )
+
+
+def _missing_manifest(runtime, include_15m=False, include_fgb=False):
+    missing_15m = [{"window_start_ts": "2024-04-01T00:00:00Z", "window_end_ts": "2024-04-01T00:15:00Z"}] if include_15m else []
+    missing_fgb = [{"reference_time_iso": "2024-04-01T00:00:00Z", "horizons": ["7d"]}] if include_fgb else []
+    return from_missing_sources(
+        missing_15m_windows=missing_15m,
+        missing_fgb_windows=missing_fgb,
+        project_name=runtime.project_name,
+        feature_spec_version=runtime.feature_spec_version,
+        ml_project_name=runtime.ml_project_name,
+        run_id=runtime.run_id,
     )
 
 
@@ -128,8 +142,8 @@ def test_run_orchestrates_artifact_before_deploy(monkeypatch):
     monkeypatch.setattr(job, "_persist_artifacts", _persist)
     monkeypatch.setattr(job, "_maybe_deploy", _deploy)
     monkeypatch.setattr(job, "_promote_latest_model_pointer", lambda *_args, **_kwargs: "s3://b/latest")
-    monkeypatch.setattr(job, "_enforce_pre_train_reverify_gate", lambda: {"stage": "reverify", "needs_remediation": False, "missing_windows": []})
-    monkeypatch.setattr(job, "_load_required_history_plan", lambda: {"manifests": {"missing_15m_windows": [], "missing_fgb_windows": []}})
+    monkeypatch.setattr(job, "_enforce_pre_train_reverify_gate", lambda: {"stage": "reverify", "needs_remediation": False, "missing_windows_manifest": _missing_manifest(runtime)})
+    monkeypatch.setattr(job, "_load_required_history_plan", lambda: {"missing_windows_manifest": _missing_manifest(runtime)})
     monkeypatch.setattr(job, "_run_dependency_readiness_gate", lambda **_kwargs: {"status": "passed", "checks": []})
     monkeypatch.setattr(job, "_log_sagemaker_experiments", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(job, "_write_final_report_and_success", lambda *_args, **_kwargs: call_order.append("report"))
@@ -159,8 +173,8 @@ def test_run_failure_writes_failure_artifacts(monkeypatch):
     monkeypatch.setattr(job, "_resolve_training_window", lambda: (datetime(2024, 1, 1, tzinfo=timezone.utc), datetime(2024, 4, 1, tzinfo=timezone.utc)))
 
     calls = []
-    monkeypatch.setattr(job, "_enforce_pre_train_reverify_gate", lambda: {"stage": "reverify", "needs_remediation": False, "missing_windows": []})
-    monkeypatch.setattr(job, "_load_required_history_plan", lambda: {"manifests": {"missing_15m_windows": [], "missing_fgb_windows": []}})
+    monkeypatch.setattr(job, "_enforce_pre_train_reverify_gate", lambda: {"stage": "reverify", "needs_remediation": False, "missing_windows_manifest": _missing_manifest(runtime)})
+    monkeypatch.setattr(job, "_load_required_history_plan", lambda: {"missing_windows_manifest": _missing_manifest(runtime)})
     monkeypatch.setattr(job, "_run_dependency_readiness_gate", lambda **_kwargs: {"status": "passed", "checks": []})
 
     def _boom(*_args, **_kwargs):
@@ -427,7 +441,7 @@ def test_deploy_stage_invokes_maybe_deploy_with_published_model(monkeypatch):
 def test_remediate_stage_skips_when_no_missing_windows(monkeypatch):
     job = IFTrainingJob(_DummyDF(), _runtime_with_stage("remediate"), _make_spec())
 
-    monkeypatch.setattr(job, "_load_required_latest_verification_status", lambda: {"needs_remediation": False, "missing_windows": []})
+    monkeypatch.setattr(job, "_load_required_latest_verification_status", lambda: {"needs_remediation": False, "missing_windows_manifest": _missing_manifest(job.runtime_config)})
     monkeypatch.setattr(job, "_load_required_history_plan", lambda: {})
     observed = {}
     monkeypatch.setattr(job, "_write_stage_status", lambda stage, payload: observed.update({"stage": stage, "payload": payload}))
@@ -635,19 +649,12 @@ def test_remediation_stage_invokes_orchestrators(monkeypatch):
     monkeypatch.setattr(
         job,
         "_load_required_latest_verification_status",
-        lambda: {"needs_remediation": True, "missing_windows": ["2024-04-01"]},
+        lambda: {"needs_remediation": True, "missing_windows_manifest": _missing_manifest(job.runtime_config, include_15m=True, include_fgb=True)},
     )
     monkeypatch.setattr(
         job,
         "_load_required_history_plan",
-        lambda *_args, **_kwargs: {
-            "manifests": {
-                "missing_15m_windows": [
-                    {"window_start_ts": "2024-04-01T00:00:00Z", "window_end_ts": "2024-04-01T00:15:00Z"}
-                ],
-                "missing_fgb_windows": [{"reference_time_iso": "2024-04-01T00:00:00Z", "horizons": ["7d", "30d"]}],
-            }
-        },
+        lambda *_args, **_kwargs: {"missing_windows_manifest": _missing_manifest(job.runtime_config, include_15m=True, include_fgb=True)},
     )
 
     class _S3:
@@ -725,7 +732,7 @@ def test_backfill_execution_already_exists_is_handled_as_idempotent_skip(monkeyp
 
     result = job._invoke_backfill_reprocessing(
         sfn_client=_SFN(),
-        missing_15m=[{"window_start_ts": "2024-04-01T00:00:00Z", "window_end_ts": "2024-04-01T00:15:00Z"}],
+        missing_15m=[{"start_ts_iso": "2024-04-01T00:00:00Z", "end_ts_iso": "2024-04-01T00:15:00Z"}],
         attempt=1,
         target={"resolved_target": "arn:aws:states:region:acct:stateMachine:ndr-backfill", "family": "backfill_15m"},
     )
@@ -749,7 +756,7 @@ def test_fgb_rebuild_not_capped_to_ten_references(monkeypatch):
 
     sm = _SM()
     monkeypatch.setattr("ndr.processing.if_training_job.time.sleep", lambda *_args, **_kwargs: None)
-    payload = [{"reference_time_iso": f"2024-04-{i:02d}T00:00:00Z", "horizons": ["7d"]} for i in range(1, 13)]
+    payload = [{"start_ts_iso": f"2024-04-{i:02d}T00:00:00Z", "end_ts_iso": f"2024-04-{i+1:02d}T00:00:00Z"} for i in range(1, 13)]
     result = job._invoke_fgb_baseline_rebuild(
         sm,
         payload,
@@ -811,7 +818,7 @@ def test_dependency_readiness_fails_fast_for_required_branch(monkeypatch):
     with pytest.raises(ValueError, match="Dependency readiness failed"):
         job._run_dependency_readiness_gate(
             stage="train",
-            missing_15m_manifest=[{"window_start_ts": "2024-01-01T00:00:00Z", "window_end_ts": "2024-01-01T00:15:00Z"}],
+            missing_15m_manifest=[{"start_ts_iso": "2024-01-01T00:00:00Z", "end_ts_iso": "2024-01-01T00:15:00Z"}],
             missing_fgb_manifest=[],
         )
 
@@ -831,18 +838,11 @@ def test_evaluation_windows_spec_must_be_sorted_non_overlapping():
 def test_remediation_routes_backfill_only_when_only_15m_missing(monkeypatch):
     job = IFTrainingJob(_DummyDF(), _runtime_with_stage("remediate"), _make_spec())
 
-    monkeypatch.setattr(job, "_load_required_latest_verification_status", lambda: {"needs_remediation": True, "missing_windows": ["2024-04-01"]})
+    monkeypatch.setattr(job, "_load_required_latest_verification_status", lambda: {"needs_remediation": True, "missing_windows_manifest": _missing_manifest(job.runtime_config, include_15m=True)})
     monkeypatch.setattr(
         job,
         "_load_required_history_plan",
-        lambda *_args, **_kwargs: {
-            "manifests": {
-                "missing_15m_windows": [
-                    {"window_start_ts": "2024-04-01T00:00:00Z", "window_end_ts": "2024-04-01T00:15:00Z"}
-                ],
-                "missing_fgb_windows": [],
-            }
-        },
+        lambda *_args, **_kwargs: {"missing_windows_manifest": _missing_manifest(job.runtime_config, include_15m=True)},
     )
 
     monkeypatch.setattr(
@@ -877,16 +877,11 @@ def test_remediation_routes_backfill_only_when_only_15m_missing(monkeypatch):
 def test_remediation_routes_fgb_only_when_only_fgb_missing(monkeypatch):
     job = IFTrainingJob(_DummyDF(), _runtime_with_stage("remediate"), _make_spec())
 
-    monkeypatch.setattr(job, "_load_required_latest_verification_status", lambda: {"needs_remediation": True, "missing_windows": ["2024-04-01"]})
+    monkeypatch.setattr(job, "_load_required_latest_verification_status", lambda: {"needs_remediation": True, "missing_windows_manifest": _missing_manifest(job.runtime_config, include_fgb=True)})
     monkeypatch.setattr(
         job,
         "_load_required_history_plan",
-        lambda *_args, **_kwargs: {
-            "manifests": {
-                "missing_15m_windows": [],
-                "missing_fgb_windows": [{"reference_time_iso": "2024-04-01T00:00:00Z", "horizons": ["7d"]}],
-            }
-        },
+        lambda *_args, **_kwargs: {"missing_windows_manifest": _missing_manifest(job.runtime_config, include_fgb=True)},
     )
 
     monkeypatch.setattr(
@@ -924,13 +919,13 @@ def test_plan_stage_writes_history_plan_before_remediation(monkeypatch):
 
     from datetime import datetime, timezone
 
-    monkeypatch.setattr(job, "_load_required_latest_verification_status", lambda: {"stage": "verify", "needs_remediation": True, "missing_windows": ["2024-04-01"]})
+    monkeypatch.setattr(job, "_load_required_latest_verification_status", lambda: {"stage": "verify", "needs_remediation": True, "missing_windows_manifest": _missing_manifest(job.runtime_config, include_15m=True)})
     monkeypatch.setattr(job, "_resolve_training_window", lambda: (datetime(2024, 1, 1, tzinfo=timezone.utc), datetime(2024, 4, 1, tzinfo=timezone.utc)))
     monkeypatch.setattr(job, "_resolve_evaluation_windows", lambda: [])
     monkeypatch.setattr(
         job,
         "_compute_history_plan",
-        lambda *_args, **_kwargs: {"manifests": {"missing_15m_windows": [{"x": 1}], "missing_fgb_windows": []}},
+        lambda *_args, **_kwargs: {"missing_windows_manifest": _missing_manifest(job.runtime_config, include_15m=True)},
     )
     observed = {}
     monkeypatch.setattr(job, "_write_history_plan", lambda payload: observed.update({"history_plan": payload}))
@@ -938,7 +933,7 @@ def test_plan_stage_writes_history_plan_before_remediation(monkeypatch):
 
     job.run()
 
-    assert observed["history_plan"]["manifests"]["missing_15m_windows"] == [{"x": 1}]
+    assert observed["history_plan"]["missing_windows_manifest"]["entries"][0]["artifact_family"] == "fg_a_15m"
     assert observed["stage"] == "planning"
     assert observed["payload"]["status"] == "completed"
 
@@ -950,7 +945,7 @@ def test_train_stage_hard_fails_when_reverify_has_unresolved_windows(monkeypatch
     monkeypatch.setattr(
         job,
         "_load_required_latest_verification_status",
-        lambda: {"stage": "reverify", "needs_remediation": True, "missing_windows": ["2024-04-01"]},
+        lambda: {"stage": "reverify", "needs_remediation": True, "missing_windows_manifest": _missing_manifest(job.runtime_config, include_15m=True)},
     )
     observed = {}
     monkeypatch.setattr(job, "_write_stage_status", lambda stage, payload: observed.update({"stage": stage, "payload": payload}))

@@ -249,6 +249,7 @@ It includes:
 - Remediation and evaluation artifacts now include per-branch target provenance and selected target details for auditability.
 - Runtime `EvaluationWindowsJson` is validated for JSON shape, time ordering, and non-overlap before execution proceeds.
 - Pipeline-definition code URI resolution uses concrete deployment contract identifiers (project/spec values), and rejects placeholder values such as `<required:...>` during pipeline build.
+- IF training step code resolution enforces `scripts.steps.<Step>.code_metadata` at build time (`artifact_mode`, `artifact_build_id`, `artifact_sha256`); missing metadata fails fast with a packaging-decision-required contract error.
 
 ## 5) Triggering source: `sfn_ndr_backfill_reprocessing` (backfill and reprocessing)
 

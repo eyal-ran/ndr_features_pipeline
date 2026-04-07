@@ -23,11 +23,11 @@
         "parsed_project_name_from_path": "{% $count($split($parsed_s3_key,'/')) >= 3 ? $split($parsed_s3_key,'/')[2] : '' %}",
         "parsed_source_ts_iso": "{% $exists($states.input.timestamp) ? $states.input.timestamp : ($exists($states.input.event_ts) ? $states.input.event_ts : ($contains($raw_message,'timestamp=') ? $split($split($raw_message,'timestamp=')[1],';')[0] : $now())) %}",
         "parsed_data_source_name": "{% $exists($states.input.data_source_name) ? $states.input.data_source_name : '' %}",
-        "parsed_ml_project_name": "{% $exists($states.input.ml_project_name) ? $states.input.ml_project_name : '' %}",
+        "parsed_ml_project_name": "{% '' %}",
         "parsed_ml_project_names": "{% $exists($states.input.ml_project_names) ? $states.input.ml_project_names : [] %}",
         "parsed_batch_id": "{% $exists($states.input.batch_id) ? $states.input.batch_id : ($exists($states.input.mini_batch_id) ? $states.input.mini_batch_id : ($parsed_batch_folder != '' ? $parsed_batch_folder : '')) %}",
         "parsed_raw_parsed_logs_s3_prefix": "{% $exists($states.input.raw_parsed_logs_s3_prefix) ? $states.input.raw_parsed_logs_s3_prefix : '' %}",
-        "unsupported_input_fields": "{% $keys($states.input)[$not($ in ['project_name','data_source_name','ml_project_name','ml_project_names','batch_id','mini_batch_id','raw_parsed_logs_s3_prefix','timestamp','event_ts','feature_spec_version','s3_key','batch_s3_path','execution_ts_iso','lock_ttl_epoch','batch_start_ts_iso','force_process','message_body','Records'])] %}"
+        "unsupported_input_fields": "{% $keys($states.input)[$not($ in ['project_name','data_source_name','ml_project_names','batch_id','mini_batch_id','raw_parsed_logs_s3_prefix','timestamp','event_ts','feature_spec_version','s3_key','batch_s3_path','execution_ts_iso','lock_ttl_epoch','batch_start_ts_iso','force_process','message_body','Records'])] %}"
       },
       "Next": "BatchCompletionEventChoice"
     },
@@ -87,9 +87,7 @@
         "lock_ttl_epoch": "{% $exists($states.input.lock_ttl_epoch) ? $states.input.lock_ttl_epoch : ($exists($project_defaults.LockTtlEpoch.N) ? $number($project_defaults.LockTtlEpoch.N) : 1893456000) %}",
         "raw_parsed_logs_s3_prefix": "{% $parsed_raw_parsed_logs_s3_prefix %}",
         "data_source_name": "{% $parsed_data_source_name != '' ? $parsed_data_source_name : $project_name %}",
-        "ml_project_name": "{% $ml_project_names[0] %}",
         "ml_project_names": "{% $ml_project_names %}",
-        "ml_project_names_json": "{% $string($ml_project_names) %}",
         "date_utc": "{% $substring($source_timestamp_iso,0,10) %}",
         "hour_utc": "{% $substring($source_timestamp_iso,11,2) %}",
         "minute_utc": "{% $number($substring($source_timestamp_iso,14,2)) %}",
@@ -99,7 +97,10 @@
         "org2": "{% $count($split($raw_parsed_logs_s3_prefix,'/')) >= 7 ? $split($raw_parsed_logs_s3_prefix,'/')[5] : '' %}",
         "batch_index_pk": "{% $project_name & '#' & $data_source_name & '#' & $batch_index_version & '#' & $date_utc %}",
         "batch_index_sk": "{% $hour_utc & '#' & $string($slot15) & '#' & $mini_batch_id %}",
-        "batch_index_gsi1pk": "{% $project_name & '#' & $data_source_name & '#' & $batch_index_version & '#' & $mini_batch_id %}"
+        "batch_index_gsi1pk": "{% $project_name & '#' & $data_source_name & '#' & $batch_index_version & '#' & $mini_batch_id %}",
+        "date_partition": "{% $replace($substring($source_timestamp_iso,0,10),'-','/') %}",
+        "hour": "{% $substring($source_timestamp_iso,11,2) %}",
+        "within_hour_run_number": "{% $string($slot15) %}"
       },
       "Next": "ValidateResolvedRuntimeParams"
     },
@@ -132,285 +133,12 @@
           "Next": "DuplicateMiniBatch"
         }
       ],
-      "Next": "WriteBatchIndexRecord"
+      "Next": "WriteBatchIndexBatchIdItem"
     },
     "DuplicateMiniBatch": {
       "Type": "Fail",
       "Error": "DuplicateMiniBatch",
       "Cause": "Execution lock already exists for this 15m window"
-    },
-    "Start15mFeaturesPipeline": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
-      "Arguments": {
-        "PipelineName": "${PipelineName15m}",
-        "PipelineParameters": [
-          {
-            "Name": "ProjectName",
-            "Value": "{% $project_name %}"
-          },
-          {
-            "Name": "FeatureSpecVersion",
-            "Value": "{% $feature_spec_version %}"
-          },
-          {
-            "Name": "MiniBatchId",
-            "Value": "{% $mini_batch_id %}"
-          },
-          {
-            "Name": "BatchStartTsIso",
-            "Value": "{% $batch_start_ts_iso %}"
-          },
-          {
-            "Name": "BatchEndTsIso",
-            "Value": "{% $batch_end_ts_iso %}"
-          },
-          {
-            "Name": "RawParsedLogsS3Prefix",
-            "Value": "{% $raw_parsed_logs_s3_prefix %}"
-          },
-          {
-            "Name": "MlProjectName",
-            "Value": "{% $ml_project_name %}"
-          },
-          {
-            "Name": "MlProjectNamesJson",
-            "Value": "{% $ml_project_names_json %}"
-          }
-        ]
-      },
-      "Assign": {
-        "features_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
-        "features_poll_attempt": 0
-      },
-      "Retry": [
-        {
-          "ErrorEquals": [
-            "SageMaker.AmazonSageMakerException",
-            "ThrottlingException",
-            "States.TaskFailed"
-          ],
-          "IntervalSeconds": 5,
-          "MaxAttempts": 4,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "ReleaseMiniBatchLockOnFailure"
-        }
-      ],
-      "Next": "Describe15mFeaturesPipeline"
-    },
-    "Describe15mFeaturesPipeline": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
-      "Arguments": {
-        "PipelineExecutionArn": "{% $features_pipeline_execution_arn %}"
-      },
-      "Assign": {
-        "features_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"
-      },
-      "Retry": [
-        {
-          "ErrorEquals": [
-            "SageMaker.AmazonSageMakerException",
-            "ThrottlingException",
-            "States.TaskFailed"
-          ],
-          "IntervalSeconds": 5,
-          "MaxAttempts": 6,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "ReleaseMiniBatchLockOnFailure"
-        }
-      ],
-      "Next": "FeaturesPipelineStatusChoice"
-    },
-    "FeaturesPipelineStatusChoice": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Condition": "{% $features_pipeline_status = 'Succeeded' %}",
-          "Next": "StartInferencePipeline"
-        },
-        {
-          "Condition": "{% ($features_pipeline_status = 'Executing' or $features_pipeline_status = 'Stopping') and $features_poll_attempt < 120 %}",
-          "Next": "WaitBeforeDescribe15mFeatures"
-        }
-      ],
-      "Default": "ReleaseMiniBatchLockOnFailure"
-    },
-    "WaitBeforeDescribe15mFeatures": {
-      "Type": "Wait",
-      "Seconds": 30,
-      "Next": "IncrementFeaturesPollAttempt"
-    },
-    "IncrementFeaturesPollAttempt": {
-      "Type": "Pass",
-      "Assign": {
-        "features_poll_attempt": "{% $features_poll_attempt + 1 %}"
-      },
-      "Next": "Describe15mFeaturesPipeline"
-    },
-    "StartInferencePipeline": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
-      "Arguments": {
-        "PipelineName": "${PipelineNameInference}",
-        "PipelineParameters": [
-          {
-            "Name": "ProjectName",
-            "Value": "{% $project_name %}"
-          },
-          {
-            "Name": "FeatureSpecVersion",
-            "Value": "{% $feature_spec_version %}"
-          },
-          {
-            "Name": "MiniBatchId",
-            "Value": "{% $mini_batch_id %}"
-          },
-          {
-            "Name": "BatchStartTsIso",
-            "Value": "{% $batch_start_ts_iso %}"
-          },
-          {
-            "Name": "BatchEndTsIso",
-            "Value": "{% $batch_end_ts_iso %}"
-          },
-          {
-            "Name": "MlProjectName",
-            "Value": "{% $ml_project_name %}"
-          }
-        ]
-      },
-      "Assign": {
-        "inference_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
-        "inference_poll_attempt": 0
-      },
-      "Retry": [
-        {
-          "ErrorEquals": [
-            "SageMaker.AmazonSageMakerException",
-            "ThrottlingException",
-            "States.TaskFailed"
-          ],
-          "IntervalSeconds": 5,
-          "MaxAttempts": 4,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "ReleaseMiniBatchLockOnFailure"
-        }
-      ],
-      "Next": "DescribeInferencePipeline"
-    },
-    "DescribeInferencePipeline": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
-      "Arguments": {
-        "PipelineExecutionArn": "{% $inference_pipeline_execution_arn %}"
-      },
-      "Assign": {
-        "inference_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"
-      },
-      "Retry": [
-        {
-          "ErrorEquals": [
-            "SageMaker.AmazonSageMakerException",
-            "ThrottlingException",
-            "States.TaskFailed"
-          ],
-          "IntervalSeconds": 5,
-          "MaxAttempts": 6,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "ReleaseMiniBatchLockOnFailure"
-        }
-      ],
-      "Next": "InferencePipelineStatusChoice"
-    },
-    "InferencePipelineStatusChoice": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Condition": "{% $inference_pipeline_status = 'Succeeded' %}",
-          "Next": "StartPredictionPublicationWorkflow"
-        },
-        {
-          "Condition": "{% ($inference_pipeline_status = 'Executing' or $inference_pipeline_status = 'Stopping') and $inference_poll_attempt < 120 %}",
-          "Next": "WaitBeforeDescribeInference"
-        }
-      ],
-      "Default": "ReleaseMiniBatchLockOnFailure"
-    },
-    "WaitBeforeDescribeInference": {
-      "Type": "Wait",
-      "Seconds": 30,
-      "Next": "IncrementInferencePollAttempt"
-    },
-    "IncrementInferencePollAttempt": {
-      "Type": "Pass",
-      "Assign": {
-        "inference_poll_attempt": "{% $inference_poll_attempt + 1 %}"
-      },
-      "Next": "DescribeInferencePipeline"
-    },
-    "StartPredictionPublicationWorkflow": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::states:startExecution.sync:2",
-      "Arguments": {
-        "StateMachineArn": "${PredictionPublicationStateMachineArn}",
-        "Input": {
-          "project_name": "{% $project_name %}",
-          "feature_spec_version": "{% $feature_spec_version %}",
-          "mini_batch_id": "{% $mini_batch_id %}",
-          "batch_start_ts_iso": "{% $batch_start_ts_iso %}",
-          "batch_end_ts_iso": "{% $batch_end_ts_iso %}"
-        }
-      },
-      "Retry": [
-        {
-          "ErrorEquals": [
-            "StepFunctions.ExecutionLimitExceeded",
-            "ThrottlingException",
-            "States.TaskFailed"
-          ],
-          "IntervalSeconds": 5,
-          "MaxAttempts": 3,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "ReleaseMiniBatchLockOnFailure"
-        }
-      ],
-      "Next": "ReleaseMiniBatchLockOnSuccess"
     },
     "ReleaseMiniBatchLockOnSuccess": {
       "Type": "Task",
@@ -500,10 +228,6 @@
           "Next": "FailMissingRawParsedLogsS3Prefix"
         },
         {
-          "Condition": "{% ($ml_project_name = '' and $count($ml_project_names)=0) or ($ml_project_name != '' and $count($ml_project_names)>0) %}",
-          "Next": "FailInvalidMlProjectSelection"
-        },
-        {
           "Condition": "{% not($startsWith($raw_parsed_logs_s3_prefix,'s3://')) %}",
           "Next": "FailInvalidRawParsedLogsS3Prefix"
         },
@@ -553,143 +277,6 @@
       "Error": "RuntimeParameterValidationError",
       "Cause": "legacy field not supported"
     },
-    "WriteBatchIndexRecord": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:dynamodb:putItem",
-      "Arguments": {
-        "TableName": "${BatchIndexTableName}",
-        "Item": {
-          "pk": {
-            "S": "{% $batch_index_pk %}"
-          },
-          "sk": {
-            "S": "{% $batch_index_sk %}"
-          },
-          "project_name": {
-            "S": "{% $project_name %}"
-          },
-          "data_source_name": {
-            "S": "{% $data_source_name %}"
-          },
-          "version": {
-            "S": "{% $batch_index_version %}"
-          },
-          "date_utc": {
-            "S": "{% $date_utc %}"
-          },
-          "hour_utc": {
-            "S": "{% $hour_utc %}"
-          },
-          "slot15": {
-            "N": "{% $string($slot15) %}"
-          },
-          "batch_id": {
-            "S": "{% $mini_batch_id %}"
-          },
-          "raw_parsed_logs_s3_prefix": {
-            "S": "{% $raw_parsed_logs_s3_prefix %}"
-          },
-          "event_ts_utc": {
-            "S": "{% $source_timestamp_iso %}"
-          },
-          "org1": {
-            "S": "{% $org1 %}"
-          },
-          "org2": {
-            "S": "{% $org2 %}"
-          },
-          "ml_project_name": {
-            "S": "{% $ml_project_name != '' ? $ml_project_name : '__pre_fanout__' %}"
-          },
-          "ml_project_names_json": {
-            "S": "{% $ml_project_names_json != '' ? $ml_project_names_json : '[]' %}"
-          },
-          "ingested_at_utc": {
-            "S": "{% $execution_ts_iso %}"
-          },
-          "status": {
-            "S": "RECEIVED"
-          },
-          "GSI1PK": {
-            "S": "{% $batch_index_gsi1pk %}"
-          },
-          "GSI1SK": {
-            "S": "{% $source_timestamp_iso %}"
-          }
-        },
-        "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"
-      },
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "DynamoDB.ConditionalCheckFailedException"
-          ],
-          "Next": "UpdateBatchIndexRecord"
-        },
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "ReleaseMiniBatchLockOnFailure"
-        }
-      ],
-      "Next": "Start15mFeaturesPipeline"
-    },
-    "UpdateBatchIndexRecord": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
-      "Arguments": {
-        "TableName": "${BatchIndexTableName}",
-        "Key": {
-          "pk": {
-            "S": "{% $batch_index_pk %}"
-          },
-          "sk": {
-            "S": "{% $batch_index_sk %}"
-          }
-        },
-        "UpdateExpression": "SET raw_parsed_logs_s3_prefix = :raw_parsed_logs_s3_prefix, event_ts_utc = :event_ts_utc, ingested_at_utc = :ingested_at_utc, #status = :status, ml_project_name = if_not_exists(ml_project_name, :ml_project_name), ml_project_names_json = if_not_exists(ml_project_names_json, :ml_project_names_json), GSI1PK = :gsi1pk, GSI1SK = :gsi1sk",
-        "ExpressionAttributeNames": {
-          "#status": "status"
-        },
-        "ExpressionAttributeValues": {
-          ":raw_parsed_logs_s3_prefix": {
-            "S": "{% $raw_parsed_logs_s3_prefix %}"
-          },
-          ":event_ts_utc": {
-            "S": "{% $source_timestamp_iso %}"
-          },
-          ":ingested_at_utc": {
-            "S": "{% $execution_ts_iso %}"
-          },
-          ":status": {
-            "S": "RECEIVED"
-          },
-          ":ml_project_name": {
-            "S": "{% $ml_project_name != '' ? $ml_project_name : '__pre_fanout__' %}"
-          },
-          ":ml_project_names_json": {
-            "S": "{% $ml_project_names_json != '' ? $ml_project_names_json : '[]' %}"
-          },
-          ":gsi1pk": {
-            "S": "{% $batch_index_gsi1pk %}"
-          },
-          ":gsi1sk": {
-            "S": "{% $source_timestamp_iso %}"
-          }
-        },
-        "ConditionExpression": "attribute_exists(pk) AND attribute_exists(sk)"
-      },
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "ReleaseMiniBatchLockOnFailure"
-        }
-      ],
-      "Next": "Start15mFeaturesPipeline"
-    },
     "FailMissingDataSourceName": {
       "Type": "Fail",
       "Error": "RuntimeParameterValidationError",
@@ -699,11 +286,6 @@
       "Type": "Fail",
       "Error": "RuntimeParameterValidationError",
       "Cause": "project_name and data_source_name must match"
-    },
-    "FailInvalidMlProjectSelection": {
-      "Type": "Fail",
-      "Error": "RuntimeParameterValidationError",
-      "Cause": "Exactly one of ml_project_name or ml_project_names must be provided"
     },
     "FailInvalidRawParsedLogsS3Prefix": {
       "Type": "Fail",
@@ -759,7 +341,7 @@
     "NormalizeMlProjectNames": {
       "Type": "Pass",
       "Assign": {
-        "ml_project_names": "{% $count($parsed_ml_project_names) > 0 ? $parsed_ml_project_names : ($parsed_ml_project_name != '' ? [$parsed_ml_project_name] : ($exists($project_defaults.MlProjectName.S) and $project_defaults.MlProjectName.S != '' ? [$project_defaults.MlProjectName.S] : [])) %}"
+        "ml_project_names": "{% $distinct($count($parsed_ml_project_names) > 0 ? $parsed_ml_project_names : ($exists($project_defaults.MlProjectName.S) and $project_defaults.MlProjectName.S != '' ? [$project_defaults.MlProjectName.S] : [])) %}"
       },
       "Next": "ValidateMlProjectNamesBeforeMlpRead"
     },
@@ -786,6 +368,475 @@
       "Type": "Fail",
       "Error": "RuntimeParameterValidationError",
       "Cause": "ml_project_names must contain non-empty strings"
+    },
+    "WriteBatchIndexBatchIdItem": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${BatchIndexTableName}",
+        "Item": {
+          "PK": {
+            "S": "{% $project_name %}"
+          },
+          "SK": {
+            "S": "{% $mini_batch_id %}"
+          },
+          "batch_id": {
+            "S": "{% $mini_batch_id %}"
+          },
+          "date_partition": {
+            "S": "{% $date_partition %}"
+          },
+          "hour": {
+            "S": "{% $hour %}"
+          },
+          "within_hour_run_number": {
+            "S": "{% $within_hour_run_number %}"
+          },
+          "etl_ts": {
+            "S": "{% $source_timestamp_iso %}"
+          },
+          "org1": {
+            "S": "{% $org1 %}"
+          },
+          "org2": {
+            "S": "{% $org2 %}"
+          },
+          "raw_parsed_logs_s3_prefix": {
+            "S": "{% $raw_parsed_logs_s3_prefix %}"
+          },
+          "ml_project_names": {
+            "L": "{% $map($ml_project_names, function($v){{\"S\":$v}}) %}"
+          },
+          "s3_prefixes": {
+            "M": {}
+          },
+          "rt_flow_status": {
+            "S": "RECEIVED"
+          },
+          "last_updated_at": {
+            "S": "{% $execution_ts_iso %}"
+          }
+        },
+        "ConditionExpression": "attribute_not_exists(PK) AND attribute_not_exists(SK)"
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
+          "Next": "UpdateBatchIndexBatchIdItem"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "ReleaseMiniBatchLockOnFailure"
+        }
+      ],
+      "Next": "WriteBatchIndexDateLookupItem"
+    },
+    "UpdateBatchIndexBatchIdItem": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${BatchIndexTableName}",
+        "Key": {
+          "PK": {
+            "S": "{% $project_name %}"
+          },
+          "SK": {
+            "S": "{% $mini_batch_id %}"
+          }
+        },
+        "UpdateExpression": "SET raw_parsed_logs_s3_prefix = :raw_parsed_logs_s3_prefix, etl_ts = :etl_ts, ml_project_names = :ml_project_names, rt_flow_status = :rt_flow_status, last_updated_at = :last_updated_at",
+        "ExpressionAttributeValues": {
+          ":raw_parsed_logs_s3_prefix": {
+            "S": "{% $raw_parsed_logs_s3_prefix %}"
+          },
+          ":etl_ts": {
+            "S": "{% $source_timestamp_iso %}"
+          },
+          ":ml_project_names": {
+            "L": "{% $map($ml_project_names, function($v){{\"S\":$v}}) %}"
+          },
+          ":rt_flow_status": {
+            "S": "RECEIVED"
+          },
+          ":last_updated_at": {
+            "S": "{% $execution_ts_iso %}"
+          }
+        },
+        "ConditionExpression": "attribute_exists(PK) AND attribute_exists(SK)"
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "ReleaseMiniBatchLockOnFailure"
+        }
+      ],
+      "Next": "WriteBatchIndexDateLookupItem"
+    },
+    "WriteBatchIndexDateLookupItem": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${BatchIndexTableName}",
+        "Item": {
+          "PK": {
+            "S": "{% $project_name %}"
+          },
+          "SK": {
+            "S": "{% $date_partition & \"#\" & $hour & \"#\" & $within_hour_run_number %}"
+          },
+          "batch_id": {
+            "S": "{% $mini_batch_id %}"
+          },
+          "batch_lookup_sk": {
+            "S": "{% $mini_batch_id %}"
+          },
+          "date_partition": {
+            "S": "{% $date_partition %}"
+          },
+          "hour": {
+            "S": "{% $hour %}"
+          },
+          "within_hour_run_number": {
+            "S": "{% $within_hour_run_number %}"
+          },
+          "etl_ts": {
+            "S": "{% $source_timestamp_iso %}"
+          },
+          "org1": {
+            "S": "{% $org1 %}"
+          },
+          "org2": {
+            "S": "{% $org2 %}"
+          }
+        },
+        "ConditionExpression": "attribute_not_exists(PK) AND attribute_not_exists(SK)"
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
+          "Next": "RunPerMlProjectBranch"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "ReleaseMiniBatchLockOnFailure"
+        }
+      ],
+      "Next": "RunPerMlProjectBranch"
+    },
+    "RunPerMlProjectBranch": {
+      "Type": "Map",
+      "Items": "{% $ml_project_names %}",
+      "ItemSelector": {
+        "project_name": "{% $project_name %}",
+        "feature_spec_version": "{% $feature_spec_version %}",
+        "mini_batch_id": "{% $mini_batch_id %}",
+        "batch_start_ts_iso": "{% $batch_start_ts_iso %}",
+        "batch_end_ts_iso": "{% $batch_end_ts_iso %}",
+        "raw_parsed_logs_s3_prefix": "{% $raw_parsed_logs_s3_prefix %}",
+        "ml_project_name": "{% $states.context.Map.Item.Value %}"
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "Start15mFeaturesPipeline",
+        "States": {
+          "Start15mFeaturesPipeline": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
+            "Arguments": {
+              "PipelineName": "${PipelineName15m}",
+              "PipelineParameters": [
+                {
+                  "Name": "ProjectName",
+                  "Value": "{% $states.input.project_name %}"
+                },
+                {
+                  "Name": "FeatureSpecVersion",
+                  "Value": "{% $states.input.feature_spec_version %}"
+                },
+                {
+                  "Name": "MiniBatchId",
+                  "Value": "{% $states.input.mini_batch_id %}"
+                },
+                {
+                  "Name": "BatchStartTsIso",
+                  "Value": "{% $states.input.batch_start_ts_iso %}"
+                },
+                {
+                  "Name": "BatchEndTsIso",
+                  "Value": "{% $states.input.batch_end_ts_iso %}"
+                },
+                {
+                  "Name": "RawParsedLogsS3Prefix",
+                  "Value": "{% $states.input.raw_parsed_logs_s3_prefix %}"
+                }
+              ]
+            },
+            "Assign": {
+              "features_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
+              "features_poll_attempt": 0
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "SageMaker.AmazonSageMakerException",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 4,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "BranchFailed"
+              }
+            ],
+            "Next": "Describe15mFeaturesPipeline"
+          },
+          "Describe15mFeaturesPipeline": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
+            "Arguments": {
+              "PipelineExecutionArn": "{% $features_pipeline_execution_arn %}"
+            },
+            "Assign": {
+              "features_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "SageMaker.AmazonSageMakerException",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "BranchFailed"
+              }
+            ],
+            "Next": "FeaturesPipelineStatusChoice"
+          },
+          "FeaturesPipelineStatusChoice": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Condition": "{% $features_pipeline_status = 'Succeeded' %}",
+                "Next": "StartInferencePipeline"
+              },
+              {
+                "Condition": "{% ($features_pipeline_status = 'Executing' or $features_pipeline_status = 'Stopping') and $features_poll_attempt < 120 %}",
+                "Next": "WaitBeforeDescribe15mFeatures"
+              }
+            ],
+            "Default": "BranchFailed"
+          },
+          "WaitBeforeDescribe15mFeatures": {
+            "Type": "Wait",
+            "Seconds": 30,
+            "Next": "IncrementFeaturesPollAttempt"
+          },
+          "IncrementFeaturesPollAttempt": {
+            "Type": "Pass",
+            "Assign": {
+              "features_poll_attempt": "{% $features_poll_attempt + 1 %}"
+            },
+            "Next": "Describe15mFeaturesPipeline"
+          },
+          "StartInferencePipeline": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
+            "Arguments": {
+              "PipelineName": "${PipelineNameInference}",
+              "PipelineParameters": [
+                {
+                  "Name": "ProjectName",
+                  "Value": "{% $states.input.project_name %}"
+                },
+                {
+                  "Name": "FeatureSpecVersion",
+                  "Value": "{% $states.input.feature_spec_version %}"
+                },
+                {
+                  "Name": "MiniBatchId",
+                  "Value": "{% $states.input.mini_batch_id %}"
+                },
+                {
+                  "Name": "BatchStartTsIso",
+                  "Value": "{% $states.input.batch_start_ts_iso %}"
+                },
+                {
+                  "Name": "BatchEndTsIso",
+                  "Value": "{% $states.input.batch_end_ts_iso %}"
+                },
+                {
+                  "Name": "MlProjectName",
+                  "Value": "{% $states.input.ml_project_name %}"
+                }
+              ]
+            },
+            "Assign": {
+              "inference_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
+              "inference_poll_attempt": 0
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "SageMaker.AmazonSageMakerException",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 4,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "BranchFailed"
+              }
+            ],
+            "Next": "DescribeInferencePipeline"
+          },
+          "DescribeInferencePipeline": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
+            "Arguments": {
+              "PipelineExecutionArn": "{% $inference_pipeline_execution_arn %}"
+            },
+            "Assign": {
+              "inference_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "SageMaker.AmazonSageMakerException",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "BranchFailed"
+              }
+            ],
+            "Next": "InferencePipelineStatusChoice"
+          },
+          "InferencePipelineStatusChoice": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Condition": "{% $inference_pipeline_status = 'Succeeded' %}",
+                "Next": "StartPredictionPublicationWorkflow"
+              },
+              {
+                "Condition": "{% ($inference_pipeline_status = 'Executing' or $inference_pipeline_status = 'Stopping') and $inference_poll_attempt < 120 %}",
+                "Next": "WaitBeforeDescribeInference"
+              }
+            ],
+            "Default": "BranchFailed"
+          },
+          "WaitBeforeDescribeInference": {
+            "Type": "Wait",
+            "Seconds": 30,
+            "Next": "IncrementInferencePollAttempt"
+          },
+          "IncrementInferencePollAttempt": {
+            "Type": "Pass",
+            "Assign": {
+              "inference_poll_attempt": "{% $inference_poll_attempt + 1 %}"
+            },
+            "Next": "DescribeInferencePipeline"
+          },
+          "StartPredictionPublicationWorkflow": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::states:startExecution.sync:2",
+            "Arguments": {
+              "StateMachineArn": "${PredictionPublicationStateMachineArn}",
+              "Input": {
+                "project_name": "{% $states.input.project_name %}",
+                "feature_spec_version": "{% $states.input.feature_spec_version %}",
+                "mini_batch_id": "{% $states.input.mini_batch_id %}",
+                "batch_start_ts_iso": "{% $states.input.batch_start_ts_iso %}",
+                "batch_end_ts_iso": "{% $states.input.batch_end_ts_iso %}",
+                "ml_project_name": "{% $states.input.ml_project_name %}"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "StepFunctions.ExecutionLimitExceeded",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 3,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "BranchFailed"
+              }
+            ],
+            "Next": "BranchSucceeded"
+          },
+          "BranchSucceeded": {
+            "Type": "Succeed"
+          },
+          "BranchFailed": {
+            "Type": "Fail",
+            "Error": "MlProjectBranchFailed",
+            "Cause": "Per-ml_project_name branch execution failed"
+          }
+        }
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "ReleaseMiniBatchLockOnFailure"
+        }
+      ],
+      "Next": "ReleaseMiniBatchLockOnSuccess"
     }
   }
 }

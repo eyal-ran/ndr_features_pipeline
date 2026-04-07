@@ -7,8 +7,8 @@ import types
 if "pyspark" not in sys.modules:
     pyspark = types.ModuleType("pyspark")
     pyspark_sql = types.ModuleType("pyspark.sql")
-    pyspark_sql.SparkSession = object
-    pyspark_sql.DataFrame = object
+    pyspark_sql.SparkSession = type("SparkSession", (), {"builder": None})
+    pyspark_sql.DataFrame = type("DataFrame", (), {})
     pyspark_sql.functions = types.ModuleType("pyspark.sql.functions")
     pyspark_sql.types = types.ModuleType("pyspark.sql.types")
     for _name in ["StringType", "IntegerType", "LongType", "DoubleType", "TimestampType", "DateType"]:

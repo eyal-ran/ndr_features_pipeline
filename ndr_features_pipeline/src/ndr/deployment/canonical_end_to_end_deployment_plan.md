@@ -512,9 +512,7 @@ payload = {
     "training_start_ts": "<YYYY-MM-DDTHH:MM:SSZ>",
     "training_end_ts": "<YYYY-MM-DDTHH:MM:SSZ>",
     "eval_start_ts": "<YYYY-MM-DDTHH:MM:SSZ>",
-    "eval_end_ts": "<YYYY-MM-DDTHH:MM:SSZ>",
-    "evaluation_windows_json": "[]",
-    "missing_windows_override": "[]"
+    "eval_end_ts": "<YYYY-MM-DDTHH:MM:SSZ>"
 }
 
 resp = sfn.start_execution(

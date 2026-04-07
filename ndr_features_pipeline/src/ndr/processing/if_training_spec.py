@@ -210,14 +210,6 @@ class IFTrainingRuntimeConfig:
     training_end_ts: str | None = None
     eval_start_ts: str | None = None
     eval_end_ts: str | None = None
-    evaluation_windows_json: str | None = None
-    missing_windows_override: str | None = None
-    enable_history_planner: bool | None = None
-    enable_auto_remediate_15m: bool | None = None
-    enable_auto_remediate_fgb: bool | None = None
-    enable_post_training_evaluation: bool | None = None
-    enable_eval_join_publication: bool | None = None
-    enable_eval_experiments_logging: bool | None = None
     stage: str = "train"
 
 

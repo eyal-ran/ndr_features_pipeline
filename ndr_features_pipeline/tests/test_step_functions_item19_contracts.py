@@ -106,7 +106,9 @@ def test_training_orchestrator_is_coarse_grained_single_training_pipeline():
     args = states["StartTrainingPipeline"]["Arguments"]
     assert args["PipelineName"] == "${PipelineNameIFTraining}"
     names = {p["Name"] for p in args["PipelineParameters"]}
-    assert {"TrainingStartTs", "TrainingEndTs", "EvalStartTs", "EvalEndTs", "MissingWindowsOverride", "MlProjectName"}.issubset(names)
+    assert {"TrainingStartTs", "TrainingEndTs", "EvalStartTs", "EvalEndTs", "MlProjectName"}.issubset(names)
+    assert "MissingWindowsOverride" not in names
+    assert "EnableHistoryPlanner" not in names
 
 
 def test_monthly_fg_b_baseline_has_no_supplemental_pipeline_states():

@@ -28,7 +28,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--stage",
         default="train",
-        choices=["verify", "remediate", "reverify", "train", "publish", "attributes", "deploy"],
+        choices=["verify", "plan", "remediate", "reverify", "train", "publish", "attributes", "deploy"],
     )
     return parser.parse_args(argv)
 

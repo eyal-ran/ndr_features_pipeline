@@ -127,3 +127,28 @@ def test_pipeline_definitions_smoke_build_with_concrete_contracts(monkeypatch):
         project_name_for_contracts="proj",
         feature_spec_version_for_contracts="v1",
     )
+
+
+def test_if_training_pipeline_enforces_verify_plan_remediate_reverify_train_sequence(monkeypatch):
+    _install_sagemaker_stubs()
+    from ndr.pipeline import sagemaker_pipeline_definitions_if_training as p_train
+
+    monkeypatch.setattr(
+        p_train,
+        "resolve_step_code_uri",
+        lambda **kwargs: f"s3://code/{kwargs['pipeline_job_name']}/{kwargs['step_name']}.py",
+    )
+    pipeline = p_train.build_if_training_pipeline(
+        pipeline_name="ptrain",
+        role_arn="arn:aws:iam::123:role/x",
+        default_bucket="bucket",
+        region_name="us-east-1",
+        project_name_for_contracts="proj",
+        feature_spec_version_for_contracts="v1",
+    )
+    steps = {step.name: step for step in pipeline.steps}
+    assert "RemediationPlanningStep" in steps
+    assert steps["RemediationPlanningStep"].kwargs["job_arguments"][-1] == "plan"
+    assert steps["MissingFeatureCreationStep"].kwargs["depends_on"] == [steps["RemediationPlanningStep"]]
+    assert steps["PostRemediationVerificationStep"].kwargs["depends_on"] == [steps["MissingFeatureCreationStep"]]
+    assert steps["IFTrainingStep"].kwargs["depends_on"] == [steps["PostRemediationVerificationStep"]]

@@ -464,8 +464,8 @@ class IFTrainingJob(BaseProcessingJobRunner):
         """Run bounded remediation stage for missing windows."""
         import boto3
 
-        verification = self._load_latest_verification_status()
-        history_plan = self._load_stage_status("history_planner", default={})
+        verification = self._load_required_latest_verification_status()
+        history_plan = self._load_required_history_plan()
         missing_windows = verification.get("missing_windows", [])
         missing_15m_manifest = (history_plan.get("manifests") or {}).get("missing_15m_windows", [])
         missing_fgb_manifest = (history_plan.get("manifests") or {}).get("missing_fgb_windows", [])
@@ -554,6 +554,67 @@ class IFTrainingJob(BaseProcessingJobRunner):
             "Executing bounded remediation stage",
             extra={"attempts": attempts, "max_attempts": max_attempts, "missing_windows": missing_windows},
         )
+
+    def _run_planning_stage(self) -> None:
+        """Compute and persist remediation planning artifacts before remediation/train."""
+        verification = self._load_required_latest_verification_status()
+        train_start, train_end = self._resolve_training_window()
+        evaluation_windows = self._resolve_evaluation_windows()
+        history_plan = self._compute_history_plan(train_start, train_end, evaluation_windows)
+        self._write_history_plan(history_plan)
+        self._write_stage_status(
+            "planning",
+            {
+                "status": "completed",
+                "run_id": self.runtime_config.run_id,
+                "verification_stage": verification.get("stage"),
+                "verification_needs_remediation": bool(verification.get("needs_remediation")),
+                "missing_windows_count": len(verification.get("missing_windows", [])),
+                "missing_15m_manifest_count": len((history_plan.get("manifests") or {}).get("missing_15m_windows", [])),
+                "missing_fgb_manifest_count": len((history_plan.get("manifests") or {}).get("missing_fgb_windows", [])),
+            },
+        )
+
+    def _load_required_latest_verification_status(self) -> Dict[str, Any]:
+        """Load verification status and fail fast if verify/reverify has not run."""
+        verification = self._load_stage_status("verification/latest_status")
+        if not isinstance(verification, dict):
+            raise ValueError("verification/latest_status artifact is malformed")
+        if not verification.get("stage"):
+            raise ValueError("verification/latest_status must include stage metadata")
+        return verification
+
+    def _load_required_history_plan(self) -> Dict[str, Any]:
+        """Load planning artifact and fail fast when absent."""
+        history_plan = self._load_stage_status("history_planner")
+        if not isinstance(history_plan, dict):
+            raise ValueError("history_planner artifact is malformed")
+        return history_plan
+
+    def _enforce_pre_train_reverify_gate(self) -> Dict[str, Any]:
+        """Hard gate training on successful reverify with no unresolved windows."""
+        verification = self._load_required_latest_verification_status()
+        stage_name = str(verification.get("stage") or "")
+        unresolved = verification.get("missing_windows") or []
+        needs_remediation = bool(verification.get("needs_remediation"))
+        gate_payload = {
+            "status": "passed",
+            "source_stage": stage_name,
+            "needs_remediation": needs_remediation,
+            "unresolved_windows": unresolved,
+        }
+        if stage_name != "reverify":
+            gate_payload["status"] = "failed"
+            gate_payload["reason"] = "reverify stage artifact is required before train"
+            self._write_stage_status("train_gate", gate_payload)
+            raise ValueError("Train stage requires completed reverify artifact before execution")
+        if needs_remediation or unresolved:
+            gate_payload["status"] = "failed"
+            gate_payload["reason"] = "unresolved required windows remain after reverify"
+            self._write_stage_status("train_gate", gate_payload)
+            raise ValueError("Train stage blocked: unresolved required windows after reverify")
+        self._write_stage_status("train_gate", gate_payload)
+        return verification
 
     def _invoke_backfill_reprocessing(self, sfn_client, missing_15m: List[Dict[str, str]], attempt: int, target: Dict[str, Any]) -> Dict[str, Any]:
         """Invoke backfill Step Functions execution for required 15m windows."""
@@ -932,6 +993,9 @@ class IFTrainingJob(BaseProcessingJobRunner):
         if lifecycle_stage in {"verify", "reverify"}:
             self._run_verification_stage(lifecycle_stage)
             return
+        if lifecycle_stage == "plan":
+            self._run_planning_stage()
+            return
         if lifecycle_stage == "remediate":
             self._run_remediation_stage()
             return
@@ -947,12 +1011,8 @@ class IFTrainingJob(BaseProcessingJobRunner):
 
         train_start, train_end = self._resolve_training_window()
         evaluation_windows = self._resolve_evaluation_windows()
-        history_plan: Dict[str, Any] | None = None
-        if self._resolve_toggle(
-            self.training_spec.toggles.enable_history_planner,
-        ):
-            history_plan = self._compute_history_plan(train_start, train_end, evaluation_windows)
-            self._write_history_plan(history_plan)
+        self._enforce_pre_train_reverify_gate()
+        history_plan = self._load_required_history_plan()
 
         missing_15m_manifest = ((history_plan or {}).get("manifests") or {}).get("missing_15m_windows", [])
         missing_fgb_manifest = ((history_plan or {}).get("manifests") or {}).get("missing_fgb_windows", [])

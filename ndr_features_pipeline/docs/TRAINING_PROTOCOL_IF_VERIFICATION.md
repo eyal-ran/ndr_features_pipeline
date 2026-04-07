@@ -56,6 +56,9 @@ Overall implementation quality is strong and well orchestrated for production-st
 The protocol is **substantially implemented to a fine standard** with strong orchestration and reliability guardrails. For strict 1:1 protocol parity, address the two caveats above (payload `eps` consumption in inference preprocessing and explicit rollout strategy controls in deployment).
 
 ## Item 25 verification additions
+- Verify orchestration enforces explicit pre-train lifecycle ordering:
+  `verify -> plan -> remediate -> reverify -> train`.
+- Verify train stage hard-fails when reverify status still reports unresolved required windows.
 - Verify `history_planner.json` exists and includes formula outputs (`w_15m`, `b_start`, `b_end`, `w_required`) and provenance (`from_job_spec` vs `from_default_constants`).
 - Verify remediation stage records orchestrated actions for both branches (`backfill_15m`, `fg_b_baseline`) and honors bounded retries.
 - Verify remediation stage stores real execution IDs/ARNs and terminal states for both orchestrations.

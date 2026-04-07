@@ -42,6 +42,10 @@ Training should be implemented as a **dedicated SageMaker Pipeline** (separate f
   project parameters resolved from DynamoDB.
 
 ### Recommended Pipeline Steps
+Lifecycle gate contract (mandatory orchestration sequence):
+- `verify -> plan -> remediate -> reverify -> train`
+- `train` must hard-fail if `reverify` still reports unresolved required windows.
+
 1. **Resolve Training Parameters**
    - Load project/job configuration from DynamoDB (version, input prefixes, training window).
 2. **Read Features from S3**

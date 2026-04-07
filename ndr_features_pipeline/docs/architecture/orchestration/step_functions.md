@@ -78,7 +78,7 @@ For Task 1, this is a documentation foundation only.
 ### Optional with explicit predicates
 
 - `MlProjectName` is required when executing a single-MLP branch.
-- `MlProjectNamesJson` is required only before fan-out or when fan-out context is passed through one field.
+- No `MlProjectNamesJson` fan-out payload is passed to the 15m features pipeline; fan-out happens in RT father orchestration Map state.
 
 ### 3.1 Task-0 compatibility lock
 
@@ -89,11 +89,11 @@ For Task 1, this is a documentation foundation only.
 
 ## 4) Batch-index orchestration requirement
 
-Before pipeline start, orchestration writes to `batch_index` using deterministic idempotent write rules:
+Before branch execution starts, RT orchestration prewrites canonical `batch_index` dual items using deterministic idempotent rules:
 
-1. `PutItem` with `attribute_not_exists(pk) AND attribute_not_exists(sk)`.
-2. If duplicate, continue.
-3. `UpdateItem` with deterministic `SET ... if_not_exists(...)` expression and `attribute_exists(pk) AND attribute_exists(sk)`.
+1. `PutItem` for batch lookup item (`PK=<project_name>, SK=<batch_id>`) with `attribute_not_exists(PK) AND attribute_not_exists(SK)`.
+2. If duplicate, continue via deterministic `UpdateItem` on the same key with `attribute_exists(PK) AND attribute_exists(SK)`.
+3. `PutItem` for reverse date lookup item (`PK=<project_name>, SK=<YYYY/MM/dd>#<hh>#<within_hour_run_number>`) with `batch_lookup_sk=<batch_id>`.
 
 This behavior is replay-safe and required for recovery/backfill lookup paths.
 

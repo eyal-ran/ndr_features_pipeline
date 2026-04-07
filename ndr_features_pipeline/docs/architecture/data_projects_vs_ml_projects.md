@@ -50,19 +50,16 @@ Exactly one payload shape must be used.
 ## Validation rules (strict)
 
 - `project_name == data_source_name == <DPP id>`.
-- Exactly one of:
-  - `ml_project_name` (single branch), or
-  - `ml_project_names` (non-empty list; pre-fan-out only).
+- `ml_project_names` (non-empty list) is the canonical RT fan-out input; branch-level `ml_project_name` is derived by Map iteration.
 - `batch_id` is non-empty.
 - `raw_parsed_logs_s3_prefix` starts with `s3://` and ends with `/<batch_id>/`.
 - `timestamp` is ISO-8601 UTC with `Z`.
 
 ## Conditional optional fields (deterministic)
 
-- `MlProjectName` pipeline param is required in single-MLP branch execution.
-- `MlProjectNamesJson` pipeline param is required only before fan-out or when fan-out context must be carried as one field.
-- `ml_project_name` in `batch_index` is required for per-branch rows and omitted only for pre-fan-out aggregate rows.
-- `ml_project_names_json` in `batch_index` is required only for pre-fan-out aggregate rows.
+- `MlProjectName` pipeline param is required in per-branch inference/publication execution.
+- RT feature pipeline starts are contract-clean and do not carry fan-out-array fields.
+- `ml_project_names` is stored in the canonical batch-index batch lookup item (`PK=<project_name>, SK=<batch_id>`).
 - `ttl_epoch` is operationally optional; if omitted, TTL behavior is disabled for that row.
 
 ## Deterministic routing model

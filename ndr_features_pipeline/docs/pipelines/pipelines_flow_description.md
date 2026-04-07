@@ -27,21 +27,23 @@ It includes:
 7. `ResolvePipelineRuntimeParams` — compute final runtime parameters.
 8. `AcquireMiniBatchLock` — enforce idempotency lock for 15m window.
 9. `DuplicateMiniBatch` — fail duplicate execution attempts.
-10. `Start15mFeaturesPipeline` — **PIPELINE TRIGGER**; start `${PipelineName15m}`.
-11. `Describe15mFeaturesPipeline` — poll 15m features pipeline status.
-12. `FeaturesPipelineStatusChoice` — branch on features pipeline status.
-13. `WaitBeforeDescribe15mFeatures` — wait between status polls.
-14. `IncrementFeaturesPollAttempt` — increment features poll counter.
-15. `StartInferencePipeline` — **PIPELINE TRIGGER**; start `${PipelineNameInference}`.
-16. `DescribeInferencePipeline` — poll inference pipeline status.
-17. `InferencePipelineStatusChoice` — branch on inference status.
-18. `WaitBeforeDescribeInference` — wait between inference polls.
-19. `IncrementInferencePollAttempt` — increment inference poll counter.
-20. `StartPredictionPublicationWorkflow` — start nested prediction-publication state machine synchronously.
-21. `ReleaseMiniBatchLockOnSuccess` — release lock on success path.
-22. `ReleaseMiniBatchLockOnFailure` — release lock on failure path.
-23. `WorkflowFailed` — terminal failure state.
-24. `Success` — terminal success state.
+10. `WriteBatchIndexBatchIdItem -> UpdateBatchIndexBatchIdItem -> WriteBatchIndexDateLookupItem` — prewrite canonical batch-index records before any branch execution.
+11. `RunPerMlProjectBranch` — strict `ml_project_names` Map fan-out with explicit branch context (`ml_project_name`).
+12. `Start15mFeaturesPipeline` — **PIPELINE TRIGGER (inside Map branch)**; start `${PipelineName15m}`.
+13. `Describe15mFeaturesPipeline` — poll 15m features pipeline status.
+14. `FeaturesPipelineStatusChoice` — branch on features pipeline status.
+15. `WaitBeforeDescribe15mFeatures` — wait between status polls.
+16. `IncrementFeaturesPollAttempt` — increment features poll counter.
+17. `StartInferencePipeline` — **PIPELINE TRIGGER (inside Map branch)**; start `${PipelineNameInference}`.
+18. `DescribeInferencePipeline` — poll inference pipeline status.
+19. `InferencePipelineStatusChoice` — branch on inference status.
+20. `WaitBeforeDescribeInference` — wait between inference polls.
+21. `IncrementInferencePollAttempt` — increment inference poll counter.
+22. `StartPredictionPublicationWorkflow` — start nested prediction-publication state machine synchronously (per branch).
+23. `ReleaseMiniBatchLockOnSuccess` — release lock on success path.
+24. `ReleaseMiniBatchLockOnFailure` — release lock on failure path.
+25. `WorkflowFailed` — terminal failure state.
+26. `Success` — terminal success state.
 
 ### Pipeline triggered at `Start15mFeaturesPipeline`: `${PipelineName15m}`
 - **Implementation state:** Implemented.

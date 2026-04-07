@@ -61,7 +61,8 @@ def test_15m_flow_uses_batch_completion_payload_and_direct_publication_handoff()
     assert "_SUCCESS" not in text
     parse_assign = doc["States"]["ParseIncomingProjectContext"]["Assign"]
     assert "batch_s3_path" in parse_assign["parsed_s3_key"]
-    assert doc["States"]["StartPredictionPublicationWorkflow"]["Resource"] == "arn:aws:states:::states:startExecution.sync:2"
+    branch_states = doc["States"]["RunPerMlProjectBranch"]["ItemProcessor"]["States"]
+    assert branch_states["StartPredictionPublicationWorkflow"]["Resource"] == "arn:aws:states:::states:startExecution.sync:2"
 
 
 def test_prediction_publication_has_identity_lock_and_duplicate_suppression():
@@ -143,27 +144,34 @@ def test_item23_validation_failures_use_deterministic_error_code():
             assert state["Cause"]
 
 
-def test_15m_flow_writes_batch_index_with_idempotent_contract_and_vnext_pipeline_params():
+def test_15m_flow_writes_dual_batch_index_items_and_runs_per_ml_project_map():
     doc = _load("sfn_ndr_15m_features_inference.json")
-    states = doc["States"]
+    states = _collect_states(doc)
 
-    assert states["AcquireMiniBatchLock"]["Next"] == "WriteBatchIndexRecord"
+    assert states["AcquireMiniBatchLock"]["Next"] == "WriteBatchIndexBatchIdItem"
 
-    put_state = states["WriteBatchIndexRecord"]
-    assert put_state["Resource"] == "arn:aws:states:::aws-sdk:dynamodb:putItem"
-    assert put_state["Arguments"]["ConditionExpression"] == "attribute_not_exists(pk) AND attribute_not_exists(sk)"
+    put_batch_item_state = states["WriteBatchIndexBatchIdItem"]
+    assert put_batch_item_state["Resource"] == "arn:aws:states:::aws-sdk:dynamodb:putItem"
+    assert put_batch_item_state["Arguments"]["ConditionExpression"] == "attribute_not_exists(PK) AND attribute_not_exists(SK)"
 
-    update_state = states["UpdateBatchIndexRecord"]
+    update_state = states["UpdateBatchIndexBatchIdItem"]
     assert update_state["Resource"] == "arn:aws:states:::aws-sdk:dynamodb:updateItem"
-    assert update_state["Arguments"]["ConditionExpression"] == "attribute_exists(pk) AND attribute_exists(sk)"
-    assert update_state["Arguments"]["UpdateExpression"] == (
-        "SET raw_parsed_logs_s3_prefix = :raw_parsed_logs_s3_prefix, event_ts_utc = :event_ts_utc, ingested_at_utc = :ingested_at_utc, "
-        "#status = :status, ml_project_name = if_not_exists(ml_project_name, :ml_project_name), "
-        "ml_project_names_json = if_not_exists(ml_project_names_json, :ml_project_names_json), GSI1PK = :gsi1pk, GSI1SK = :gsi1sk"
-    )
+    assert update_state["Arguments"]["ConditionExpression"] == "attribute_exists(PK) AND attribute_exists(SK)"
+    assert "ml_project_names = :ml_project_names" in update_state["Arguments"]["UpdateExpression"]
+
+    put_date_lookup_state = states["WriteBatchIndexDateLookupItem"]
+    assert put_date_lookup_state["Resource"] == "arn:aws:states:::aws-sdk:dynamodb:putItem"
+    assert put_date_lookup_state["Arguments"]["ConditionExpression"] == "attribute_not_exists(PK) AND attribute_not_exists(SK)"
+
+    map_state = doc["States"]["RunPerMlProjectBranch"]
+    assert map_state["Type"] == "Map"
+    assert map_state["Items"] == "{% $ml_project_names %}"
+    assert map_state["ItemSelector"]["ml_project_name"] == "{% $states.context.Map.Item.Value %}"
 
     features_params = {entry["Name"] for entry in states["Start15mFeaturesPipeline"]["Arguments"]["PipelineParameters"]}
-    assert {"RawParsedLogsS3Prefix", "MlProjectName", "MlProjectNamesJson"}.issubset(features_params)
+    assert {"ProjectName", "FeatureSpecVersion", "MiniBatchId", "BatchStartTsIso", "BatchEndTsIso", "RawParsedLogsS3Prefix"}.issubset(features_params)
+    assert "MlProjectName" not in features_params
+    assert "MlProjectNamesJson" not in features_params
 
     inference_params = {entry["Name"] for entry in states["StartInferencePipeline"]["Arguments"]["PipelineParameters"]}
     assert "MlProjectName" in inference_params

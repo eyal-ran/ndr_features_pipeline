@@ -37,13 +37,12 @@ contracts:
    CLI for run_fg_b_builder.py:
      --project-name
      --feature-spec-version
-     --reference-time-iso
-     --mode  (REGULAR | BACKFILL)
+     --reference-month
 
 All structural configuration (S3 prefixes, port sets, VDI patterns,
 DQ thresholds, baseline windows, etc.) is read inside the jobs from the
 SageMaker projects JobSpec table in DynamoDB and/or environment variables.
-The pipelines themselves only pass *runtime* parameters (batch times, modes).
+The pipelines themselves only pass *runtime* parameters.
 """
 
 import sagemaker
@@ -403,7 +402,7 @@ def build_15m_streaming_pipeline(
 
 
 # ---------------------------------------------------------------------------
-# 3. FG-B baseline pipeline (REGULAR/BACKFILL)
+# 3. FG-B baseline pipeline (monthly deterministic)
 # ---------------------------------------------------------------------------
 
 
@@ -425,8 +424,7 @@ def build_fg_b_baseline_pipeline(
     Required:
     - --project-name          (str)
     - --feature-spec-version  (str)
-    - --reference-time-iso    (str, ISO8601)
-    - --mode                  (str)  # REGULAR | BACKFILL
+    - --reference-month       (str, YYYY/MM)
 
     The actual horizon windows, capping logic, support thresholds, and
     backfill ranges are configured in JobSpec / environment.
@@ -453,13 +451,9 @@ def build_fg_b_baseline_pipeline(
         name="FeatureSpecVersion",
         default_value="<required:FeatureSpecVersion>",
     )
-    reference_time_iso = ParameterString(
-        name="ReferenceTimeIso",
-        default_value="<required:ReferenceTimeIso>",
-    )
-    mode_param = ParameterString(
-        name="Mode",
-        default_value="REGULAR",  # or BACKFILL
+    reference_month = ParameterString(
+        name="ReferenceMonth",
+        default_value="<required:ReferenceMonth>",
     )
 
     fg_b_code_uri = resolve_step_code_uri(
@@ -481,10 +475,8 @@ def build_fg_b_baseline_pipeline(
             project_name,
             "--feature-spec-version",
             feature_spec_version,
-            "--reference-time-iso",
-            reference_time_iso,
-            "--mode",
-            mode_param,
+            "--reference-month",
+            reference_month,
         ],
         inputs=[],
         outputs=[],
@@ -494,8 +486,7 @@ def build_fg_b_baseline_pipeline(
         parameters=[
             project_name,
             feature_spec_version,
-            reference_time_iso,
-            mode_param,
+            reference_month,
         ],
         steps=[fg_b_step],
         sagemaker_session=session,
@@ -524,7 +515,7 @@ def build_machine_inventory_unload_pipeline(
     Required:
     - --project-name          (str)
     - --feature-spec-version  (str)
-    - --reference-month-iso   (str, ISO8601)
+    - --reference-month       (str, YYYY/MM)
     """
 
     session = sagemaker.session.Session(default_bucket=default_bucket)
@@ -537,9 +528,9 @@ def build_machine_inventory_unload_pipeline(
         name="FeatureSpecVersion",
         default_value="<required:FeatureSpecVersion>",
     )
-    reference_month_iso = ParameterString(
-        name="ReferenceMonthIso",
-        default_value="<required:ReferenceMonthIso>",
+    reference_month = ParameterString(
+        name="ReferenceMonth",
+        default_value="<required:ReferenceMonth>",
     )
 
     instance_type = ParameterString(
@@ -592,8 +583,8 @@ def build_machine_inventory_unload_pipeline(
             project_name,
             "--feature-spec-version",
             feature_spec_version,
-            "--reference-month-iso",
-            reference_month_iso,
+            "--reference-month",
+            reference_month,
         ],
         inputs=[],
         outputs=[],
@@ -604,7 +595,7 @@ def build_machine_inventory_unload_pipeline(
         parameters=[
             project_name,
             feature_spec_version,
-            reference_month_iso,
+            reference_month,
             instance_type,
             instance_count,
         ],

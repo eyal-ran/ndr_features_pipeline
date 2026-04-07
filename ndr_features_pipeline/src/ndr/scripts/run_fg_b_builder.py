@@ -11,6 +11,7 @@ for local development and ad-hoc debug.
 
 import argparse
 import sys
+from datetime import datetime, timezone
 
 from ndr.processing.fg_b_builder_job import (
     FGBaselineJobRuntimeConfig,
@@ -45,20 +46,12 @@ def parse_args(argv=None):
     parser.add_argument(
         "--feature-spec-version",
         required=True,
-        help="Feature specification version (FG-A/B/C schema version).",        )
-    parser.add_argument(
-        "--reference-time-iso",
-        required=True,
-        help=(
-            "Reference time (ISO8601, e.g. 2025-12-31T00:00:00Z) "
-            "for baseline horizons (7d/30d)."
-        ),
+        help="Feature specification version (FG-A/B/C schema version).",
     )
     parser.add_argument(
-        "--mode",
-        default="REGULAR",
-        choices=["REGULAR", "BACKFILL"],
-        help="Execution mode: REGULAR (default) or BACKFILL.",
+        "--reference-month",
+        required=True,
+        help="Reference month in YYYY/MM format (e.g. 2025/12).",
     )
     parser.add_argument(
         "--fg-a-layout",
@@ -74,13 +67,14 @@ def main(argv=None) -> int:
     """Command-line entry point."""
     args = parse_args(argv)
 
+    reference_time_iso = _reference_time_from_month(args.reference_month)
     LOGGER.info(
         "Starting FG-B baseline builder via CLI/runtime entrypoint.",
         extra={
             "project_name": args.project_name,
             "feature_spec_version": args.feature_spec_version,
-            "reference_time_iso": args.reference_time_iso,
-            "mode": args.mode,
+            "reference_month": args.reference_month,
+            "reference_time_iso": reference_time_iso,
             "fg_a_layout": args.fg_a_layout,
         },
     )
@@ -88,13 +82,29 @@ def main(argv=None) -> int:
     runtime_config = FGBaselineJobRuntimeConfig(
         project_name=args.project_name,
         feature_spec_version=args.feature_spec_version,
-        reference_time_iso=args.reference_time_iso,
-        mode=args.mode,
+        reference_time_iso=reference_time_iso,
+        mode="MONTHLY",
         fg_a_layout=args.fg_a_layout,
     )
 
     run_fg_b_builder_from_runtime_config(runtime_config)
     return 0
+
+
+def _reference_time_from_month(reference_month: str) -> str:
+    """Derive deterministic reference timestamp from month token."""
+    try:
+        parsed = datetime.strptime(reference_month, "%Y/%m")
+    except ValueError as exc:
+        raise ValueError("reference_month must use YYYY/MM format.") from exc
+    return parsed.replace(
+        tzinfo=timezone.utc,
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    ).isoformat().replace("+00:00", "Z")
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI glue

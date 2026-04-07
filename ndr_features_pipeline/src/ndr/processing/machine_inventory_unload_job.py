@@ -4,8 +4,10 @@ from __future__ import annotations
 
 
 import time
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import boto3
@@ -26,7 +28,7 @@ class MachineInventoryUnloadRuntimeConfig:
 
     project_name: str
     feature_spec_version: str
-    reference_month_iso: str
+    reference_month: str
 
 
 @dataclass(frozen=True)
@@ -44,8 +46,7 @@ class RedshiftDataApiConfig:
 class MachineInventoryQuerySpec:
     """Data container for MachineInventoryQuerySpec."""
     sql: Optional[str]
-    schema: Optional[str]
-    table: Optional[str]
+    descriptor_id: str
     ip_column: str
     name_column: str
     active_filter: Optional[str]
@@ -80,12 +81,12 @@ class MachineInventoryUnloadJob(BaseRunner):
     def run(self) -> None:
         """Execute the full workflow for this job runner."""
         redshift_cfg, query_spec, output_spec = parse_machine_inventory_spec(self.job_spec)
-        snapshot_month = build_snapshot_month(self.runtime_config.reference_month_iso)
+        snapshot_month = build_snapshot_month(self.runtime_config.reference_month)
         partition_prefix = build_snapshot_output_prefix(output_spec.s3_prefix, snapshot_month)
-        output_prefix = self._select_unload_prefix(
+        unload_prefix = build_unload_staging_prefix(
             output_spec.s3_prefix,
-            partition_prefix,
             snapshot_month,
+            datetime.utcnow().strftime("%Y%m%d%H%M%S"),
         )
 
         existing_ips = self._load_existing_ips(
@@ -100,39 +101,27 @@ class MachineInventoryUnloadJob(BaseRunner):
 
         data_api = boto3.client("redshift-data", region_name=redshift_cfg.region)
 
-        try:
-            unloaded_rows = self._unload_from_redshift(
-                data_api=data_api,
-                redshift_cfg=redshift_cfg,
-                query_spec=query_spec,
-                existing_ips=existing_ips,
-                output_spec=output_spec,
-                output_prefix=output_prefix,
-            )
-            if output_prefix != partition_prefix:
-                self._copy_unload_objects(
-                    source_prefix=output_prefix,
-                    target_prefix=partition_prefix,
-                )
-            self.logger.info(
-                "Redshift UNLOAD completed for snapshot_month=%s, rows=%s.",
-                snapshot_month,
-                unloaded_rows,
-            )
-        except Exception as exc:
-            self.logger.exception(
-                "Redshift UNLOAD failed; falling back to Data API query + Spark write.",
-                extra={"error": str(exc)},
-            )
-            self._fallback_query_and_write(
-                data_api=data_api,
-                redshift_cfg=redshift_cfg,
-                query_spec=query_spec,
-                output_spec=output_spec,
-                output_prefix=output_prefix,
-                existing_ips=existing_ips,
-                snapshot_month=snapshot_month,
-            )
+        unloaded_rows = self._unload_from_redshift(
+            data_api=data_api,
+            redshift_cfg=redshift_cfg,
+            query_spec=query_spec,
+            existing_ips=existing_ips,
+            output_spec=output_spec,
+            output_prefix=unload_prefix,
+        )
+        self._stage_unload_output_locally_and_write_partition(
+            unload_prefix=unload_prefix,
+            partition_prefix=partition_prefix,
+            output_spec=output_spec,
+            snapshot_month=snapshot_month,
+        )
+        self._delete_prefix(*parse_s3_uri(unload_prefix))
+        self.logger.info(
+            "Redshift UNLOAD completed for snapshot_month=%s, descriptor_id=%s, rows=%s.",
+            snapshot_month,
+            query_spec.descriptor_id,
+            unloaded_rows,
+        )
 
     def _load_existing_ips(self, s3_prefix: str, ip_column: str) -> List[str]:
         """Execute the load existing ips stage of the workflow."""
@@ -158,100 +147,51 @@ class MachineInventoryUnloadJob(BaseRunner):
             for row in df.select(ip_column).dropna().distinct().collect()
         ]
 
-    def _select_unload_prefix(
+    def _stage_unload_output_locally_and_write_partition(
         self,
-        base_prefix: str,
+        *,
+        unload_prefix: str,
         partition_prefix: str,
+        output_spec: MachineInventoryOutputSpec,
         snapshot_month: str,
-    ) -> str:
-        """Execute the select unload prefix stage of the workflow."""
-        if not self._s3_prefix_has_objects(partition_prefix):
-            return partition_prefix
-        run_id = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-        temp_prefix = build_temp_output_prefix(base_prefix, snapshot_month, run_id)
-        self.logger.info(
-            "Partition prefix already populated. Using temporary UNLOAD prefix %s.",
-            temp_prefix,
-        )
-        return temp_prefix
+    ) -> None:
+        """Stage Redshift UNLOAD data to local FS then publish canonical monthly partition."""
+        with tempfile.TemporaryDirectory(prefix="ndr-machine-unload-") as local_dir:
+            downloaded_paths = self._download_unload_objects(
+                unload_prefix=unload_prefix,
+                local_dir=local_dir,
+            )
+            if not downloaded_paths:
+                self.logger.info("No UNLOAD parquet objects found at %s.", unload_prefix)
+                return
+            local_df = self.spark.read.parquet(*downloaded_paths)
+            write_df = (
+                local_df.dropna(subset=[output_spec.ip_output_column])
+                .dropDuplicates([output_spec.ip_output_column, output_spec.name_output_column])
+                .withColumn("snapshot_month", F.lit(snapshot_month))
+                .select(
+                    output_spec.ip_output_column,
+                    output_spec.name_output_column,
+                    "snapshot_month",
+                )
+            )
+            write_df.write.mode("overwrite").parquet(partition_prefix)
 
-    def _s3_prefix_has_objects(self, s3_prefix: str) -> bool:
-        """Execute the s3 prefix has objects stage of the workflow."""
-        bucket, key_prefix = parse_s3_uri(s3_prefix)
-        s3 = boto3.client("s3")
-        response = s3.list_objects_v2(Bucket=bucket, Prefix=key_prefix, MaxKeys=1)
-        return response.get("KeyCount", 0) > 0
-
-    def _copy_unload_objects(self, source_prefix: str, target_prefix: str) -> None:
-        """Execute the copy unload objects stage of the workflow."""
-        if source_prefix == target_prefix:
-            return
-        source_bucket, source_key_prefix = parse_s3_uri(source_prefix)
-        target_bucket, target_key_prefix = parse_s3_uri(target_prefix)
+    def _download_unload_objects(self, *, unload_prefix: str, local_dir: str) -> List[str]:
+        """Download UNLOAD parquet objects to local filesystem for deterministic staging."""
+        bucket, key_prefix = parse_s3_uri(unload_prefix)
         s3 = boto3.client("s3")
         paginator = s3.get_paginator("list_objects_v2")
-        objects = []
-        for page in paginator.paginate(Bucket=source_bucket, Prefix=source_key_prefix):
+        downloaded: List[str] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=key_prefix):
             for obj in page.get("Contents", []):
                 source_key = obj["Key"]
-                relative_key = source_key[len(source_key_prefix):].lstrip("/")
-                target_key = f"{target_key_prefix.rstrip('/')}/{relative_key}"
-                objects.append((source_key, target_key))
-        if not objects:
-            self.logger.info("No objects to copy from temporary UNLOAD prefix.")
-            return
-        copied = 0
-        for source_key, target_key in objects:
-            s3.copy_object(
-                Bucket=target_bucket,
-                Key=target_key,
-                CopySource={"Bucket": source_bucket, "Key": source_key},
-            )
-            copied += 1
-        self.logger.info(
-            "Copied %s UNLOAD objects from %s to %s.",
-            copied,
-            source_prefix,
-            target_prefix,
-        )
-        if self._confirm_copied_objects(target_bucket, target_key_prefix, objects):
-            self._write_success_marker(target_bucket, target_key_prefix)
-            self._delete_prefix(source_bucket, source_key_prefix)
-        else:
-            self.logger.warning(
-                "Copy verification failed; keeping temporary UNLOAD prefix %s.",
-                source_prefix,
-            )
-
-    def _confirm_copied_objects(
-        self,
-        bucket: str,
-        target_key_prefix: str,
-        expected_objects: List[Tuple[str, str]],
-    ) -> bool:
-        """Execute the confirm copied objects stage of the workflow."""
-        expected_keys = {target_key for _, target_key in expected_objects}
-        s3 = boto3.client("s3")
-        paginator = s3.get_paginator("list_objects_v2")
-        found_keys = set()
-        for page in paginator.paginate(Bucket=bucket, Prefix=target_key_prefix):
-            for obj in page.get("Contents", []):
-                found_keys.add(obj["Key"])
-        missing = expected_keys - found_keys
-        if missing:
-            self.logger.error(
-                "Missing %s copied objects under %s.",
-                len(missing),
-                target_key_prefix,
-            )
-            return False
-        return True
-
-    def _write_success_marker(self, bucket: str, key_prefix: str) -> None:
-        """Execute the write success marker stage of the workflow."""
-        s3 = boto3.client("s3")
-        marker_key = f"{key_prefix.rstrip('/')}/_SUCCESS"
-        s3.put_object(Bucket=bucket, Key=marker_key, Body=b"")
+                if not source_key.lower().endswith(".parquet"):
+                    continue
+                destination = Path(local_dir) / Path(source_key).name
+                s3.download_file(bucket, source_key, str(destination))
+                downloaded.append(str(destination))
+        return downloaded
 
     def _delete_prefix(self, bucket: str, key_prefix: str) -> None:
         """Execute the delete prefix stage of the workflow."""
@@ -301,53 +241,6 @@ class MachineInventoryUnloadJob(BaseRunner):
         )
         statement_id = self._execute_statement(data_api, redshift_cfg, unload_sql)
         return self._get_unload_row_count(data_api, statement_id)
-
-    def _fallback_query_and_write(
-        self,
-        data_api: Any,
-        redshift_cfg: RedshiftDataApiConfig,
-        query_spec: MachineInventoryQuerySpec,
-        output_spec: MachineInventoryOutputSpec,
-        output_prefix: str,
-        existing_ips: List[str],
-        snapshot_month: str,
-    ) -> None:
-        """Execute the fallback query and write stage of the workflow."""
-        source_query = build_source_query(query_spec)
-        statement_id = self._execute_statement(data_api, redshift_cfg, source_query)
-        rows = self._fetch_statement_results(data_api, statement_id)
-
-        if not rows:
-            self.logger.info("No rows returned from Redshift source query.")
-            return
-
-        df = self.spark.createDataFrame(
-            rows,
-            schema=[output_spec.ip_output_column, output_spec.name_output_column],
-        ).dropna(subset=[output_spec.ip_output_column])
-
-        if existing_ips:
-            existing_df = self.spark.createDataFrame(
-                [(ip,) for ip in existing_ips],
-                schema=[output_spec.ip_output_column],
-            )
-            df = df.join(existing_df, on=output_spec.ip_output_column, how="left_anti")
-
-        df = df.withColumn("snapshot_month", F.lit(snapshot_month))
-        write_df = df.select(
-            output_spec.ip_output_column,
-            output_spec.name_output_column,
-            "snapshot_month",
-        )
-
-        output_count = write_df.count()
-        write_df.write.mode("append").partitionBy("snapshot_month").parquet(output_spec.s3_prefix)
-
-        self.logger.info(
-            "Fallback Spark write completed. Rows=%s, prefix=%s",
-            output_count,
-            output_spec.s3_prefix,
-        )
 
     def _execute_statement(self, data_api: Any, config: RedshiftDataApiConfig, sql: str) -> str:
         """Execute the execute statement stage of the workflow."""
@@ -408,25 +301,6 @@ class MachineInventoryUnloadJob(BaseRunner):
         description = data_api.describe_statement(Id=statement_id)
         return int(description.get("ResultRows", 0))
 
-    def _fetch_statement_results(self, data_api: Any, statement_id: str) -> List[Tuple[str, str]]:
-        """Execute the fetch statement results stage of the workflow."""
-        rows: List[Tuple[str, str]] = []
-        next_token = None
-        while True:
-            params: Dict[str, Any] = {"Id": statement_id}
-            if next_token:
-                params["NextToken"] = next_token
-            response = data_api.get_statement_result(**params)
-            for record in response.get("Records", []):
-                ip_value = record[0].get("stringValue")
-                name_value = record[1].get("stringValue")
-                rows.append((ip_value, name_value))
-            next_token = response.get("NextToken")
-            if not next_token:
-                break
-        return rows
-
-
 def parse_machine_inventory_spec(
     job_spec: Dict[str, Any]
 ) -> Tuple[RedshiftDataApiConfig, MachineInventoryQuerySpec, MachineInventoryOutputSpec]:
@@ -451,16 +325,15 @@ def parse_machine_inventory_spec(
     query_payload = job_spec.get("query", {})
     query_spec = MachineInventoryQuerySpec(
         sql=query_payload.get("sql"),
-        schema=query_payload.get("schema"),
-        table=query_payload.get("table"),
+        descriptor_id=query_payload.get("descriptor_id", "machine_inventory_monthly"),
         ip_column=query_payload.get("ip_column", "ip_address"),
         name_column=query_payload.get("name_column", "machine_name"),
         active_filter=query_payload.get("active_filter"),
         additional_filters=query_payload.get("additional_filters", []),
     )
 
-    if not query_spec.sql and not (query_spec.schema and query_spec.table):
-        raise ValueError("Either query.sql or query.schema/table must be provided.")
+    if not query_spec.sql:
+        raise ValueError("query.sql is required for UNLOAD-only machine inventory flow.")
 
     output_payload = job_spec.get("output", {})
     output_spec = MachineInventoryOutputSpec(
@@ -480,10 +353,13 @@ def parse_machine_inventory_spec(
     return redshift_cfg, query_spec, output_spec
 
 
-def build_snapshot_month(reference_month_iso: str) -> str:
+def build_snapshot_month(reference_month: str) -> str:
     """Execute the build snapshot month stage of the workflow."""
-    reference = datetime.fromisoformat(reference_month_iso.replace("Z", "+00:00"))
-    return reference.strftime("%Y-%m")
+    try:
+        normalized = datetime.strptime(reference_month, "%Y/%m")
+    except ValueError as exc:
+        raise ValueError("reference_month must use YYYY/MM format.") from exc
+    return normalized.strftime("%Y-%m")
 
 
 def build_snapshot_output_prefix(base_prefix: str, snapshot_month: str) -> str:
@@ -493,7 +369,7 @@ def build_snapshot_output_prefix(base_prefix: str, snapshot_month: str) -> str:
     return f"{base_prefix}snapshot_month={snapshot_month}/"
 
 
-def build_temp_output_prefix(base_prefix: str, snapshot_month: str, run_id: str) -> str:
+def build_unload_staging_prefix(base_prefix: str, snapshot_month: str, run_id: str) -> str:
     """Execute the build temp output prefix stage of the workflow."""
     partition_prefix = build_snapshot_output_prefix(base_prefix, snapshot_month)
     if not partition_prefix.endswith("/"):
@@ -503,26 +379,8 @@ def build_temp_output_prefix(base_prefix: str, snapshot_month: str, run_id: str)
 
 def build_source_query(query_spec: MachineInventoryQuerySpec) -> str:
     """Execute the build source query stage of the workflow."""
-    if query_spec.sql:
-        base_query = query_spec.sql.strip().rstrip(";")
-        return f"SELECT {query_spec.ip_column} AS ip_address, {query_spec.name_column} AS machine_name FROM ({base_query}) AS base"
-
-    filters = []
-    if query_spec.active_filter:
-        filters.append(f"({query_spec.active_filter})")
-    if query_spec.additional_filters:
-        filters.extend([f"({f})" for f in query_spec.additional_filters])
-    where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
-    return (
-        "SELECT {ip_col} AS ip_address, {name_col} AS machine_name "
-        "FROM {schema}.{table} {where_clause}"
-    ).format(
-        ip_col=query_spec.ip_column,
-        name_col=query_spec.name_column,
-        schema=query_spec.schema,
-        table=query_spec.table,
-        where_clause=where_clause,
-    )
+    base_query = query_spec.sql.strip().rstrip(";")
+    return f"SELECT {query_spec.ip_column} AS ip_address, {query_spec.name_column} AS machine_name FROM ({base_query}) AS base"
 
 
 def build_unload_sql(

@@ -101,6 +101,16 @@ The system is orchestrated through Step Functions and SageMaker Pipelines. Pipel
 - Job: `src/ndr/processing/if_training_job.py`
 - Purpose: executes IF-oriented model training workflow against configured feature inputs.
 
+## Backfill fallback path (Task 7.3)
+
+- Module: `src/ndr/processing/backfill_redshift_fallback.py`
+- Purpose: provides deterministic Redshift UNLOAD fallback when ingestion rows are missing during backfill execution.
+- Contract notes:
+  - Fallback query ownership is DPP/flow-specific (`backfill_redshift_fallback.queries.<artifact_family>`); generic query fallback is rejected.
+  - Multi-range execution order is deterministic (`start_ts`, `end_ts`) with per-range bounded retries.
+  - Each range writes to a deterministic S3 staging prefix (`.../descriptor=<id>/range_<idx>/attempt_<n>/`), then parquet output is downloaded to local FS for downstream reconstruction.
+  - Source mode contract is explicit: `ingestion` when rows exist, otherwise `redshift_unload_fallback` only if fallback is enabled.
+
 ## SageMaker pipeline modules (current)
 
 - `src/ndr/pipeline/sagemaker_pipeline_definitions_unified_with_fgc.py`

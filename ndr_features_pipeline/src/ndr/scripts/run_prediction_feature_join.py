@@ -38,6 +38,11 @@ def parse_args(argv=None):
         required=True,
         help="ML project name for branch-scoped publication join.",
     )
+    parser.add_argument(
+        "--batch-index-table-name",
+        default="",
+        help="Optional Batch Index table override used to resolve canonical branch prefixes.",
+    )
     return parser.parse_args(argv)
 
 
@@ -53,6 +58,7 @@ def main(argv=None) -> int:
             "batch_start_ts_iso": args.batch_start_ts_iso,
             "batch_end_ts_iso": args.batch_end_ts_iso,
             "ml_project_name": args.ml_project_name,
+            "batch_index_table_name": args.batch_index_table_name,
         },
     )
 
@@ -63,6 +69,7 @@ def main(argv=None) -> int:
         batch_start_ts_iso=args.batch_start_ts_iso,
         batch_end_ts_iso=args.batch_end_ts_iso,
         ml_project_name=args.ml_project_name,
+        batch_index_table_name=args.batch_index_table_name or None,
     )
     run_prediction_feature_join_from_runtime_config(runtime_config)
     return 0

@@ -77,11 +77,19 @@ The system is orchestrated through Step Functions and SageMaker Pipelines. Pipel
 - Entrypoint: `ndr.scripts.run_inference_predictions`
 - Job: `src/ndr/processing/inference_predictions_job.py`
 - Purpose: reads feature datasets and produces inference predictions.
+- Contract notes:
+  - Runtime includes branch context (`--ml-project-name`) and optional `--batch-index-table-name`; the job resolves branch-specific canonical prefixes from Batch Index (`s3_prefixes.mlp.<ml_project_name>.predictions`) when present.
+  - Inference metadata is deterministic and required (`model_version`, `model_name`, `inference_ts`, `record_id`). `record_id` is deterministic (hash-based) and `inference_ts` is anchored to batch runtime (`batch_end_ts_iso`) for replay-safe behavior.
+  - Batch Index exact-prefix mode is supported to avoid timestamp-derived path re-resolution drift.
 
 ### Prediction Feature Join
 - Entrypoint: `ndr.scripts.run_prediction_feature_join`
 - Job: `src/ndr/processing/prediction_feature_join_job.py`
 - Purpose: joins prediction outputs and associated metadata/features for downstream publication.
+- Contract notes:
+  - Runtime includes branch context (`--ml-project-name`) and optional `--batch-index-table-name`; the job resolves exact per-branch prediction/join prefixes from Batch Index when available.
+  - Publication contract validation uses the inference prediction score-column contract (`prediction_schema.score_column`) as single source of truth (no hardcoded score-column mismatch).
+  - Join can run in exact-prefix mode so inference->join consumption stays deterministic and snapshot-aligned.
 
 ## Training path
 

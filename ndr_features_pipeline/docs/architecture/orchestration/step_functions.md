@@ -41,8 +41,9 @@ For Task 1, this is a documentation foundation only.
 ### Validation rules
 
 - `project_name` and `data_source_name` must both equal the DPP id.
-- Exactly one of `ml_project_name` or `ml_project_names` must be present.
-- `ml_project_names` must be non-empty when present.
+- `ml_project_names` is the canonical pre-branch selector and must be normalized before any MLP-specific DDB read.
+- Scalar `ml_project_name` is accepted only as compatibility input and must be normalized into `ml_project_names=[ml_project_name]`.
+- The normalized `ml_project_names` array must be non-empty, string-only, and de-duplicated.
 - `batch_id` is non-empty.
 - `raw_parsed_logs_s3_prefix` starts with `s3://` and ends with `/<batch_id>/`.
 - `timestamp` is ISO-8601 UTC (`...Z`).
@@ -78,6 +79,13 @@ For Task 1, this is a documentation foundation only.
 
 - `MlProjectName` is required when executing a single-MLP branch.
 - `MlProjectNamesJson` is required only before fan-out or when fan-out context is passed through one field.
+
+### 3.1 Task-0 compatibility lock
+
+- Auditable matrix source: `docs/archive/debug_records/task0_contract_compatibility_matrix.json`.
+- For business parameters, allowed sources are only DDB contract data or flow payload values.
+- Environment placeholder defaults (for example `${DefaultFeatureSpecVersion}`) are forbidden for business-parameter resolution.
+- SF → pipeline parameter sets must exactly match declared pipeline parameters; undeclared/missing parameters fail validation.
 
 ## 4) Batch-index orchestration requirement
 

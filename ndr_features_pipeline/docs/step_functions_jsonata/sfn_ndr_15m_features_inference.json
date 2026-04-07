@@ -78,7 +78,7 @@
       "Type": "Pass",
       "Assign": {
         "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : ($parsed_project_name_from_path != '' ? $parsed_project_name_from_path : ($routed_project_name != '' ? $routed_project_name : ($exists($project_defaults.ProjectName.S) ? $project_defaults.ProjectName.S : '')))) %}",
-        "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : ($exists($project_defaults.FeatureSpecVersion.S) ? $project_defaults.FeatureSpecVersion.S : '${DefaultFeatureSpecVersion}')) %}",
+        "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : ($exists($project_defaults.FeatureSpecVersion.S) ? $project_defaults.FeatureSpecVersion.S : '')) %}",
         "mini_batch_id": "{% $parsed_batch_id %}",
         "source_timestamp_iso": "{% $parsed_source_ts_iso %}",
         "batch_start_ts_iso": "{% $exists($states.input.batch_start_ts_iso) ? $states.input.batch_start_ts_iso : $source_timestamp_iso %}",
@@ -87,9 +87,9 @@
         "lock_ttl_epoch": "{% $exists($states.input.lock_ttl_epoch) ? $states.input.lock_ttl_epoch : ($exists($project_defaults.LockTtlEpoch.N) ? $number($project_defaults.LockTtlEpoch.N) : 1893456000) %}",
         "raw_parsed_logs_s3_prefix": "{% $parsed_raw_parsed_logs_s3_prefix %}",
         "data_source_name": "{% $parsed_data_source_name != '' ? $parsed_data_source_name : $project_name %}",
-        "ml_project_name": "{% $parsed_ml_project_name %}",
-        "ml_project_names": "{% $parsed_ml_project_names %}",
-        "ml_project_names_json": "{% $count($ml_project_names) > 0 ? $string($ml_project_names) : '' %}",
+        "ml_project_name": "{% $ml_project_names[0] %}",
+        "ml_project_names": "{% $ml_project_names %}",
+        "ml_project_names_json": "{% $string($ml_project_names) %}",
         "date_utc": "{% $substring($source_timestamp_iso,0,10) %}",
         "hour_utc": "{% $substring($source_timestamp_iso,11,2) %}",
         "minute_utc": "{% $number($substring($source_timestamp_iso,14,2)) %}",
@@ -289,16 +289,8 @@
             "Value": "{% $batch_end_ts_iso %}"
           },
           {
-            "Name": "RawParsedLogsS3Prefix",
-            "Value": "{% $raw_parsed_logs_s3_prefix %}"
-          },
-          {
             "Name": "MlProjectName",
             "Value": "{% $ml_project_name %}"
-          },
-          {
-            "Name": "MlProjectNamesJson",
-            "Value": "{% $ml_project_names_json %}"
           }
         ]
       },
@@ -733,7 +725,7 @@
             "S": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : $routed_project_name) %}"
           },
           "job_name_version": {
-            "S": "{% 'pipeline_defaults#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
+            "S": "{% 'pipeline_defaults#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '')) %}"
           }
         },
         "ConsistentRead": true
@@ -742,7 +734,7 @@
         "project_parameters_spec": "{% $exists($states.result.Item.spec.M) ? $states.result.Item.spec.M : {} %}",
         "project_defaults": "{% $exists($states.result.Item.spec.M.defaults.M) ? $states.result.Item.spec.M.defaults.M : {} %}"
       },
-      "Next": "LoadMlpConfigFromDynamo"
+      "Next": "NormalizeMlProjectNames"
     },
     "LoadMlpConfigFromDynamo": {
       "Type": "Task",
@@ -751,10 +743,10 @@
         "TableName": "${MlpConfigTableName}",
         "Key": {
           "ml_project_name": {
-            "S": "{% $exists($states.input.ml_project_name) ? $states.input.ml_project_name : ($exists($project_defaults.MlProjectName.S) ? $project_defaults.MlProjectName.S : '') %}"
+            "S": "{% $ml_project_names[0] %}"
           },
           "job_name_version": {
-            "S": "{% 'pipeline_defaults#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
+            "S": "{% 'pipeline_defaults#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '')) %}"
           }
         },
         "ConsistentRead": true
@@ -763,6 +755,37 @@
         "mlp_linked_project_name": "{% $exists($states.result.Item.project_name.S) ? $states.result.Item.project_name.S : '' %}"
       },
       "Next": "ResolvePipelineRuntimeParams"
+    },
+    "NormalizeMlProjectNames": {
+      "Type": "Pass",
+      "Assign": {
+        "ml_project_names": "{% $count($parsed_ml_project_names) > 0 ? $parsed_ml_project_names : ($parsed_ml_project_name != '' ? [$parsed_ml_project_name] : ($exists($project_defaults.MlProjectName.S) and $project_defaults.MlProjectName.S != '' ? [$project_defaults.MlProjectName.S] : [])) %}"
+      },
+      "Next": "ValidateMlProjectNamesBeforeMlpRead"
+    },
+    "ValidateMlProjectNamesBeforeMlpRead": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $count($ml_project_names)=0 %}",
+          "Next": "FailMissingMlProjectNames"
+        },
+        {
+          "Condition": "{% $count($ml_project_names[$trim($string($)) = '']) > 0 %}",
+          "Next": "FailInvalidMlProjectNames"
+        }
+      ],
+      "Default": "LoadMlpConfigFromDynamo"
+    },
+    "FailMissingMlProjectNames": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing ml_project_names after normalization"
+    },
+    "FailInvalidMlProjectNames": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "ml_project_names must contain non-empty strings"
     }
   }
 }

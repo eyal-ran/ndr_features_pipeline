@@ -1,0 +1,98 @@
+{
+  "policy": {
+    "business_parameter_sources": [
+      "ddb",
+      "flow_payload"
+    ],
+    "forbidden_sources": [
+      "environment_placeholder_defaults"
+    ]
+  },
+  "flows": [
+    {
+      "flow": "rt_15m_inference",
+      "step_function": "sfn_ndr_15m_features_inference.json",
+      "pipeline": "pipeline_inference_predictions",
+      "step_function_state": "StartInferencePipeline",
+      "declared_pipeline_parameters": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "MiniBatchId",
+        "BatchStartTsIso",
+        "BatchEndTsIso",
+        "MlProjectName"
+      ],
+      "cli_arguments": [
+        "--project-name",
+        "--feature-spec-version",
+        "--mini-batch-id",
+        "--batch-start-ts-iso",
+        "--batch-end-ts-iso",
+        "--ml-project-name"
+      ],
+      "runtime_config_fields": [
+        "project_name",
+        "feature_spec_version",
+        "mini_batch_id",
+        "batch_start_ts_iso",
+        "batch_end_ts_iso",
+        "ml_project_name"
+      ],
+      "ddb_contract_keys": [
+        "project_name",
+        "ml_project_names",
+        "ml_project_name"
+      ],
+      "producer_consumer_field_map": {
+        "project_name": "sf.input/project_defaults -> pipeline parameter -> cli arg -> runtime_config.project_name",
+        "feature_spec_version": "sf.input/project_defaults -> pipeline parameter -> cli arg -> runtime_config.feature_spec_version",
+        "mini_batch_id": "sf payload parsing -> pipeline parameter -> cli arg -> runtime_config.mini_batch_id",
+        "batch_start_ts_iso": "sf derived window -> pipeline parameter -> cli arg -> runtime_config.batch_start_ts_iso",
+        "batch_end_ts_iso": "sf derived window -> pipeline parameter -> cli arg -> runtime_config.batch_end_ts_iso",
+        "ml_project_name": "sf normalized ml_project_names[0] -> pipeline parameter -> cli arg -> runtime_config.ml_project_name"
+      }
+    },
+    {
+      "flow": "prediction_publication_join",
+      "step_function": "sfn_ndr_prediction_publication.json",
+      "pipeline": "pipeline_prediction_feature_join",
+      "step_function_state": "StartPredictionJoinPipeline",
+      "declared_pipeline_parameters": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "MiniBatchId",
+        "BatchStartTsIso",
+        "BatchEndTsIso",
+        "MlProjectName"
+      ],
+      "cli_arguments": [
+        "--project-name",
+        "--feature-spec-version",
+        "--mini-batch-id",
+        "--batch-start-ts-iso",
+        "--batch-end-ts-iso",
+        "--ml-project-name"
+      ],
+      "runtime_config_fields": [
+        "project_name",
+        "feature_spec_version",
+        "mini_batch_id",
+        "batch_start_ts_iso",
+        "batch_end_ts_iso",
+        "ml_project_name"
+      ],
+      "ddb_contract_keys": [
+        "project_name",
+        "ml_project_name"
+      ],
+      "producer_consumer_field_map": {
+        "project_name": "sf branch context -> pipeline parameter -> cli arg -> runtime_config.project_name",
+        "feature_spec_version": "sf branch context -> pipeline parameter -> cli arg -> runtime_config.feature_spec_version",
+        "mini_batch_id": "sf branch context -> pipeline parameter -> cli arg -> runtime_config.mini_batch_id",
+        "batch_start_ts_iso": "sf branch context -> pipeline parameter -> cli arg -> runtime_config.batch_start_ts_iso",
+        "batch_end_ts_iso": "sf branch context -> pipeline parameter -> cli arg -> runtime_config.batch_end_ts_iso",
+        "ml_project_name": "sf branch context -> pipeline parameter -> cli arg -> runtime_config.ml_project_name"
+      }
+    }
+  ]
+}

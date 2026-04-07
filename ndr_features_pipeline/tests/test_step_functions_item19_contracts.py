@@ -162,9 +162,13 @@ def test_15m_flow_writes_batch_index_with_idempotent_contract_and_vnext_pipeline
         "ml_project_names_json = if_not_exists(ml_project_names_json, :ml_project_names_json), GSI1PK = :gsi1pk, GSI1SK = :gsi1sk"
     )
 
-    for state_name in ["Start15mFeaturesPipeline", "StartInferencePipeline"]:
-        params = {entry["Name"] for entry in states[state_name]["Arguments"]["PipelineParameters"]}
-        assert {"RawParsedLogsS3Prefix", "MlProjectName", "MlProjectNamesJson"}.issubset(params)
+    features_params = {entry["Name"] for entry in states["Start15mFeaturesPipeline"]["Arguments"]["PipelineParameters"]}
+    assert {"RawParsedLogsS3Prefix", "MlProjectName", "MlProjectNamesJson"}.issubset(features_params)
+
+    inference_params = {entry["Name"] for entry in states["StartInferencePipeline"]["Arguments"]["PipelineParameters"]}
+    assert "MlProjectName" in inference_params
+    assert "RawParsedLogsS3Prefix" not in inference_params
+    assert "MlProjectNamesJson" not in inference_params
 
 
 def test_15m_flow_derives_slot15_from_timestamp_minute_buckets():

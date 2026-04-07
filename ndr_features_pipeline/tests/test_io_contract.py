@@ -76,11 +76,13 @@ def test_run_pair_counts_script_contract_includes_canonical_raw_parsed_logs_arg(
 def test_inference_pipeline_defines_ml_project_name_parameter():
     source = Path("src/ndr/pipeline/sagemaker_pipeline_definitions_inference.py").read_text()
     assert 'name="MlProjectName"' in source
+    assert '"--ml-project-name"' in source
 
 
 def test_prediction_join_pipeline_defines_ml_project_name_parameter():
     source = Path("src/ndr/pipeline/sagemaker_pipeline_definitions_prediction_feature_join.py").read_text()
     assert 'name="MlProjectName"' in source
+    assert '"--ml-project-name"' in source
 
 
 def test_if_training_pipeline_defines_ml_project_name_parameter():

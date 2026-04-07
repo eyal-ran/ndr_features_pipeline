@@ -77,6 +77,7 @@ class InferencePredictionsRuntimeConfig:
     mini_batch_id: str
     batch_start_ts_iso: str
     batch_end_ts_iso: str
+    ml_project_name: str
 
 
 def _parse_output_spec(payload: Dict[str, Any], default_dataset: str) -> InferenceOutputSpec:

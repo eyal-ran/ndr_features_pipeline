@@ -14,7 +14,7 @@ def test_inference_step_function_accepts_batch_folder_contract_and_uses_runtime_
     assert "parsed_batch_folder" in parse_assign
     assert "parsed_source_ts_iso" in parse_assign
     assert "batch_end_ts_iso" in resolve_assign
-    assert "$fromMillis" in resolve_assign["batch_start_ts_iso"]
+    assert "$source_timestamp_iso" in resolve_assign["batch_start_ts_iso"]
 
     lock_state = doc["States"]["AcquireMiniBatchLock"]
     pk_expr = lock_state["Arguments"]["Item"]["pk"]["S"]

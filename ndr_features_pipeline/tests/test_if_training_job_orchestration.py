@@ -26,7 +26,7 @@ if "pyspark" not in sys.modules:
     sys.modules["pyspark.sql.types"] = pyspark_sql.types
 
 from ndr.processing.if_training_job import IFTrainingJob
-from ndr.processing.if_training_spec import IFTrainingRuntimeConfig, parse_if_training_spec
+from ndr.processing.if_training_spec import EvaluationWindowSpec, IFTrainingRuntimeConfig, parse_if_training_spec
 
 
 
@@ -87,9 +87,10 @@ def test_run_orchestrates_artifact_before_deploy(monkeypatch):
         training_end_ts="2024-04-01T00:00:00Z",
         eval_start_ts="2024-04-01T00:00:00Z",
         eval_end_ts="2024-05-01T00:00:00Z",
-        enable_post_training_evaluation=False,
     )
-    job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+    spec = _make_spec()
+    spec.toggles.enable_post_training_evaluation = False
+    job = IFTrainingJob(_DummyDF(), runtime, spec)
 
     dummy_df = _DummyDF()
     call_order = []
@@ -522,15 +523,18 @@ def test_history_planner_computes_required_44_day_envelope():
     assert plan["computed"]["w_required"]["start"] == "2024-02-17T00:00:00Z"
 
 
-def test_runtime_eval_windows_json_overrides_legacy_fields():
+def test_spec_eval_windows_override_legacy_fields():
     runtime = _runtime_with_stage("train")
-    runtime.evaluation_windows_json = '[{"window_id":"w_json","start_ts":"2024-04-03T00:00:00Z","end_ts":"2024-04-04T00:00:00Z"}]'
     runtime.eval_start_ts = "2024-05-01T00:00:00Z"
     runtime.eval_end_ts = "2024-05-02T00:00:00Z"
-    job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+    spec = _make_spec()
+    spec.evaluation_windows = [
+        EvaluationWindowSpec(window_id="w_spec", start_ts="2024-04-03T00:00:00Z", end_ts="2024-04-04T00:00:00Z")
+    ]
+    job = IFTrainingJob(_DummyDF(), runtime, spec)
 
     windows = job._resolve_evaluation_windows()
-    assert windows[0]["window_id"] == "w_json"
+    assert windows[0]["window_id"] == "w_spec"
     assert windows[0]["start_ts"] == "2024-04-03T00:00:00Z"
 
 
@@ -582,8 +586,9 @@ def test_post_training_evaluation_writes_manifests(monkeypatch):
 
 def test_post_training_evaluation_skips_join_when_publication_disabled(monkeypatch):
     runtime = _runtime_with_stage("train")
-    runtime.enable_eval_join_publication = False
-    job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+    spec = _make_spec()
+    spec.toggles.enable_eval_join_publication = False
+    job = IFTrainingJob(_DummyDF(), runtime, spec)
 
     class _S3:
         def put_object(self, **_kwargs):
@@ -776,7 +781,6 @@ def test_resolve_orchestration_target_prefers_ddb_over_env(monkeypatch):
 
 def test_dependency_readiness_fails_fast_for_required_branch(monkeypatch):
     runtime = _runtime_with_stage("train")
-    runtime.enable_auto_remediate_15m = True
     spec = _make_spec()
     spec.toggles.enable_auto_remediate_15m = True
     spec.remediation.enable_backfill_15m = True
@@ -810,13 +814,14 @@ def test_dependency_readiness_fails_fast_for_required_branch(monkeypatch):
         )
 
 
-def test_evaluation_windows_runtime_json_must_be_sorted_non_overlapping():
+def test_evaluation_windows_spec_must_be_sorted_non_overlapping():
     runtime = _runtime_with_stage("train")
-    runtime.evaluation_windows_json = (
-        '[{"window_id":"w1","start_ts":"2024-04-03T00:00:00Z","end_ts":"2024-04-04T00:00:00Z"},'
-        '{"window_id":"w2","start_ts":"2024-04-03T12:00:00Z","end_ts":"2024-04-05T00:00:00Z"}]'
-    )
-    job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+    spec = _make_spec()
+    spec.evaluation_windows = [
+        EvaluationWindowSpec(window_id="w1", start_ts="2024-04-03T00:00:00Z", end_ts="2024-04-04T00:00:00Z"),
+        EvaluationWindowSpec(window_id="w2", start_ts="2024-04-03T12:00:00Z", end_ts="2024-04-05T00:00:00Z"),
+    ]
+    job = IFTrainingJob(_DummyDF(), runtime, spec)
     with pytest.raises(ValueError, match="non-overlapping and sorted"):
         job._resolve_evaluation_windows()
 

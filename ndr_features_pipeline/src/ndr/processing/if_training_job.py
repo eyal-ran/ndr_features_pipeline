@@ -75,15 +75,9 @@ class IFTrainingJob(BaseProcessingJobRunner):
         return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
 
     def _resolve_evaluation_windows(self) -> List[Dict[str, Any]]:
-        """Resolve evaluation windows from runtime JSON, spec, or legacy start/end fields."""
-        payload = (self.runtime_config.evaluation_windows_json or "").strip()
+        """Resolve evaluation windows from DDB spec, or legacy runtime start/end bounds."""
         windows: List[Dict[str, Any]] = []
-        if payload:
-            parsed = json.loads(payload)
-            if not isinstance(parsed, list):
-                raise ValueError("EvaluationWindowsJson must be a JSON array")
-            windows = parsed
-        elif self.training_spec.evaluation_windows:
+        if self.training_spec.evaluation_windows:
             windows = [
                 {"window_id": w.window_id, "start_ts": w.start_ts, "end_ts": w.end_ts}
                 for w in self.training_spec.evaluation_windows
@@ -250,19 +244,15 @@ class IFTrainingJob(BaseProcessingJobRunner):
         checks: List[Dict[str, Any]] = []
 
         backfill_required = bool(missing_15m_manifest) and self._resolve_toggle(
-            self.runtime_config.enable_auto_remediate_15m,
             self.training_spec.toggles.enable_auto_remediate_15m and self.training_spec.remediation.enable_backfill_15m,
         )
         fgb_required = bool(missing_fgb_manifest) and self._resolve_toggle(
-            self.runtime_config.enable_auto_remediate_fgb,
             self.training_spec.toggles.enable_auto_remediate_fgb and self.training_spec.remediation.enable_fgb_rebuild,
         )
         evaluation_enabled = self._resolve_toggle(
-            self.runtime_config.enable_post_training_evaluation,
             self.training_spec.toggles.enable_post_training_evaluation,
         )
         join_required = evaluation_enabled and self._resolve_toggle(
-            self.runtime_config.enable_eval_join_publication,
             self.training_spec.toggles.enable_eval_join_publication,
         )
 
@@ -338,10 +328,9 @@ class IFTrainingJob(BaseProcessingJobRunner):
         _put_json(client, bucket, f"{base}/latest_status.json", verification_summary)
         logger.info("Unified training %s stage succeeded", stage_name, extra={"preflight": preflight})
 
-    def _resolve_toggle(self, runtime_value: bool | None, spec_value: bool, default: bool = True) -> bool:
-        """Resolve a runtime override over spec toggle with fallback default."""
-        if runtime_value is not None:
-            return bool(runtime_value)
+    @staticmethod
+    def _resolve_toggle(spec_value: bool, default: bool = True) -> bool:
+        """Resolve a DDB-owned toggle with fallback default."""
         if spec_value is None:
             return default
         return bool(spec_value)
@@ -477,19 +466,10 @@ class IFTrainingJob(BaseProcessingJobRunner):
 
         verification = self._load_latest_verification_status()
         history_plan = self._load_stage_status("history_planner", default={})
-        raw_override = (self.runtime_config.missing_windows_override or "[]").strip()
-        try:
-            parsed_override = json.loads(raw_override)
-        except json.JSONDecodeError as exc:
-            raise ValueError("MissingWindowsOverride must be a JSON list") from exc
-
-        if not isinstance(parsed_override, list):
-            raise ValueError("MissingWindowsOverride must be encoded as a JSON list")
-
-        missing_windows = list(parsed_override) if parsed_override else verification.get("missing_windows", [])
+        missing_windows = verification.get("missing_windows", [])
         missing_15m_manifest = (history_plan.get("manifests") or {}).get("missing_15m_windows", [])
         missing_fgb_manifest = (history_plan.get("manifests") or {}).get("missing_fgb_windows", [])
-        if not verification.get("needs_remediation", False) and not parsed_override:
+        if not verification.get("needs_remediation", False):
             self._write_stage_status(
                 stage="remediation",
                 payload={
@@ -520,11 +500,9 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 f"remediation/attempt_{index}.json"
             )
             backfill_enabled = bool(missing_15m_manifest) and self._resolve_toggle(
-                self.runtime_config.enable_auto_remediate_15m,
                 self.training_spec.toggles.enable_auto_remediate_15m and self.training_spec.remediation.enable_backfill_15m,
             )
             fgb_enabled = bool(missing_fgb_manifest) and self._resolve_toggle(
-                self.runtime_config.enable_auto_remediate_fgb,
                 self.training_spec.toggles.enable_auto_remediate_fgb and self.training_spec.remediation.enable_fgb_rebuild,
             )
 
@@ -785,7 +763,6 @@ class IFTrainingJob(BaseProcessingJobRunner):
         import boto3
 
         if not self._resolve_toggle(
-            self.runtime_config.enable_post_training_evaluation,
             self.training_spec.toggles.enable_post_training_evaluation,
         ):
             return []
@@ -811,7 +788,6 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 mode="inference",
             )
             join_publication_enabled = self._resolve_toggle(
-                self.runtime_config.enable_eval_join_publication,
                 self.training_spec.toggles.enable_eval_join_publication,
             )
             if join_publication_enabled:
@@ -973,7 +949,6 @@ class IFTrainingJob(BaseProcessingJobRunner):
         evaluation_windows = self._resolve_evaluation_windows()
         history_plan: Dict[str, Any] | None = None
         if self._resolve_toggle(
-            self.runtime_config.enable_history_planner,
             self.training_spec.toggles.enable_history_planner,
         ):
             history_plan = self._compute_history_plan(train_start, train_end, evaluation_windows)
@@ -2297,8 +2272,6 @@ def run_if_training_from_runtime_config(runtime_config: IFTrainingRuntimeConfig)
     runtime_defaults = (job_spec.get("runtime_defaults") or {}) if isinstance(job_spec, dict) else {}
     runtime_config = replace(
         runtime_config,
-        evaluation_windows_json=runtime_config.evaluation_windows_json or runtime_defaults.get("EvaluationWindowsJson"),
-        missing_windows_override=runtime_config.missing_windows_override or runtime_defaults.get("MissingWindowsOverride", "[]"),
         eval_start_ts=runtime_config.eval_start_ts or runtime_defaults.get("EvalStartTs"),
         eval_end_ts=runtime_config.eval_end_ts or runtime_defaults.get("EvalEndTs"),
     )

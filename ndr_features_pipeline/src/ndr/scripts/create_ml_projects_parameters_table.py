@@ -156,16 +156,9 @@ PIPELINE_RUNTIME_PARAMS = {
         "BatchIndexTableName",
         "TrainingStartTs",
         "TrainingEndTs",
-        "EvaluationWindowsJson",
         "EvalStartTs",
         "EvalEndTs",
-        "MissingWindowsOverride",
-        "EnableHistoryPlanner",
-        "EnableAutoRemediate15m",
-        "EnableAutoRemediateFgb",
-        "EnablePostTrainingEvaluation",
-        "EnableEvalJoinPublication",
-        "EnableEvalExperimentsLogging",
+        "MlProjectName",
     ],
     "pipeline_backfill_historical_extractor": [
         "ProjectName",
@@ -909,10 +902,6 @@ def _build_bootstrap_items(
                 "output": {
                     "artifacts_s3_prefix": "s3://REPLACE_ME/if_training/",
                     "report_s3_prefix": "s3://REPLACE_ME/if_training/reports/",
-                },
-                "runtime_defaults": {
-                    "EvaluationWindowsJson": "[]",
-                    "MissingWindowsOverride": "[]",
                 },
                 "orchestration_targets": {
                     "backfill_15m": "sfn_ndr_backfill_reprocessing",

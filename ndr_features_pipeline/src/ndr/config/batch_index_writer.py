@@ -71,6 +71,11 @@ class BatchIndexWriter:
             ConditionExpression=f"attribute_exists({BATCH_INDEX_PK}) AND attribute_exists({BATCH_INDEX_SK})",
         )
 
+    def get_item(self, *, project_name: str, sort_key: str) -> dict[str, Any] | None:
+        response = self._table.get_item(Key={BATCH_INDEX_PK: project_name, BATCH_INDEX_SK: sort_key})
+        item = response.get("Item")
+        return item if isinstance(item, dict) else None
+
     def _build_batch_lookup_item(self, request: BatchIndexWriteRequest) -> dict[str, Any]:
         return {
             BATCH_INDEX_PK: request.project_name,

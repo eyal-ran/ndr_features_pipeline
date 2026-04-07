@@ -314,7 +314,12 @@ class IFTrainingJob(BaseProcessingJobRunner):
             logger,
         )
         preflight = self._preflight_validation(fg_a_df, fg_c_df, train_start, train_end)
-        missing_windows_manifest = self._extract_missing_windows_manifest(preflight)
+        missing_windows_manifest = self._extract_missing_windows_manifest(
+            preflight=preflight,
+            train_start=train_start,
+            train_end=train_end,
+            evaluation_windows=[],
+        )
         verification_summary = {
             "stage": stage_name,
             "run_id": self.runtime_config.run_id,
@@ -359,16 +364,14 @@ class IFTrainingJob(BaseProcessingJobRunner):
         b_end = u_end - timedelta(days=min_head)
         w_required_start = min(w_15m_start, b_start)
 
-        missing_15m_windows = self._derive_missing_15m_windows(w_required_start, u_end)
-        missing_fgb_windows = self._derive_missing_fgb_windows(u_start, u_end, resolved_horizons)
-        missing_windows_manifest = from_missing_sources(
-            missing_15m_windows=missing_15m_windows,
-            missing_fgb_windows=missing_fgb_windows,
-            project_name=self.runtime_config.project_name,
-            feature_spec_version=self.runtime_config.feature_spec_version,
-            ml_project_name=self.runtime_config.ml_project_name,
-            run_id=self.runtime_config.run_id,
+        readiness = self._derive_batch_index_readiness(
+            required_start=w_required_start,
+            required_end=u_end,
+            baseline_start=u_start,
+            baseline_end=u_end,
+            preflight=None,
         )
+        missing_windows_manifest = readiness["missing_windows_manifest"]
 
         return {
             "inputs": {
@@ -387,6 +390,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 "b_end": b_end.isoformat().replace("+00:00", "Z"),
                 "w_required": {"start": w_required_start.isoformat().replace("+00:00", "Z"), "end": u_end.isoformat().replace("+00:00", "Z")},
             },
+            "batch_index_readiness": readiness["training_readiness_manifest"],
             "missing_windows_manifest": missing_windows_manifest,
         }
 
@@ -666,6 +670,17 @@ class IFTrainingJob(BaseProcessingJobRunner):
         evaluation_windows = self._resolve_evaluation_windows()
         history_plan = self._compute_history_plan(train_start, train_end, evaluation_windows)
         self._write_history_plan(history_plan)
+        planned_manifest = ensure_manifest(history_plan.get("missing_windows_manifest"))
+        remediation_plan = {
+            "contract_version": "if_training_remediation_plan.v1",
+            "run_id": self.runtime_config.run_id,
+            "project_name": self.runtime_config.project_name,
+            "ml_project_name": self.runtime_config.ml_project_name,
+            "chunks": self._build_remediation_chunks(planned_manifest["entries"]),
+        }
+        self._write_stage_status("training_readiness_manifest", history_plan.get("batch_index_readiness", {}))
+        self._write_stage_status("missing_windows_manifest", planned_manifest)
+        self._write_stage_status("remediation_plan", remediation_plan)
         self._write_stage_status(
             "planning",
             {
@@ -674,7 +689,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 "verification_stage": verification.get("stage"),
                 "verification_needs_remediation": bool(verification.get("needs_remediation")),
                 "missing_windows_count": len(ensure_manifest(verification.get("missing_windows_manifest"))["entries"]),
-                "planned_missing_windows_count": len(ensure_manifest(history_plan.get("missing_windows_manifest"))["entries"]),
+                "planned_missing_windows_count": len(planned_manifest["entries"]),
             },
         )
 
@@ -916,25 +931,134 @@ class IFTrainingJob(BaseProcessingJobRunner):
             },
         )
 
-    def _extract_missing_windows_manifest(self, preflight: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract canonical missing-window manifest from preflight coverage payload."""
-        partition_coverage = preflight.get("partition_coverage", {})
-        missing: set[str] = set()
-        for dataset in ("fg_a", "fg_c"):
-            details = partition_coverage.get(dataset) or {}
-            missing.update(details.get("missing_partitions", []))
-        missing_15m_windows = [
-            {"window_start_ts": f"{day}T00:00:00Z", "window_end_ts": f"{day}T23:59:59Z"}
-            for day in sorted(missing)
+    def _extract_missing_windows_manifest(
+        self,
+        *,
+        preflight: Dict[str, Any],
+        train_start: datetime,
+        train_end: datetime,
+        evaluation_windows: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Extract canonical missing-window manifest using Batch Index as authority."""
+        baseline_start = train_start
+        baseline_end = train_end
+        if evaluation_windows:
+            baseline_start = min([train_start, *[self._parse_iso_ts(window["start_ts"]) for window in evaluation_windows]])
+            baseline_end = max([train_end, *[self._parse_iso_ts(window["end_ts"]) for window in evaluation_windows]])
+        readiness = self._derive_batch_index_readiness(
+            required_start=train_start,
+            required_end=train_end,
+            baseline_start=baseline_start,
+            baseline_end=baseline_end,
+            preflight=preflight,
+        )
+        return readiness["missing_windows_manifest"]
+
+    @staticmethod
+    def _floor_to_15m(ts: datetime) -> datetime:
+        minute = (ts.minute // 15) * 15
+        return ts.replace(minute=minute, second=0, microsecond=0)
+
+    def _derive_batch_index_readiness(
+        self,
+        *,
+        required_start: datetime,
+        required_end: datetime,
+        baseline_start: datetime,
+        baseline_end: datetime,
+        preflight: Dict[str, Any] | None,
+    ) -> Dict[str, Any]:
+        """Derive expected/observed/unresolved ranges from Batch Index evidence."""
+        from ndr.config.batch_index_loader import BatchIndexLoader
+
+        required_start_iso = required_start.isoformat().replace("+00:00", "Z")
+        required_end_iso = required_end.isoformat().replace("+00:00", "Z")
+        loader = BatchIndexLoader(table_name=self.runtime_config.batch_index_table_name)
+        rows = loader.lookup_forward(
+            project_name=self.runtime_config.project_name,
+            data_source_name=self.runtime_config.project_name,
+            version=self.runtime_config.feature_spec_version,
+            start_ts_iso=required_start_iso,
+            end_ts_iso=required_end_iso,
+        )
+        scoped_rows = [
+            row for row in rows
+            if not row.ml_project_names or self.runtime_config.ml_project_name in row.ml_project_names
         ]
-        return from_missing_sources(
-            missing_15m_windows=missing_15m_windows,
-            missing_fgb_windows=[],
+        observed_15m = {self._floor_to_15m(self._parse_iso_ts(row.etl_ts)).isoformat().replace("+00:00", "Z") for row in scoped_rows}
+        expected_15m: List[Dict[str, str]] = []
+        cursor = self._floor_to_15m(required_start)
+        while cursor < required_end:
+            expected_15m.append(
+                {
+                    "start_ts_iso": cursor.isoformat().replace("+00:00", "Z"),
+                    "end_ts_iso": (cursor + timedelta(minutes=15)).isoformat().replace("+00:00", "Z"),
+                }
+            )
+            cursor += timedelta(minutes=15)
+        unresolved_15m = [window for window in expected_15m if window["start_ts_iso"] not in observed_15m]
+
+        expected_days = sorted(
+            (baseline_start.date() + timedelta(days=offset)).isoformat()
+            for offset in range(max((baseline_end.date() - baseline_start.date()).days, 1))
+        )
+        observed_days = sorted({row.date_partition.replace("/", "-") for row in scoped_rows})
+        unresolved_days = [day for day in expected_days if day not in observed_days]
+
+        if isinstance(preflight, dict):
+            partition_coverage = preflight.get("partition_coverage", {})
+            preflight_missing: set[str] = set()
+            for dataset in ("fg_a", "fg_c"):
+                details = partition_coverage.get(dataset) or {}
+                preflight_missing.update(details.get("missing_partitions", []))
+            if preflight_missing and not unresolved_days:
+                raise ValueError(
+                    "Contract decision required: Batch Index indicates complete coverage while feature-store verification reports missing partitions."
+                )
+
+        missing_windows_manifest = from_missing_sources(
+            missing_15m_windows=[{"window_start_ts": item["start_ts_iso"], "window_end_ts": item["end_ts_iso"]} for item in unresolved_15m],
+            missing_fgb_windows=[{"reference_time_iso": f"{day}T00:00:00Z", "horizons": ["7d", "30d"]} for day in unresolved_days],
             project_name=self.runtime_config.project_name,
             feature_spec_version=self.runtime_config.feature_spec_version,
             ml_project_name=self.runtime_config.ml_project_name,
             run_id=self.runtime_config.run_id,
         )
+        readiness_manifest = {
+            "contract_version": "training_readiness_manifest.v1",
+            "run_id": self.runtime_config.run_id,
+            "project_name": self.runtime_config.project_name,
+            "ml_project_name": self.runtime_config.ml_project_name,
+            "feature_spec_version": self.runtime_config.feature_spec_version,
+            "batch_index_evidence": {
+                "table_name": self.runtime_config.batch_index_table_name,
+                "selectors": {
+                    "pk": self.runtime_config.project_name,
+                    "range_start_ts_iso": required_start_iso,
+                    "range_end_ts_iso": required_end_iso,
+                },
+                "observed_items": [
+                    {"pk": row.project_name, "sk": row.batch_id, "etl_ts": row.etl_ts, "date_partition": row.date_partition}
+                    for row in scoped_rows
+                ],
+            },
+            "families": {
+                "fg_a_15m": {
+                    "expected_ranges": expected_15m,
+                    "observed_window_starts": sorted(observed_15m),
+                    "unresolved_ranges": unresolved_15m,
+                },
+                "fg_b_daily": {
+                    "expected_days": expected_days,
+                    "observed_days": observed_days,
+                    "unresolved_days": unresolved_days,
+                },
+            },
+        }
+        return {
+            "training_readiness_manifest": readiness_manifest,
+            "missing_windows_manifest": missing_windows_manifest,
+        }
 
     def _load_latest_verification_status(self) -> Dict[str, Any]:
         """Load verification status persisted by verify stage."""

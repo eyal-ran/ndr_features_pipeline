@@ -60,6 +60,11 @@ The protocol is **substantially implemented to a fine standard** with strong orc
   `verify -> plan -> remediate -> reverify -> train`.
 - Verify train stage hard-fails when reverify status still reports unresolved required windows.
 - Verify `history_planner.json` exists and includes formula outputs (`w_15m`, `b_start`, `b_end`, `w_required`) and provenance (`from_job_spec` vs `from_default_constants`).
+- Verify readiness artifact set is complete and Batch Index-evidenced:
+  - `training_readiness_manifest.json`,
+  - `missing_windows_manifest.json`,
+  - `remediation_plan.json`,
+  - and each includes Batch Index selector/evidence fields for traceability.
 - Verify remediation stage records orchestrated actions for both branches (`backfill_15m`, `fg_b_baseline`) and executes deterministic manifest chunks with idempotent retries per chunk.
 - Verify verify/plan/remediate/reverify all exchange one canonical missing-window manifest (`if_training_missing_windows.v1`) with per-entry fields:
   `artifact_family`, `ranges`, `source`, `ml_project_name`, `project_name`, `feature_spec_version`, `run_id`.

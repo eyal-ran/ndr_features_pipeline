@@ -428,6 +428,11 @@ These values ensure inference replicates training preprocessing.
   - `B_start = U_start - max_h(d + g_t + g_h)` and `B_end = U_end - min_h(g_h)`.
   - Under current known constants, planner resolves concrete `W_required.start = U_start - 44d`.
 - Remediation is orchestration-backed metadata with selective manifest execution, deterministic chunking metadata (`chunk_index`, `chunk_size`, `chunk_hash`), and idempotent retries per chunk (`remediation.max_retries`), with independent toggles for 15m backfill and FG-B rebuild paths.
+  - Batch Index is authoritative for readiness derivation in verify/plan stages (`batch_index_table_name` is actively used, not just validated), and planner outputs carry traceable selector evidence (`pk`, range bounds, observed `sk` batch IDs).
+  - Planner emits deterministic readiness artifacts:
+    - `training_readiness_manifest.json` (expected/observed/unresolved windows by family from Batch Index),
+    - `missing_windows_manifest.json` (canonical remediation input schema),
+    - `remediation_plan.json` (deterministic chunked execution plan metadata).
   - Missing-window artifacts now use one canonical schema (`if_training_missing_windows.v1`) across verify, plan, remediate, and reverify with fields:
     - `artifact_family`
     - `ranges` (`[{start_ts_iso,end_ts_iso}]`, normalized disjoint/sorted)

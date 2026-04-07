@@ -527,6 +527,18 @@ def test_tune_and_validate_emits_fallback_telemetry_when_optuna_missing(monkeypa
 def test_history_planner_computes_required_44_day_envelope():
     runtime = _runtime_with_stage("train")
     job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+    monkeypatch_manifest = from_missing_sources(
+        missing_15m_windows=[],
+        missing_fgb_windows=[],
+        project_name=runtime.project_name,
+        feature_spec_version=runtime.feature_spec_version,
+        ml_project_name=runtime.ml_project_name,
+        run_id=runtime.run_id,
+    )
+    job._derive_batch_index_readiness = lambda **_kwargs: {  # type: ignore[attr-defined]
+        "training_readiness_manifest": {"batch_index_evidence": {}},
+        "missing_windows_manifest": monkeypatch_manifest,
+    }
 
     from datetime import datetime, timezone
     training_start = datetime(2024, 4, 1, tzinfo=timezone.utc)

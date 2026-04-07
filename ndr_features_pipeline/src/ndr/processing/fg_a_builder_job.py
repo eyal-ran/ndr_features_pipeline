@@ -52,6 +52,7 @@ from ndr.model.fg_a_schema import (
 from ndr.catalog.schema_manifest import build_fg_a_manifest
 from ndr.processing.schema_enforcement import enforce_schema
 from ndr.processing.segment_utils import add_segment_id
+from ndr.config.batch_index_loader import BatchIndexLoader
 
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,7 @@ class FGABuilderConfig:
     high_risk_segments: Optional[List[str]] = None
     segment_mapping: Optional[Dict[str, Any]] = None
     allow_missing_mini_batch_id_column: bool = False
+    use_exact_batch_index_output_prefix: bool = False
 
 
 @dataclass
@@ -106,6 +108,7 @@ class FGABuilderJobRuntimeConfig:
     mini_batch_id: str
     batch_start_ts_iso: str
     batch_end_ts_iso: str
+    batch_index_table_name: str | None = None
 
 
 class FGABuilderJob(BaseProcessingJobRunner):
@@ -308,12 +311,15 @@ class FGABuilderJob(BaseProcessingJobRunner):
         df = df.withColumn("dt", F.date_format(F.col("window_end_ts"), "yyyy-MM-dd"))
         df = enforce_schema(df, build_fg_a_manifest(), "fg_a", logger)
 
-        output_path = build_batch_output_prefix(
-            base_prefix=self.config.output_s3_prefix,
-            dataset="fg_a",
-            batch_start_ts_iso=self.config.batch_start_ts_iso,
-            batch_id=self.config.mini_batch_id,
-        )
+        if self.config.use_exact_batch_index_output_prefix:
+            output_path = self.config.output_s3_prefix
+        else:
+            output_path = build_batch_output_prefix(
+                base_prefix=self.config.output_s3_prefix,
+                dataset="fg_a",
+                batch_start_ts_iso=self.config.batch_start_ts_iso,
+                batch_id=self.config.mini_batch_id,
+            )
         logger.info("Writing FG-A Parquet to %s", output_path)
 
         (
@@ -331,12 +337,15 @@ class FGABuilderJob(BaseProcessingJobRunner):
             logger.warning("Pair context DataFrame is empty; skipping write.")
             return
 
-        output_path = build_batch_output_prefix(
-            base_prefix=self.config.pair_context_output_prefix,
-            dataset="fg_a_pair_context",
-            batch_start_ts_iso=self.config.batch_start_ts_iso,
-            batch_id=self.config.mini_batch_id,
-        )
+        if self.config.use_exact_batch_index_output_prefix:
+            output_path = self.config.pair_context_output_prefix
+        else:
+            output_path = build_batch_output_prefix(
+                base_prefix=self.config.pair_context_output_prefix,
+                dataset="fg_a_pair_context",
+                batch_start_ts_iso=self.config.batch_start_ts_iso,
+                batch_id=self.config.mini_batch_id,
+            )
 
         window_frames: List[DataFrame] = []
         for window_label, minutes in FG_A_WINDOWS_MINUTES.items():
@@ -875,14 +884,24 @@ def run_fg_a_builder_from_runtime_config(runtime_config: FGABuilderJobRuntimeCon
         feature_spec_version=runtime_config.feature_spec_version,
     )
 
-    delta_prefix = (
-        job_spec.get("delta_input", {}).get("s3_prefix")
-        or job_spec.get("delta_s3_prefix")
+    delta_prefix = job_spec.get("delta_input", {}).get("s3_prefix") or job_spec.get("delta_s3_prefix")
+    output_prefix = job_spec.get("fg_a_output", {}).get("s3_prefix") or job_spec.get("output_s3_prefix")
+    use_exact_batch_index_output_prefix = False
+
+    record = BatchIndexLoader(table_name=runtime_config.batch_index_table_name).get_batch(
+        project_name=runtime_config.project_name,
+        batch_id=runtime_config.mini_batch_id,
     )
-    output_prefix = (
-        job_spec.get("fg_a_output", {}).get("s3_prefix")
-        or job_spec.get("output_s3_prefix")
-    )
+    if record is not None:
+        dpp_prefixes = record.s3_prefixes.get("dpp", {})
+        delta_from_batch_index = dpp_prefixes.get("delta")
+        fg_a_from_batch_index = dpp_prefixes.get("fg_a")
+        if delta_from_batch_index:
+            delta_prefix = str(delta_from_batch_index)
+        if fg_a_from_batch_index:
+            output_prefix = str(fg_a_from_batch_index)
+            use_exact_batch_index_output_prefix = True
+
     if not delta_prefix or not output_prefix:
         raise ValueError("fg_a_builder JobSpec must define delta and output prefixes.")
 
@@ -905,6 +924,7 @@ def run_fg_a_builder_from_runtime_config(runtime_config: FGABuilderJobRuntimeCon
         lookback30d_thresholds=lookback_thresholds,
         high_risk_segments=job_spec.get("high_risk_segments", []),
         segment_mapping=job_spec.get("segment_mapping"),
+        use_exact_batch_index_output_prefix=use_exact_batch_index_output_prefix,
     )
 
     spark = (

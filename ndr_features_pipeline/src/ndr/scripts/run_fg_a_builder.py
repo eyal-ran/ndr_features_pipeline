@@ -51,6 +51,11 @@ def parse_args(argv=None):
         "--batch-end-ts-iso",
         required=True,
         help="Batch end time (ISO8601, e.g. 2025-12-31T00:15:00Z).",        )
+    parser.add_argument(
+        "--batch-index-table-name",
+        default="",
+        help="Optional Batch Index table override used to resolve canonical Delta/FG-A prefixes.",
+    )
 
     return parser.parse_args(argv)
 
@@ -67,6 +72,7 @@ def main(argv=None) -> int:
             "mini_batch_id": args.mini_batch_id,
             "batch_start_ts_iso": args.batch_start_ts_iso,
             "batch_end_ts_iso": args.batch_end_ts_iso,
+            "batch_index_table_name": args.batch_index_table_name,
         },
     )
 
@@ -76,6 +82,7 @@ def main(argv=None) -> int:
         mini_batch_id=args.mini_batch_id,
         batch_start_ts_iso=args.batch_start_ts_iso,
         batch_end_ts_iso=args.batch_end_ts_iso,
+        batch_index_table_name=args.batch_index_table_name or None,
     )
 
     run_fg_a_builder_from_runtime_config(runtime_config)

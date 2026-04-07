@@ -18,6 +18,7 @@ from ndr.processing.raw_traffic_fields import (
     normalize_raw_traffic_fields,
     REQUIRED_DELTA_TRAFFIC_FIELDS,
 )
+from ndr.config.batch_index_loader import BatchIndexLoader
 
 
 class DeltaBuilderRunner(BaseProcessingRunner):
@@ -189,6 +190,11 @@ class DeltaBuilderRunner(BaseProcessingRunner):
 
     def _write_output(self, df: DataFrame) -> None:
         """Execute the write output stage of the workflow."""
+        df = (
+            df.withColumn("mini_batch_id", F.lit(self.runtime.run_id))
+            .withColumn("feature_spec_version", F.lit(self.runtime.feature_spec_version))
+        )
+        self._validate_partition_contract(df)
         port_sets = self._load_port_sets()
         manifest = build_delta_manifest(port_set_names=sorted(port_sets.keys()))
         df = enforce_schema(df, manifest, "delta", self.logger)
@@ -208,6 +214,21 @@ class DeltaBuilderRunner(BaseProcessingRunner):
             mode=pair_context_output.write_mode,
         )
 
+    def _validate_partition_contract(self, df: DataFrame) -> None:
+        required_partition_cols = ["dt", "hh", "mm"]
+        output_partition_cols = list(self.job_spec.output.partition_keys)
+        if output_partition_cols != required_partition_cols:
+            raise ValueError(
+                "Delta output.partition_keys must match the canonical partition contract "
+                f"{required_partition_cols}; got {output_partition_cols}"
+            )
+        missing_columns = [col for col in required_partition_cols if col not in df.columns]
+        if missing_columns:
+            raise ValueError(
+                "Delta output is missing required partition columns "
+                f"{missing_columns} before write."
+            )
+
 
 def run_delta_builder(spark: SparkSession, job_spec: JobSpec, runtime: RuntimeParams) -> None:
     """Module-level entrypoint used by the CLI wrapper."""
@@ -225,6 +246,7 @@ class DeltaBuilderJobRuntimeConfig:
     raw_parsed_logs_s3_prefix: str = ""
     batch_start_ts_iso: str = ""
     batch_end_ts_iso: str = ""
+    batch_index_table_name: str | None = None
 
 
 def run_delta_builder_from_runtime_config(runtime_config: DeltaBuilderJobRuntimeConfig) -> None:
@@ -236,13 +258,30 @@ def run_delta_builder_from_runtime_config(runtime_config: DeltaBuilderJobRuntime
         feature_spec_version=runtime_config.feature_spec_version,
     )
 
-    if not runtime_config.raw_parsed_logs_s3_prefix:
-        raise ValueError("raw_parsed_logs_s3_prefix is required")
+    raw_parsed_logs_s3_prefix = runtime_config.raw_parsed_logs_s3_prefix
+    if not raw_parsed_logs_s3_prefix:
+        record = BatchIndexLoader(table_name=runtime_config.batch_index_table_name).get_batch(
+            project_name=runtime_config.project_name,
+            batch_id=runtime_config.mini_batch_id,
+        )
+        if record is None:
+            raise KeyError(
+                "Unable to resolve Delta runtime input from Batch Index for "
+                f"project_name={runtime_config.project_name}, batch_id={runtime_config.mini_batch_id}"
+            )
+        raw_parsed_logs_s3_prefix = record.raw_parsed_logs_s3_prefix
+        delta_prefix = record.s3_prefixes.get("dpp", {}).get("delta")
+        if not delta_prefix:
+            raise KeyError(
+                "Batch Index record missing required s3_prefixes.dpp.delta for "
+                f"project_name={runtime_config.project_name}, batch_id={runtime_config.mini_batch_id}"
+            )
+        job_spec.output.s3_prefix = str(delta_prefix)
 
     runtime = RuntimeParams(
         project_name=runtime_config.project_name,
         job_name="delta_builder",
-        raw_parsed_logs_s3_prefix=runtime_config.raw_parsed_logs_s3_prefix,
+        raw_parsed_logs_s3_prefix=raw_parsed_logs_s3_prefix,
         feature_spec_version=runtime_config.feature_spec_version,
         run_id=runtime_config.mini_batch_id,
         slice_start_ts=runtime_config.batch_start_ts_iso,

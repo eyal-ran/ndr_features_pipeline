@@ -733,7 +733,8 @@ def test_backfill_execution_already_exists_is_handled_as_idempotent_skip(monkeyp
     result = job._invoke_backfill_reprocessing(
         sfn_client=_SFN(),
         missing_15m=[{"start_ts_iso": "2024-04-01T00:00:00Z", "end_ts_iso": "2024-04-01T00:15:00Z"}],
-        attempt=1,
+        chunk_index=1,
+        chunk_hash="abc123",
         target={"resolved_target": "arn:aws:states:region:acct:stateMachine:ndr-backfill", "family": "backfill_15m"},
     )
     assert result["status"] == "Skipped"
@@ -760,11 +761,99 @@ def test_fgb_rebuild_not_capped_to_ten_references(monkeypatch):
     result = job._invoke_fgb_baseline_rebuild(
         sm,
         payload,
-        attempt=1,
+        chunk_index=1,
+        chunk_hash="abc123",
         target={"resolved_target": "pipeline_fg_b_baseline", "family": "fg_b_baseline"},
     )
     assert sm.started == 12
     assert result["status"] == "Succeeded"
+
+
+def test_remediation_chunking_does_not_truncate_sparse_ranges(monkeypatch):
+    job = IFTrainingJob(
+        _DummyDF(),
+        _runtime_with_stage("remediate"),
+        _make_spec(),
+        resolved_spec_payload={"remediation": {"chunk_size": 1}},
+    )
+
+    manifest = {
+        "contract_version": "if_training_missing_windows.v1",
+        "entries": [
+            {
+                "artifact_family": "fg_a_15m",
+                "ranges": [
+                    {"start_ts_iso": "2024-04-01T00:00:00Z", "end_ts_iso": "2024-04-01T00:15:00Z"},
+                    {"start_ts_iso": "2024-04-01T03:00:00Z", "end_ts_iso": "2024-04-01T03:15:00Z"},
+                    {"start_ts_iso": "2024-04-01T08:00:00Z", "end_ts_iso": "2024-04-01T08:15:00Z"},
+                ],
+                "source": "feature_partition_gap",
+                "project_name": job.runtime_config.project_name,
+                "feature_spec_version": job.runtime_config.feature_spec_version,
+                "ml_project_name": job.runtime_config.ml_project_name,
+                "run_id": job.runtime_config.run_id,
+            }
+        ],
+    }
+
+    monkeypatch.setattr(job, "_load_required_latest_verification_status", lambda: {"needs_remediation": True, "missing_windows_manifest": manifest})
+    monkeypatch.setattr(job, "_load_required_history_plan", lambda *_args, **_kwargs: {"missing_windows_manifest": manifest})
+    monkeypatch.setattr(
+        job,
+        "_run_dependency_readiness_gate",
+        lambda **_kwargs: {"checks": [{"family": "backfill_15m", "resolved_target": "arn:sm"}, {"family": "fg_b_baseline", "resolved_target": "pipeline"}]},
+    )
+    monkeypatch.setattr("ndr.processing.if_training_job._put_json", lambda *_args, **_kwargs: None)
+
+    backfill_calls = []
+    monkeypatch.setattr(
+        job,
+        "_invoke_backfill_reprocessing",
+        lambda **kwargs: backfill_calls.append(kwargs) or {"status": "Succeeded"},
+    )
+    monkeypatch.setattr(job, "_invoke_fgb_baseline_rebuild", lambda **_kwargs: {"status": "Skipped"})
+
+    observed = {}
+    monkeypatch.setattr(job, "_write_stage_status", lambda stage, payload: observed.update({"stage": stage, "payload": payload}))
+
+    class _DummyClient:
+        def put_object(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(sys.modules["boto3"], "client", lambda _name: _DummyClient(), raising=False)
+    job.run()
+
+    assert observed["payload"]["chunk_count"] == 3
+    assert len(backfill_calls) == 3
+    assert sorted(call["chunk_index"] for call in backfill_calls) == [1, 2, 3]
+
+
+def test_build_remediation_chunks_is_deterministic():
+    job = IFTrainingJob(
+        _DummyDF(),
+        _runtime_with_stage("remediate"),
+        _make_spec(),
+        resolved_spec_payload={"remediation": {"chunk_size": 2}},
+    )
+    entries = [
+        {
+            "artifact_family": "fg_a_15m",
+            "ranges": [
+                {"start_ts_iso": "2024-04-01T02:00:00Z", "end_ts_iso": "2024-04-01T02:15:00Z"},
+                {"start_ts_iso": "2024-04-01T00:00:00Z", "end_ts_iso": "2024-04-01T00:15:00Z"},
+            ],
+            "source": "feature_partition_gap",
+            "project_name": "proj",
+            "feature_spec_version": "v1",
+            "ml_project_name": "mlp",
+            "run_id": "run-1",
+        }
+    ]
+    first = job._build_remediation_chunks(entries)
+    second = job._build_remediation_chunks(entries)
+    assert first == second
+    assert first[0]["chunk_size"] == 2
+    assert "chunk_hash" in first[0]
 
 
 def test_resolve_orchestration_target_prefers_ddb_over_env(monkeypatch):

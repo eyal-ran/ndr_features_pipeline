@@ -37,6 +37,7 @@ DEFAULT_INFERENCE_PIPELINE_ENV = "NDR_PIPELINE_INFERENCE_PREDICTIONS"
 DEFAULT_INFERENCE_PIPELINE_NAME = "pipeline_inference_predictions"
 DEFAULT_PREDICTION_JOIN_PIPELINE_ENV = "NDR_PIPELINE_PREDICTION_FEATURE_JOIN"
 DEFAULT_PREDICTION_JOIN_PIPELINE_NAME = "pipeline_prediction_feature_join"
+DEFAULT_REMEDIATION_CHUNK_SIZE = 25
 
 
 class IFTrainingJob(BaseProcessingJobRunner):
@@ -466,7 +467,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         _put_json(boto3.client("s3"), bucket, key, history_plan)
 
     def _run_remediation_stage(self) -> None:
-        """Run bounded remediation stage for missing windows."""
+        """Run selective remediation stage for missing windows."""
         import boto3
 
         verification = self._load_required_latest_verification_status()
@@ -482,17 +483,15 @@ class IFTrainingJob(BaseProcessingJobRunner):
         history_plan = self._load_required_history_plan()
         missing_windows_manifest = ensure_manifest(history_plan.get("missing_windows_manifest"))
         missing_windows = missing_windows_manifest["entries"]
-        missing_15m_manifest = next((entry["ranges"] for entry in missing_windows if entry["artifact_family"] == "fg_a_15m"), [])
-        missing_fgb_manifest = next((entry["ranges"] for entry in missing_windows if entry["artifact_family"] == "fg_b_daily"), [])
-
+        missing_15m_manifest_all = next((entry["ranges"] for entry in missing_windows if entry["artifact_family"] == "fg_a_15m"), [])
+        missing_fgb_manifest_all = next((entry["ranges"] for entry in missing_windows if entry["artifact_family"] == "fg_b_daily"), [])
         max_attempts = max(1, int(self.training_spec.remediation.max_retries))
-        attempts = min(max(len(missing_windows), 1), max_attempts)
-        windows_to_process = missing_windows[:attempts]
+        chunks = self._build_remediation_chunks(missing_windows)
 
         dependency_readiness = self._run_dependency_readiness_gate(
             stage="remediate",
-            missing_15m_manifest=missing_15m_manifest,
-            missing_fgb_manifest=missing_fgb_manifest,
+            missing_15m_manifest=missing_15m_manifest_all,
+            missing_fgb_manifest=missing_fgb_manifest_all,
         )
 
         report_bucket, report_key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
@@ -500,10 +499,19 @@ class IFTrainingJob(BaseProcessingJobRunner):
         remediation_records: List[Dict[str, Any]] = []
         sfn = boto3.client("stepfunctions")
         sagemaker = boto3.client("sagemaker")
-        for index, window in enumerate(windows_to_process, start=1):
+        for chunk in chunks:
+            index = chunk["chunk_index"]
+            missing_15m_manifest = next(
+                (entry["ranges"] for entry in chunk["entries"] if entry["artifact_family"] == "fg_a_15m"),
+                [],
+            )
+            missing_fgb_manifest = next(
+                (entry["ranges"] for entry in chunk["entries"] if entry["artifact_family"] == "fg_b_daily"),
+                [],
+            )
             key = (
                 f"{report_key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/"
-                f"remediation/attempt_{index}.json"
+                f"remediation/chunk_{index:04d}.json"
             )
             backfill_enabled = bool(missing_15m_manifest) and self._resolve_toggle(
                 self.training_spec.toggles.enable_auto_remediate_15m and self.training_spec.remediation.enable_backfill_15m,
@@ -513,8 +521,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
             )
 
             payload = {
-                "attempt": index,
-                "window": window,
+                "chunk": chunk,
                 "mode": "orchestrated-remediation",
                 "execution_ts": self.runtime_config.execution_ts_iso,
                 "actions": {
@@ -527,18 +534,26 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 },
             }
             if backfill_enabled:
-                payload["backfill_execution"] = self._invoke_backfill_reprocessing(
-                    sfn_client=sfn,
-                    missing_15m=missing_15m_manifest,
-                    attempt=index,
-                    target=next((c for c in dependency_readiness["checks"] if c["family"] == "backfill_15m"), {}),
+                payload["backfill_execution"] = self._invoke_with_retries(
+                    max_attempts=max_attempts,
+                    invoke_fn=lambda: self._invoke_backfill_reprocessing(
+                        sfn_client=sfn,
+                        missing_15m=missing_15m_manifest,
+                        chunk_index=index,
+                        chunk_hash=chunk["chunk_hash"],
+                        target=next((c for c in dependency_readiness["checks"] if c["family"] == "backfill_15m"), {}),
+                    ),
                 )
             if fgb_enabled:
-                payload["fgb_execution"] = self._invoke_fgb_baseline_rebuild(
-                    sagemaker_client=sagemaker,
-                    missing_fgb=missing_fgb_manifest,
-                    attempt=index,
-                    target=next((c for c in dependency_readiness["checks"] if c["family"] == "fg_b_baseline"), {}),
+                payload["fgb_execution"] = self._invoke_with_retries(
+                    max_attempts=max_attempts,
+                    invoke_fn=lambda: self._invoke_fgb_baseline_rebuild(
+                        sagemaker_client=sagemaker,
+                        missing_fgb=missing_fgb_manifest,
+                        chunk_index=index,
+                        chunk_hash=chunk["chunk_hash"],
+                        target=next((c for c in dependency_readiness["checks"] if c["family"] == "fg_b_baseline"), {}),
+                    ),
                 )
             _put_json(client, report_bucket, key, payload)
             remediation_records.append(payload)
@@ -547,19 +562,102 @@ class IFTrainingJob(BaseProcessingJobRunner):
             stage="remediation",
             payload={
                 "status": "completed",
-                "attempts": attempts,
-                "max_attempts": max_attempts,
+                "chunk_count": len(chunks),
+                "max_attempts_per_chunk": max_attempts,
                 "missing_windows_manifest": missing_windows_manifest,
-                "missing_15m_manifest_count": len(missing_15m_manifest),
-                "missing_fgb_manifest_count": len(missing_fgb_manifest),
-                "processed_windows": windows_to_process,
+                "missing_15m_manifest_count": len(missing_15m_manifest_all),
+                "missing_fgb_manifest_count": len(missing_fgb_manifest_all),
+                "processed_chunks": chunks,
                 "records": remediation_records,
             },
         )
         logger.info(
-            "Executing bounded remediation stage",
-            extra={"attempts": attempts, "max_attempts": max_attempts, "missing_windows": missing_windows},
+            "Executing selective remediation stage",
+            extra={"chunk_count": len(chunks), "max_attempts_per_chunk": max_attempts, "missing_windows": missing_windows},
         )
+
+    def _resolve_remediation_chunk_size(self) -> int:
+        """Resolve deterministic remediation chunk size from resolved spec or fallback default."""
+        payload = self.resolved_spec_payload if isinstance(self.resolved_spec_payload, dict) else {}
+        remediation_payload = payload.get("remediation")
+        if not isinstance(remediation_payload, dict):
+            return DEFAULT_REMEDIATION_CHUNK_SIZE
+        configured = remediation_payload.get("chunk_size")
+        if configured is None:
+            return DEFAULT_REMEDIATION_CHUNK_SIZE
+        return max(1, int(configured))
+
+    def _build_remediation_chunks(self, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Chunk remediation entries deterministically with stable chunk hash metadata."""
+        materialized_ranges: List[Dict[str, Any]] = []
+        for entry in entries:
+            for range_item in entry.get("ranges", []):
+                materialized_ranges.append(
+                    {
+                        "artifact_family": entry["artifact_family"],
+                        "source": entry["source"],
+                        "project_name": entry["project_name"],
+                        "feature_spec_version": entry["feature_spec_version"],
+                        "ml_project_name": entry["ml_project_name"],
+                        "run_id": entry["run_id"],
+                        "range": {
+                            "start_ts_iso": range_item["start_ts_iso"],
+                            "end_ts_iso": range_item["end_ts_iso"],
+                        },
+                    }
+                )
+        materialized_ranges.sort(
+            key=lambda item: (
+                item["artifact_family"],
+                item["range"]["start_ts_iso"],
+                item["range"]["end_ts_iso"],
+            )
+        )
+        chunk_size = self._resolve_remediation_chunk_size()
+        chunks: List[Dict[str, Any]] = []
+        for start_index in range(0, len(materialized_ranges), chunk_size):
+            current_slice = materialized_ranges[start_index:start_index + chunk_size]
+            grouped_entries: Dict[str, Dict[str, Any]] = {}
+            for item in current_slice:
+                family = item["artifact_family"]
+                if family not in grouped_entries:
+                    grouped_entries[family] = {
+                        "artifact_family": family,
+                        "ranges": [],
+                        "source": item["source"],
+                        "ml_project_name": item["ml_project_name"],
+                        "project_name": item["project_name"],
+                        "feature_spec_version": item["feature_spec_version"],
+                        "run_id": item["run_id"],
+                    }
+                grouped_entries[family]["ranges"].append(dict(item["range"]))
+            chunk_entries = [grouped_entries[family] for family in sorted(grouped_entries)]
+            chunk_hash = hashlib.sha1(
+                json.dumps(chunk_entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()[:16]
+            chunks.append(
+                {
+                    "chunk_index": len(chunks) + 1,
+                    "chunk_size": chunk_size,
+                    "chunk_hash": chunk_hash,
+                    "entry_count": len(chunk_entries),
+                    "range_count": len(current_slice),
+                    "entries": chunk_entries,
+                }
+            )
+        return chunks
+
+    @staticmethod
+    def _invoke_with_retries(*, max_attempts: int, invoke_fn):
+        """Retry orchestration calls without changing deterministic invocation identity."""
+        last_error: Exception | None = None
+        for _ in range(max_attempts):
+            try:
+                return invoke_fn()
+            except Exception as exc:  # pylint: disable=broad-except
+                last_error = exc
+        assert last_error is not None
+        raise last_error
 
     def _run_planning_stage(self) -> None:
         """Compute and persist remediation planning artifacts before remediation/train."""
@@ -623,7 +721,14 @@ class IFTrainingJob(BaseProcessingJobRunner):
         self._write_stage_status("train_gate", gate_payload)
         return verification
 
-    def _invoke_backfill_reprocessing(self, sfn_client, missing_15m: List[Dict[str, str]], attempt: int, target: Dict[str, Any]) -> Dict[str, Any]:
+    def _invoke_backfill_reprocessing(
+        self,
+        sfn_client,
+        missing_15m: List[Dict[str, str]],
+        chunk_index: int,
+        chunk_hash: str,
+        target: Dict[str, Any],
+    ) -> Dict[str, Any]:
         """Invoke backfill Step Functions execution for required 15m windows."""
         state_machine_arn = target.get("resolved_target")
         if not state_machine_arn:
@@ -631,10 +736,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
 
         start_ts = min(window["start_ts_iso"] for window in missing_15m)
         end_ts = max(window["end_ts_iso"] for window in missing_15m)
-        signature = hashlib.sha1(
-            f"{self.runtime_config.project_name}|{self.runtime_config.feature_spec_version}|{self.runtime_config.run_id}|{attempt}|{start_ts}|{end_ts}".encode("utf-8")
-        ).hexdigest()[:16]
-        name = f"if-remediate-{self.runtime_config.run_id}-a{attempt}-{signature}"[:80]
+        name = f"if-remediate-{self.runtime_config.run_id}-c{chunk_index}-{chunk_hash}"[:80]
         family_ranges = [{"start_ts": window["start_ts_iso"], "end_ts": window["end_ts_iso"]} for window in missing_15m]
         planner = build_family_range_plan(
             family_ranges={"delta": family_ranges, "fg_a": family_ranges, "pair_counts": family_ranges, "fg_c": family_ranges},
@@ -647,6 +749,9 @@ class IFTrainingJob(BaseProcessingJobRunner):
             "end_ts": end_ts,
             "source": "if_training_remediation",
             "run_id": self.runtime_config.run_id,
+            "chunk_index": chunk_index,
+            "chunk_hash": chunk_hash,
+            "ranges": [{"start_ts_iso": item["start_ts_iso"], "end_ts_iso": item["end_ts_iso"]} for item in missing_15m],
             "manifest": build_execution_manifest(
                 project_name=self.runtime_config.project_name,
                 feature_spec_version=self.runtime_config.feature_spec_version,
@@ -667,6 +772,8 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 return {
                     "status": "Skipped",
                     "execution_name": name,
+                    "chunk_index": chunk_index,
+                    "chunk_hash": chunk_hash,
                     "requested_range": {"start_ts": start_ts, "end_ts": end_ts},
                     "failure_reason": "ExecutionAlreadyExists",
                 }
@@ -675,12 +782,21 @@ class IFTrainingJob(BaseProcessingJobRunner):
         return {
             "status": final["status"],
             "execution_arn": response["executionArn"],
+            "chunk_index": chunk_index,
+            "chunk_hash": chunk_hash,
             "requested_range": {"start_ts": start_ts, "end_ts": end_ts},
             "failure_reason": final.get("cause") or final.get("error"),
             "target_resolution": target,
         }
 
-    def _invoke_fgb_baseline_rebuild(self, sagemaker_client, missing_fgb: List[Dict[str, Any]], attempt: int, target: Dict[str, Any]) -> Dict[str, Any]:
+    def _invoke_fgb_baseline_rebuild(
+        self,
+        sagemaker_client,
+        missing_fgb: List[Dict[str, Any]],
+        chunk_index: int,
+        chunk_hash: str,
+        target: Dict[str, Any],
+    ) -> Dict[str, Any]:
         """Invoke FG-B baseline pipeline for missing baseline references."""
         pipeline_name = target.get("resolved_target")
         if not pipeline_name:
@@ -696,7 +812,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
             ]
             started = sagemaker_client.start_pipeline_execution(
                 PipelineName=pipeline_name,
-                PipelineExecutionDescription=f"if_training remediation run_id={self.runtime_config.run_id} attempt={attempt} reference={reference_time_iso} idx={idx}",
+                PipelineExecutionDescription=f"if_training remediation run_id={self.runtime_config.run_id} chunk={chunk_index} hash={chunk_hash} reference={reference_time_iso} idx={idx}",
                 PipelineParameters=params,
             )
             final = self._wait_for_pipeline_execution(sagemaker_client, started["PipelineExecutionArn"])
@@ -706,6 +822,8 @@ class IFTrainingJob(BaseProcessingJobRunner):
                     "pipeline_execution_arn": started["PipelineExecutionArn"],
                     "status": final["status"],
                     "failure_reason": final.get("failure_reason", ""),
+                    "chunk_index": chunk_index,
+                    "chunk_hash": chunk_hash,
                 }
             )
         status = "Succeeded" if runs and all(item["status"] == "Succeeded" for item in runs) else ("Skipped" if not runs else "Failed")

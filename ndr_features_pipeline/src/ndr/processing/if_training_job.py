@@ -2596,12 +2596,29 @@ def _put_json(client, bucket: str, key: str, payload) -> None:
 def run_if_training_from_runtime_config(runtime_config: IFTrainingRuntimeConfig) -> None:
     """Execute the run if training from runtime config stage of the workflow."""
     from ndr.config.job_spec_loader import load_job_spec
+    from ndr.config.project_parameters_loader import ProjectParametersLoader
     from pyspark.sql import SparkSession
+
+    linkage_loader = ProjectParametersLoader(
+        dpp_table_name=runtime_config.dpp_config_table_name,
+        mlp_table_name=runtime_config.mlp_config_table_name,
+    )
+    ml_project_names = linkage_loader.load_ml_project_names(
+        project_name=runtime_config.project_name,
+        feature_spec_version=runtime_config.feature_spec_version,
+    )
+    if runtime_config.ml_project_name not in ml_project_names:
+        raise ValueError(
+            "ml_project_name is not linked to project_name in DDB contracts: "
+            f"project_name={runtime_config.project_name}, ml_project_name={runtime_config.ml_project_name}, "
+            f"allowed_ml_project_names={ml_project_names}"
+        )
 
     job_spec = load_job_spec(
         project_name=runtime_config.project_name,
         job_name="if_training",
         feature_spec_version=runtime_config.feature_spec_version,
+        table_name=runtime_config.dpp_config_table_name,
     )
     runtime_defaults = (job_spec.get("runtime_defaults") or {}) if isinstance(job_spec, dict) else {}
     runtime_config = replace(

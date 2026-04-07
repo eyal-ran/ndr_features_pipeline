@@ -431,6 +431,7 @@ These values ensure inference replicates training preprocessing.
   - Under current known constants, planner resolves concrete `W_required.start = U_start - 44d`.
 - Remediation is orchestration-backed metadata with selective manifest execution, deterministic chunking metadata (`chunk_index`, `chunk_size`, `chunk_hash`), and idempotent retries per chunk (`remediation.max_retries`), with independent toggles for 15m backfill and FG-B rebuild paths.
   - Batch Index is authoritative for readiness derivation in verify/plan stages (`batch_index_table_name` is actively used, not just validated), and planner outputs carry traceable selector evidence (`pk`, range bounds, observed `sk` batch IDs).
+  - Runtime table parameters are operational (not no-op): `dpp_config_table_name` is used to load `if_training` JobSpec, and `mlp_config_table_name` is used to validate project↔ML-project linkage (`ml_project_name` must exist in the DDB-linked set before execution).
   - Planner emits deterministic readiness artifacts:
     - `training_readiness_manifest.json` (expected/observed/unresolved windows by family from Batch Index),
     - `missing_windows_manifest.json` (canonical remediation input schema),

@@ -19,6 +19,8 @@ def build_prediction_feature_join_pipeline(
     role_arn: str,
     default_bucket: str,
     region_name: str,
+    project_name_for_contracts: str,
+    feature_spec_version_for_contracts: str,
 ) -> Pipeline:
     """Create the prediction feature join pipeline.
 
@@ -83,8 +85,8 @@ def build_prediction_feature_join_pipeline(
     )
 
     resolved_code_uri = resolve_step_code_uri(
-        project_name=project_name.default_value,
-        feature_spec_version=feature_spec_version.default_value,
+        project_name=project_name_for_contracts,
+        feature_spec_version=feature_spec_version_for_contracts,
         pipeline_job_name=PIPELINE_JOB_NAME,
         step_name="PredictionFeatureJoinStep",
     )

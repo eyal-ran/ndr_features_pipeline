@@ -213,6 +213,7 @@ It includes:
 - **Implemented pipeline function:** `build_if_training_pipeline`.
 - **Pipeline code location:** `src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py`.
 - **Purpose:** execute verifier + bounded remediation + re-verification + IF training + publish + attributes + deploy in one ordered pipeline-native chain.
+- **Branch context contract:** each step invocation propagates `--ml-project-name` to `run_if_training` so training/evaluation handlers execute against the correct MLP branch contract.
 
 #### Pipeline steps and run chain
 1. `TrainingDataVerifierStep`
@@ -243,6 +244,7 @@ It includes:
 - All IF training stages execute through the same runtime resolver path in `run_if_training`/`if_training_job`, ensuring DDB-first target selection and dependency-readiness preflight checks before expensive train/remediate/evaluation operations.
 - Remediation and evaluation artifacts now include per-branch target provenance and selected target details for auditability.
 - Runtime `EvaluationWindowsJson` is validated for JSON shape, time ordering, and non-overlap before execution proceeds.
+- Pipeline-definition code URI resolution uses concrete deployment contract identifiers (project/spec values), and rejects placeholder values such as `<required:...>` during pipeline build.
 
 ## 5) Triggering source: `sfn_ndr_backfill_reprocessing` (backfill and reprocessing)
 

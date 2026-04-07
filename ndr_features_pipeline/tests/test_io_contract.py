@@ -63,6 +63,20 @@ def test_resolve_step_code_uri_loads_pipeline_spec(monkeypatch):
     assert uri == "s3://bucket/path/run_delta_builder.py"
 
 
+def test_resolve_step_code_uri_rejects_placeholder_inputs():
+    try:
+        resolve_step_code_uri(
+            project_name="<required:ProjectName>",
+            feature_spec_version="v1",
+            pipeline_job_name="pipeline_15m_streaming",
+            step_name="DeltaBuilderStep",
+        )
+    except ValueError as exc:
+        assert "concrete value" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
 def test_run_delta_builder_script_contract_includes_canonical_raw_parsed_logs_arg():
     script = Path("src/ndr/scripts/run_delta_builder.py").read_text()
     assert "--raw-parsed-logs-s3-prefix" in script
@@ -88,3 +102,4 @@ def test_prediction_join_pipeline_defines_ml_project_name_parameter():
 def test_if_training_pipeline_defines_ml_project_name_parameter():
     source = Path("src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py").read_text()
     assert 'name="MlProjectName"' in source
+    assert '"--ml-project-name"' in source

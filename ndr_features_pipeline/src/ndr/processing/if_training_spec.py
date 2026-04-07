@@ -199,6 +199,7 @@ class IFTrainingRuntimeConfig:
     """Runtime context injected by orchestration for a single run."""
 
     project_name: str
+    ml_project_name: str
     feature_spec_version: str
     run_id: str
     execution_ts_iso: str

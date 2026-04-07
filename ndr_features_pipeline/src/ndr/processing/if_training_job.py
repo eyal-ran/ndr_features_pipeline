@@ -329,7 +329,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         }
         bucket, key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
         client = boto3.client("s3")
-        base = f"{key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/verification"
+        base = f"{self._report_run_prefix(key_prefix)}/verification"
         _put_json(client, bucket, f"{base}/{stage_name}.json", verification_summary)
         _put_json(client, bucket, f"{base}/latest_status.json", verification_summary)
         logger.info("Unified training %s stage succeeded", stage_name, extra={"preflight": preflight})
@@ -467,8 +467,24 @@ class IFTrainingJob(BaseProcessingJobRunner):
         import boto3
 
         bucket, key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
-        key = f"{key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/history_planner.json"
+        key = f"{self._report_run_prefix(key_prefix)}/history_planner.json"
         _put_json(boto3.client("s3"), bucket, key, history_plan)
+
+    def _report_run_prefix(self, key_prefix: str) -> str:
+        """Build report key prefix isolated by ml-project branch and run id."""
+        return (
+            f"{key_prefix.rstrip('/')}/ml_project_name={self.runtime_config.ml_project_name}/"
+            f"run_id={self.runtime_config.run_id}"
+        )
+
+    def _artifact_run_prefix(self, key_prefix: str, train_start: datetime, train_end: datetime) -> str:
+        """Build artifact key prefix isolated by ml-project branch and run id."""
+        return (
+            f"{key_prefix.rstrip('/')}/ml_project_name={self.runtime_config.ml_project_name}/"
+            f"model_version={self.training_spec.model_version}/"
+            f"training_start={train_start.strftime('%Y-%m-%d')}/"
+            f"training_end={train_end.strftime('%Y-%m-%d')}/run_id={self.runtime_config.run_id}"
+        )
 
     def _run_remediation_stage(self) -> None:
         """Run selective remediation stage for missing windows."""
@@ -513,10 +529,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 (entry["ranges"] for entry in chunk["entries"] if entry["artifact_family"] == "fg_b_daily"),
                 [],
             )
-            key = (
-                f"{report_key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/"
-                f"remediation/chunk_{index:04d}.json"
-            )
+            key = f"{self._report_run_prefix(report_key_prefix)}/remediation/chunk_{index:04d}.json"
             backfill_enabled = bool(missing_15m_manifest) and self._resolve_toggle(
                 self.training_spec.toggles.enable_auto_remediate_15m and self.training_spec.remediation.enable_backfill_15m,
             )
@@ -760,6 +773,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         payload = {
             "project_name": self.runtime_config.project_name,
             "feature_spec_version": self.runtime_config.feature_spec_version,
+            "ml_project_name": self.runtime_config.ml_project_name,
             "start_ts": start_ts,
             "end_ts": end_ts,
             "source": "if_training_remediation",
@@ -877,6 +891,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         publication = {
             "run_id": self.runtime_config.run_id,
             "project_name": self.runtime_config.project_name,
+            "ml_project_name": self.runtime_config.ml_project_name,
             "feature_spec_version": self.runtime_config.feature_spec_version,
             "model_version": self.training_spec.model_version,
             "published_at": self.runtime_config.execution_ts_iso,
@@ -1086,7 +1101,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         import boto3
 
         bucket, key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
-        key = f"{key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/{stage}.json"
+        key = f"{self._report_run_prefix(key_prefix)}/{stage}.json"
         client = boto3.client("s3")
         _put_json(client, bucket, key, payload)
 
@@ -1110,7 +1125,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         manifests: List[Dict[str, Any]] = []
         for window in evaluation_windows:
             window_id = window["window_id"]
-            base = f"{key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/evaluation/{window_id}"
+            base = f"{self._report_run_prefix(key_prefix)}/evaluation/{window_id}"
             inference_run = self._invoke_evaluation_pipeline(
                 sagemaker_client=sagemaker,
                 pipeline_name=inference_pipeline_name,
@@ -1187,6 +1202,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         params = [
             {"Name": "ProjectName", "Value": self.runtime_config.project_name},
             {"Name": "FeatureSpecVersion", "Value": self.runtime_config.feature_spec_version},
+            {"Name": "MlProjectName", "Value": self.runtime_config.ml_project_name},
             {"Name": "MiniBatchId", "Value": f"eval-{self.runtime_config.run_id}-{window_id}"},
             {"Name": "BatchStartTsIso", "Value": start_ts},
             {"Name": "BatchEndTsIso", "Value": end_ts},
@@ -1246,7 +1262,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         else:
             suffix = f"{stage}.json"
         stage_prefix = f"{base_dir.strip('/')}/" if base_dir else ""
-        key = f"{key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/{stage_prefix}{suffix}"
+        key = f"{self._report_run_prefix(key_prefix)}/{stage_prefix}{suffix}"
         client = boto3.client("s3")
         try:
             response = client.get_object(Bucket=bucket, Key=key)
@@ -2103,11 +2119,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         bucket, key_prefix = _split_s3_uri(self.training_spec.output.artifacts_s3_prefix)
         client = boto3.client("s3")
 
-        run_prefix = (
-            f"{key_prefix.rstrip('/')}/model_version={self.training_spec.model_version}/"
-            f"training_start={train_start.strftime('%Y-%m-%d')}/"
-            f"training_end={train_end.strftime('%Y-%m-%d')}/run_id={self.runtime_config.run_id}"
-        )
+        run_prefix = self._artifact_run_prefix(key_prefix, train_start, train_end)
         model_key = f"{run_prefix}/model/model.joblib"
         model_tar_key = f"{run_prefix}/model/model.tar.gz"
 
@@ -2174,6 +2186,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         report = {
             "run_metadata": {
                 "project_name": self.runtime_config.project_name,
+                "ml_project_name": self.runtime_config.ml_project_name,
                 "feature_spec_version": self.runtime_config.feature_spec_version,
                 "model_version": self.training_spec.model_version,
                 "run_id": self.runtime_config.run_id,
@@ -2239,7 +2252,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
             },
         }
 
-        report_key = f"{report_key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/final_training_report.json"
+        report_key = f"{self._report_run_prefix(report_key_prefix)}/final_training_report.json"
         _put_json(client, report_bucket, report_key, report)
 
         self._write_inference_preprocessing_back(selected_features, scaler_params, outlier_params)
@@ -2257,10 +2270,11 @@ class IFTrainingJob(BaseProcessingJobRunner):
         import boto3
 
         report_bucket, report_key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
-        key = f"{report_key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/preflight_failure_context.json"
+        key = f"{self._report_run_prefix(report_key_prefix)}/preflight_failure_context.json"
         payload = {
             "run_metadata": {
                 "project_name": self.runtime_config.project_name,
+                "ml_project_name": self.runtime_config.ml_project_name,
                 "feature_spec_version": self.runtime_config.feature_spec_version,
                 "model_version": self.training_spec.model_version,
                 "run_id": self.runtime_config.run_id,
@@ -2288,10 +2302,11 @@ class IFTrainingJob(BaseProcessingJobRunner):
         import boto3
 
         report_bucket, report_key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
-        key = f"{report_key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/failure_report.json"
+        key = f"{self._report_run_prefix(report_key_prefix)}/failure_report.json"
         payload = {
             "run_metadata": {
                 "project_name": self.runtime_config.project_name,
+                "ml_project_name": self.runtime_config.ml_project_name,
                 "feature_spec_version": self.runtime_config.feature_spec_version,
                 "model_version": self.training_spec.model_version,
                 "run_id": self.runtime_config.run_id,
@@ -2324,13 +2339,11 @@ class IFTrainingJob(BaseProcessingJobRunner):
         import boto3
 
         report_bucket, report_key_prefix = _split_s3_uri(self.training_spec.output.report_s3_prefix)
-        context_key = (
-            f"{report_key_prefix.rstrip('/')}/run_id={self.runtime_config.run_id}/"
-            "failure_experiment_context.json"
-        )
+        context_key = f"{self._report_run_prefix(report_key_prefix)}/failure_experiment_context.json"
         payload = {
             "run_metadata": {
                 "project_name": self.runtime_config.project_name,
+                "ml_project_name": self.runtime_config.ml_project_name,
                 "feature_spec_version": self.runtime_config.feature_spec_version,
                 "model_version": self.training_spec.model_version,
                 "run_id": self.runtime_config.run_id,

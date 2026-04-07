@@ -202,13 +202,14 @@ It includes:
 2. `ParseIncomingProjectContext` — parse project/spec hints.
 3. `LoadDppConfigFromDynamo -> LoadMlpConfigFromDynamo` — load project defaults.
 4. `ResolvePipelineRuntimeParams` — resolve unified training runtime values.
-5. `StartTrainingPipeline` — **PIPELINE TRIGGER**; starts `${PipelineNameIFTraining}`.
-6. `DescribeTrainingPipeline` — poll unified training pipeline status.
-7. `TrainingPipelineStatusChoice` — branch on pipeline status.
-8. `WaitBeforeTrainingDescribe` — wait between polls.
-9. `IncrementTrainingPollAttempt` — increment poll counter.
-10. `WorkflowFailed` — terminal workflow failure state.
-11. `Success` — terminal success state.
+5. `RunTrainingPerMlProject` — strict `ml_project_name` map fan-out for training branches.
+6. `StartTrainingPipeline` — **PIPELINE TRIGGER**; starts `${PipelineNameIFTraining}` with `MlProjectName`.
+7. `DescribeTrainingPipeline` — poll unified training pipeline status.
+8. `TrainingPipelineStatusChoice` — branch on pipeline status.
+9. `WaitBeforeTrainingDescribe` — wait between polls.
+10. `IncrementTrainingPollAttempt` — increment poll counter.
+11. `WorkflowFailed` — terminal workflow failure state.
+12. `Success` — terminal success state.
 
 ### Pipeline triggered at `StartTrainingPipeline`: `${PipelineNameIFTraining}`
 - **Implementation state:** Implemented and authoritative owner for the full training lifecycle.
@@ -216,6 +217,7 @@ It includes:
 - **Pipeline code location:** `src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py`.
 - **Purpose:** execute verifier + bounded remediation + re-verification + IF training + publish + attributes + deploy in one ordered pipeline-native chain.
 - **Branch context contract:** each step invocation propagates `--ml-project-name` to `run_if_training` so training/evaluation handlers execute against the correct MLP branch contract.
+- **Evaluation downstream contract:** post-training evaluation starts inference and prediction-join pipelines with `MlProjectName` so branch outputs stay isolated.
 
 #### Pipeline steps and run chain
 1. `TrainingDataVerifierStep`

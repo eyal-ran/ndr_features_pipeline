@@ -38,11 +38,19 @@ The system is orchestrated through Step Functions and SageMaker Pipelines. Pipel
 - Entrypoint: `ndr.scripts.run_pair_counts_builder`
 - Job: `src/ndr/processing/pair_counts_builder_job.py`
 - Purpose: computes pair-level counts used downstream for rarity and baseline features.
+- Contract notes:
+  - Pair-Counts runtime now supports Batch Index resolution for canonical raw-input and pair-counts output prefixes (`raw_parsed_logs_s3_prefix`, `s3_prefixes.dpp.pair_counts`).
+  - `--batch-index-table-name` is supported for deterministic batch-path lookup.
 
 ### 4) FG-C Correlation Builder
 - Entrypoint: `ndr.scripts.run_fg_c_builder`
 - Job: `src/ndr/processing/fg_c_builder_job.py`
 - Purpose: computes correlation/drift features by combining current behavior (FG-A) with baseline references.
+- Contract notes:
+  - FG-C now fails fast when required FG-B baseline dependencies are missing (`host`, `segment`, or `ip_metadata`) instead of silently succeeding with empty output.
+  - FG-C enforces host join-key granularity parity with FG-B host baselines (default required keys: `host_ip`, `role`, `segment_id`, `time_band`, `window_label`).
+  - Segment fallback joins now reject under-specified key sets.
+  - `--batch-index-table-name` is supported to resolve canonical FG-A / FG-B / pair-context / FG-C prefixes from Batch Index.
 
 ## Baseline and reference-data path
 

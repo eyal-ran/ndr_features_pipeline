@@ -21,6 +21,7 @@ from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
 from ndr.logging.logger import get_logger
+from ndr.config.batch_index_loader import BatchIndexLoader
 from ndr.config.job_spec_loader import load_pair_counts_job_spec
 from ndr.config.job_spec_models import PairCountsJobSpec
 from ndr.processing.base_runner import BaseRunner
@@ -64,6 +65,7 @@ class PairCountsJobRuntimeConfig:
     raw_parsed_logs_s3_prefix: str = ""
     batch_start_ts_iso: str = ""
     batch_end_ts_iso: str = ""
+    batch_index_table_name: str | None = None
 
 
 class PairCountsBuilderJob(BaseRunner):
@@ -96,10 +98,11 @@ class PairCountsBuilderJob(BaseRunner):
         """Execute the full workflow for this job runner."""
         LOGGER.info("Pair-Counts builder job started.")
         try:
-            self.job_spec = load_pair_counts_job_spec(
-                project_name=self.runtime_config.project_name,
-                feature_spec_version=self.runtime_config.feature_spec_version,
-            )
+            if self.job_spec is None:
+                self.job_spec = load_pair_counts_job_spec(
+                    project_name=self.runtime_config.project_name,
+                    feature_spec_version=self.runtime_config.feature_spec_version,
+                )
             LOGGER.info(
                 "Loaded JobSpec for pair_counts_builder.",
                 extra={"traffic_layout": self.job_spec.traffic_input.layout},
@@ -231,7 +234,6 @@ class PairCountsBuilderJob(BaseRunner):
             ip_col="source_ip",
             segment_mapping=self.job_spec.segment_mapping,
         )
-
         grouped = (
             df.groupBy("source_ip", "destination_ip", "destination_port", "segment_id")
             .agg(F.count(F.lit(1)).alias("sessions_cnt"))
@@ -284,5 +286,22 @@ def run_pair_counts_builder_from_runtime_config(
     runtime_config: PairCountsJobRuntimeConfig,
 ) -> None:
     """Helper to run PairCountsBuilderJob from a typed runtime config."""
+    record = BatchIndexLoader(table_name=runtime_config.batch_index_table_name).get_batch(
+        project_name=runtime_config.project_name,
+        batch_id=runtime_config.mini_batch_id,
+    )
+    if record is not None:
+        if not runtime_config.raw_parsed_logs_s3_prefix and record.raw_parsed_logs_s3_prefix:
+            runtime_config.raw_parsed_logs_s3_prefix = str(record.raw_parsed_logs_s3_prefix)
     job = PairCountsBuilderJob(runtime_config=runtime_config)
+    if record is not None:
+        dpp_prefixes = record.s3_prefixes.get("dpp", {})
+        pair_counts_prefix = dpp_prefixes.get("pair_counts")
+        if pair_counts_prefix:
+            if getattr(job, "job_spec", None) is None:
+                job.job_spec = load_pair_counts_job_spec(
+                    project_name=runtime_config.project_name,
+                    feature_spec_version=runtime_config.feature_spec_version,
+                )
+            job.job_spec.pair_counts_output.s3_prefix = str(pair_counts_prefix)
     job.run()

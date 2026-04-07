@@ -68,3 +68,16 @@ This is the reproducibility boundary for deployed single-file step artifacts.
   - Item A (`SK=<batch_id>`)
   - Item B (`SK=<YYYY/MM/dd>#<hh>#<within_hour_run_number>`)
 - Post-write mutation is intentionally narrow: `BatchIndexWriter.update_status(...)` may only update status/timestamp fields.
+
+## 7) Task 7.4 backfill writer closure contract
+
+- Backfill reconstructed batches must use the same dual-item write contract (`SK=<batch_id>` + `SK=<YYYY/MM/dd>#<hh>#<within_hour_run_number>`).
+- `s3_prefixes` must include both:
+  - `dpp` coverage, and
+  - branch-level `mlp` coverage for every `ml_project_name` declared in `ml_project_names`.
+- Status progression for backfill is deterministic and ordered:
+  - `planned` -> `materialized` -> `validated` -> `published`
+  - failure terminal state: `failed`.
+- Partial-write reconciliation rule:
+  - if only one dual item exists after a write attempt, rerun the idempotent dual-item writer to restore completeness,
+  - then set `backfill_status=failed` for deterministic failure signalling when a write attempt had split success/failure.

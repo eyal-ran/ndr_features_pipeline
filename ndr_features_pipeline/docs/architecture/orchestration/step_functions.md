@@ -188,3 +188,17 @@ Required orchestration behavior:
   - `range_start_ts`
   - `range_end_ts`
 - Any manifest-read/manifest-validation failure must fail fast before map fanout.
+
+## 8) Task 7.4 backfill Batch Index write + reconciliation contract
+
+Per map worker reconstructed batch:
+
+1. Materialize Batch Index dual items idempotently (`SK=<batch_id>` and `SK=<YYYY/MM/dd>#<hh>#<within_hour_run_number>`).
+2. Validate branch-level prefix coverage before write:
+   - `s3_prefixes.dpp` present,
+   - `s3_prefixes.mlp.<ml_project_name>` present for every branch in `ml_project_names`.
+3. Apply deterministic `backfill_status` progression on the batch lookup item:
+   - `planned` -> `materialized` -> `validated` -> `published`.
+4. On split success/failure across dual writes, execute reconciliation by rerunning idempotent dual-item upsert, then set `backfill_status=failed` for deterministic recovery signaling.
+
+Idempotent reruns are mandatory and rely on conditional-write safe `PutItem` + existing-item update behavior.

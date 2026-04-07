@@ -630,6 +630,11 @@ def _build_bootstrap_items(
                         "TrainingDataVerifierStep": {
                             "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/TrainingDataVerifierStep/",
                             "entry_script": "run_if_training.py",
+                            "code_metadata": {
+                                "artifact_mode": "single_file",
+                                "artifact_build_id": "<required:ArtifactBuildId>",
+                                "artifact_sha256": "<required:ArtifactSha256>",
+                            },
                             "data_prefixes": {
                                 "input_fg_a": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_a/",
                                 "input_fg_c": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_c/"
@@ -638,6 +643,11 @@ def _build_bootstrap_items(
                         "MissingFeatureCreationStep": {
                             "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/MissingFeatureCreationStep/",
                             "entry_script": "run_if_training.py",
+                            "code_metadata": {
+                                "artifact_mode": "single_file",
+                                "artifact_build_id": "<required:ArtifactBuildId>",
+                                "artifact_sha256": "<required:ArtifactSha256>",
+                            },
                             "data_prefixes": {
                                 "input_raw": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/raw/traffic/",
                                 "output_features": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/"
@@ -646,6 +656,11 @@ def _build_bootstrap_items(
                         "PostRemediationVerificationStep": {
                             "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/PostRemediationVerificationStep/",
                             "entry_script": "run_if_training.py",
+                            "code_metadata": {
+                                "artifact_mode": "single_file",
+                                "artifact_build_id": "<required:ArtifactBuildId>",
+                                "artifact_sha256": "<required:ArtifactSha256>",
+                            },
                             "data_prefixes": {
                                 "input_fg_a": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_a/",
                                 "input_fg_c": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_c/"
@@ -654,6 +669,11 @@ def _build_bootstrap_items(
                         "IFTrainingStep": {
                             "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/IFTrainingStep/",
                             "entry_script": "run_if_training.py",
+                            "code_metadata": {
+                                "artifact_mode": "single_file",
+                                "artifact_build_id": "<required:ArtifactBuildId>",
+                                "artifact_sha256": "<required:ArtifactSha256>",
+                            },
                             "data_prefixes": {
                                 "output_training": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/training/if_training/"
                             }
@@ -661,6 +681,11 @@ def _build_bootstrap_items(
                         "ModelPublishStep": {
                             "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/ModelPublishStep/",
                             "entry_script": "run_if_training.py",
+                            "code_metadata": {
+                                "artifact_mode": "single_file",
+                                "artifact_build_id": "<required:ArtifactBuildId>",
+                                "artifact_sha256": "<required:ArtifactSha256>",
+                            },
                             "data_prefixes": {
                                 "output_registry": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/model_registry/"
                             }
@@ -668,6 +693,11 @@ def _build_bootstrap_items(
                         "ModelAttributesStep": {
                             "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/ModelAttributesStep/",
                             "entry_script": "run_if_training.py",
+                            "code_metadata": {
+                                "artifact_mode": "single_file",
+                                "artifact_build_id": "<required:ArtifactBuildId>",
+                                "artifact_sha256": "<required:ArtifactSha256>",
+                            },
                             "data_prefixes": {
                                 "output_attributes": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/model_attributes/"
                             }
@@ -675,6 +705,11 @@ def _build_bootstrap_items(
                         "ModelDeployStep": {
                             "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/ModelDeployStep/",
                             "entry_script": "run_if_training.py",
+                            "code_metadata": {
+                                "artifact_mode": "single_file",
+                                "artifact_build_id": "<required:ArtifactBuildId>",
+                                "artifact_sha256": "<required:ArtifactSha256>",
+                            },
                             "data_prefixes": {
                                 "output_deploy": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/model_deploy/"
                             }

@@ -3,7 +3,11 @@ import types
 
 sys.modules.setdefault("boto3", types.ModuleType("boto3"))
 
-from ndr.pipeline.io_contract import resolve_step_code_uri, resolve_step_script_contract
+from ndr.pipeline.io_contract import (
+    resolve_step_code_uri,
+    resolve_step_script_contract,
+    validate_step_code_metadata,
+)
 from pathlib import Path
 
 
@@ -75,6 +79,83 @@ def test_resolve_step_code_uri_rejects_placeholder_inputs():
         assert "concrete value" in str(exc)
     else:
         raise AssertionError("Expected ValueError")
+
+
+def test_validate_step_code_metadata_requires_packaging_fields():
+    try:
+        validate_step_code_metadata(
+            {
+                "scripts": {
+                    "steps": {
+                        "IFTrainingStep": {
+                            "code_prefix_s3": "s3://bucket/path",
+                            "entry_script": "run_if_training.py",
+                            "code_metadata": {"artifact_mode": "single_file"},
+                        }
+                    }
+                }
+            },
+            step_name="IFTrainingStep",
+        )
+    except ValueError as exc:
+        assert "Packaging metadata decision required" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
+def test_resolve_step_code_uri_training_requires_step_code_metadata(monkeypatch):
+    monkeypatch.setattr(
+        "ndr.pipeline.io_contract.load_job_spec",
+        lambda **_kwargs: {
+            "scripts": {
+                "steps": {
+                    "IFTrainingStep": {
+                        "code_prefix_s3": "s3://bucket/path",
+                        "entry_script": "run_if_training.py",
+                    }
+                }
+            }
+        },
+    )
+    try:
+        resolve_step_code_uri(
+            project_name="ndr-project",
+            feature_spec_version="v1",
+            pipeline_job_name="pipeline_if_training",
+            step_name="IFTrainingStep",
+        )
+    except ValueError as exc:
+        assert "Packaging metadata decision required" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
+def test_resolve_step_code_uri_training_accepts_step_code_metadata(monkeypatch):
+    monkeypatch.setattr(
+        "ndr.pipeline.io_contract.load_job_spec",
+        lambda **_kwargs: {
+            "scripts": {
+                "steps": {
+                    "IFTrainingStep": {
+                        "code_prefix_s3": "s3://bucket/path",
+                        "entry_script": "run_if_training.py",
+                        "code_metadata": {
+                            "artifact_mode": "single_file",
+                            "artifact_build_id": "build-123",
+                            "artifact_sha256": "deadbeef",
+                        },
+                    }
+                }
+            }
+        },
+    )
+    uri = resolve_step_code_uri(
+        project_name="ndr-project",
+        feature_spec_version="v1",
+        pipeline_job_name="pipeline_if_training",
+        step_name="IFTrainingStep",
+    )
+    assert uri == "s3://bucket/path/run_if_training.py"
 
 
 def test_run_delta_builder_script_contract_includes_canonical_raw_parsed_logs_arg():

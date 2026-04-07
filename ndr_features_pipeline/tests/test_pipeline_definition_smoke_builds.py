@@ -152,3 +152,22 @@ def test_if_training_pipeline_enforces_verify_plan_remediate_reverify_train_sequ
     assert steps["MissingFeatureCreationStep"].kwargs["depends_on"] == [steps["RemediationPlanningStep"]]
     assert steps["PostRemediationVerificationStep"].kwargs["depends_on"] == [steps["MissingFeatureCreationStep"]]
     assert steps["IFTrainingStep"].kwargs["depends_on"] == [steps["PostRemediationVerificationStep"]]
+
+
+def test_if_training_pipeline_rejects_placeholder_contract_identity(monkeypatch):
+    _install_sagemaker_stubs()
+    from ndr.pipeline import sagemaker_pipeline_definitions_if_training as p_train
+
+    try:
+        p_train.build_if_training_pipeline(
+            pipeline_name="ptrain",
+            role_arn="arn:aws:iam::123:role/x",
+            default_bucket="bucket",
+            region_name="us-east-1",
+            project_name_for_contracts="<required:ProjectName>",
+            feature_spec_version_for_contracts="v1",
+        )
+    except ValueError as exc:
+        assert "concrete value" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError")

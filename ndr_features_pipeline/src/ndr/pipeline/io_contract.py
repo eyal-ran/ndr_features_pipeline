@@ -20,6 +20,9 @@ class StepScriptContract:
         return f"{self.code_prefix_s3.rstrip('/')}/{self.entry_script}"
 
 
+REQUIRED_CODE_METADATA_FIELDS = ("artifact_mode", "artifact_build_id", "artifact_sha256")
+
+
 def _ensure_mapping(value: Any, *, field_name: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"Expected mapping for '{field_name}', got {type(value).__name__}")
@@ -62,6 +65,37 @@ def resolve_step_script_contract(
     )
 
 
+def validate_step_code_metadata(
+    pipeline_spec: Mapping[str, Any],
+    *,
+    step_name: str,
+    required_fields: tuple[str, ...] = REQUIRED_CODE_METADATA_FIELDS,
+) -> Mapping[str, Any]:
+    """Validate required packaging metadata for a single pipeline step."""
+    scripts = _ensure_mapping(pipeline_spec.get("scripts"), field_name="scripts")
+    steps = _ensure_mapping(scripts.get("steps"), field_name="scripts.steps")
+    step_spec = _ensure_mapping(steps.get(step_name), field_name=f"scripts.steps.{step_name}")
+    code_metadata_raw = step_spec.get("code_metadata")
+    if not isinstance(code_metadata_raw, Mapping):
+        raise ValueError(
+            f"Packaging metadata decision required: scripts.steps.{step_name}.code_metadata is missing"
+        )
+    code_metadata = code_metadata_raw
+
+    missing_fields = [
+        field_name
+        for field_name in required_fields
+        if not isinstance(code_metadata.get(field_name), str) or not code_metadata.get(field_name, "").strip()
+    ]
+    if missing_fields:
+        missing = ", ".join(missing_fields)
+        raise ValueError(
+            f"Packaging metadata decision required: scripts.steps.{step_name}.code_metadata missing {missing}"
+        )
+
+    return code_metadata
+
+
 def resolve_step_code_uri(
     *,
     project_name: str,
@@ -87,5 +121,7 @@ def resolve_step_code_uri(
         feature_spec_version=feature_spec_version,
         table_name=table_name,
     )
+    if pipeline_job_name == "pipeline_if_training":
+        validate_step_code_metadata(pipeline_spec, step_name=step_name)
     contract = resolve_step_script_contract(pipeline_spec, step_name=step_name)
     return contract.script_s3_uri

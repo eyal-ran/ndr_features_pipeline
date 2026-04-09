@@ -27,7 +27,7 @@ def test_rt_missing_and_no_missing_branches_route_deterministically():
 
     gate = states["CheckRtArtifactReadiness"]
     no_missing = next(choice for choice in gate["Choices"] if choice["Condition"] == "{% $count($rt_artifact_readiness_manifest.missing_ranges) = 0 %}")
-    assert no_missing["Next"] == "StartInferencePipeline"
+    assert no_missing["Next"] == "Start15mDependentFeaturesPipeline"
 
     missing_first_cycle = next(choice for choice in gate["Choices"] if choice["Condition"] == "{% $rt_readiness_cycle = 0 %}")
     assert missing_first_cycle["Next"] == "BuildRtBackfillRemediationRequest"
@@ -51,6 +51,20 @@ def test_rt_remediation_invocation_uses_backfill_contract_payload_and_revalidate
 
     assert states["UpdateBatchIndexRemediationSucceeded"]["Next"] == "RecheckRtArtifactReadiness"
     assert states["RecheckRtArtifactReadiness"]["Next"] == "CheckRtArtifactReadiness"
+
+
+def test_rt_dependent_phase_pipeline_runs_after_readiness_gate():
+    states = _load_rt_states()
+
+    dependent_start = states["Start15mDependentFeaturesPipeline"]
+    assert dependent_start["Arguments"]["PipelineName"] == "${PipelineName15mDependent}"
+    dependent_params = {entry["Name"] for entry in dependent_start["Arguments"]["PipelineParameters"]}
+    assert dependent_params == {"ProjectName", "FeatureSpecVersion", "MiniBatchId", "BatchStartTsIso", "BatchEndTsIso"}
+    assert "RawParsedLogsS3Prefix" not in dependent_params
+
+    choice = states["DependentFeaturesPipelineStatusChoice"]
+    success = next(c for c in choice["Choices"] if c["Condition"] == "{% $dependent_pipeline_status = 'Succeeded' %}")
+    assert success["Next"] == "StartInferencePipeline"
 
 
 def test_rt_batch_index_status_updates_cover_requested_succeeded_and_failed_outcomes():

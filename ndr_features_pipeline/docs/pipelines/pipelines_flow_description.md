@@ -29,7 +29,9 @@ It includes:
 9. `DuplicateMiniBatch` — fail duplicate execution attempts.
 10. `WriteBatchIndexBatchIdItem -> UpdateBatchIndexBatchIdItem -> WriteBatchIndexDateLookupItem` — prewrite canonical batch-index records before any branch execution.
 11. `RunPerMlProjectBranch` — strict `ml_project_names` Map fan-out with explicit branch context (`ml_project_name`).
-12. `Start15mFeaturesPipeline` — **PIPELINE TRIGGER (inside Map branch)**; start `${PipelineName15m}`.
+12. `Start15mFeaturesPipeline` — **PIPELINE TRIGGER (inside Map branch)**; start `${PipelineName15m}` (core phase).
+13. `CheckRtArtifactReadiness` / remediation loop — enforce dependent readiness.
+14. `Start15mDependentFeaturesPipeline` — start `${PipelineName15mDependent}` (FG-C dependent phase).
 13. `Describe15mFeaturesPipeline` — poll 15m features pipeline status.
 14. `FeaturesPipelineStatusChoice` — branch on features pipeline status.
 15. `WaitBeforeDescribe15mFeatures` — wait between status polls.
@@ -45,9 +47,9 @@ It includes:
 25. `WorkflowFailed` — terminal failure state.
 26. `Success` — terminal success state.
 
-### Pipeline triggered at `Start15mFeaturesPipeline`: `${PipelineName15m}`
+### Pipeline triggered at `Start15mFeaturesPipeline`: `${PipelineName15m}` (core)
 - **Implementation state:** Implemented.
-- **Implemented pipeline function:** `build_15m_streaming_pipeline`.
+- **Implemented pipeline function:** `build_15m_streaming_pipeline` (Delta/FG-A/Pair-Counts).
 - **Pipeline code location:** `src/ndr/pipeline/sagemaker_pipeline_definitions_unified_with_fgc.py`.
 - **Purpose:** 15-minute feature-generation chain.
 
@@ -71,7 +73,10 @@ It includes:
    - Second-hand processing entrypoint: `run_pair_counts_builder_from_runtime_config`
    - Processing module: `src/ndr/processing/pair_counts_builder_job.py`
    - Processing purpose: build pair-count datasets for `(src_ip, dst_ip, dst_port)` over 15-minute slices.
-4. `FGCCorrBuilderStep` (depends on `PairCountsBuilderStep`)
+### Pipeline triggered at `Start15mDependentFeaturesPipeline`: `${PipelineName15mDependent}` (dependent)
+
+- **Implemented pipeline function:** `build_15m_dependent_pipeline`.
+- **Step/script:** `FGCCorrBuilderStep` → `run_fg_c_builder.py`.
    - Runs: `python -m ndr.scripts.run_fg_c_builder`
    - Script: `src/ndr/scripts/run_fg_c_builder.py`
    - Second-hand processing entrypoint: `run_fg_c_builder_from_runtime_config`

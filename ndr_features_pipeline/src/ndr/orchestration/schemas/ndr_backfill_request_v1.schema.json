@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ndr.contracts.NdrBackfillRequest.v1",
+  "title": "NdrBackfillRequest.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "consumer",
+    "project_name",
+    "feature_spec_version",
+    "requested_families",
+    "missing_ranges",
+    "provenance",
+    "idempotency_key"
+  ],
+  "properties": {
+    "contract_version": {"const": "NdrBackfillRequest.v1"},
+    "consumer": {"const": "realtime"},
+    "project_name": {"type": "string", "minLength": 1},
+    "feature_spec_version": {"type": "string", "minLength": 1},
+    "ml_project_name": {"type": "string", "minLength": 1},
+    "batch_id": {"type": "string", "minLength": 1},
+    "requested_families": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/definitions/family"}
+    },
+    "missing_ranges": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/definitions/missing_range"}
+    },
+    "source_hint": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "raw_parsed_logs_s3_prefix": {"type": "string", "minLength": 1}
+      }
+    },
+    "provenance": {"$ref": "#/definitions/provenance"},
+    "idempotency_key": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "definitions": {
+    "family": {
+      "type": "string",
+      "enum": ["delta", "fg_a", "pair_counts", "fg_c", "fg_b_baseline"]
+    },
+    "iso_ts": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "missing_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["family", "start_ts_iso", "end_ts_iso", "reason_code"],
+      "properties": {
+        "family": {"$ref": "#/definitions/family"},
+        "start_ts_iso": {"$ref": "#/definitions/iso_ts"},
+        "end_ts_iso": {"$ref": "#/definitions/iso_ts"},
+        "reason_code": {"type": "string", "minLength": 1}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_flow", "source_mode", "request_id"],
+      "properties": {
+        "producer_flow": {"type": "string", "minLength": 1},
+        "source_mode": {"type": "string", "enum": ["ingestion", "redshift_unload_fallback", "batch_index", "s3_listing_fallback", "mixed"]},
+        "request_id": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

@@ -812,6 +812,7 @@ def test_remediation_stage_invokes_orchestrators(monkeypatch):
     assert observed["payload"]["status"] == "completed"
     assert observed["payload"]["records"][0]["backfill_execution"]["status"] == "Succeeded"
     assert observed["payload"]["records"][0]["fgb_execution"]["status"] == "Succeeded"
+    assert sfn_client.last_input["contract_version"] == "NdrTrainingRemediationRequest.v1"
     assert sfn_client.last_input["manifest"]["contract_version"] == "backfill_manifest.v1"
     assert sfn_client.last_input["manifest"]["planner_mode"] == "caller_guided"
 

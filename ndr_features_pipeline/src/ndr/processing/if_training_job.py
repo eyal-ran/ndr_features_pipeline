@@ -19,6 +19,10 @@ from ndr.orchestration.backfill_contracts import (
     build_execution_manifest,
     build_family_range_plan,
 )
+from ndr.orchestration.remediation_contracts import (
+    build_default_provenance,
+    build_training_remediation_request,
+)
 from ndr.orchestration.training_missing_manifest import ensure_manifest, from_missing_sources
 from ndr.processing.base_runner import BaseProcessingJobRunner
 from ndr.processing.if_training_preprocessing import split_metadata_and_feature_columns
@@ -841,14 +845,48 @@ class IFTrainingJob(BaseProcessingJobRunner):
             family_ranges={"delta": family_ranges, "fg_a": family_ranges, "pair_counts": family_ranges, "fg_c": family_ranges},
             requested_families=["delta", "fg_a", "pair_counts", "fg_c"],
         )
+        missing_ranges = [
+            {
+                "family": "delta",
+                "start_ts_iso": item["start_ts_iso"],
+                "end_ts_iso": item["end_ts_iso"],
+                "reason_code": "missing_training_15m_window",
+            }
+            for item in missing_15m
+        ]
+        canonical_request = build_training_remediation_request(
+            project_name=self.runtime_config.project_name,
+            feature_spec_version=self.runtime_config.feature_spec_version,
+            ml_project_name=self.runtime_config.ml_project_name,
+            run_id=self.runtime_config.run_id,
+            training_window={
+                "start_ts_iso": self.runtime_config.training_start_ts,
+                "end_ts_iso": self.runtime_config.training_end_ts,
+            },
+            evaluation_windows=[
+                {
+                    "start_ts_iso": str(window["start_ts"]),
+                    "end_ts_iso": str(window["end_ts"]),
+                }
+                for window in self._resolve_evaluation_windows()
+            ],
+            missing_manifest={
+                "contract_version": "if_training_missing_windows.v1",
+                "entries": missing_15m,
+            },
+            requested_families=["delta", "fg_a", "pair_counts", "fg_c"],
+            missing_ranges=missing_ranges,
+            provenance=build_default_provenance(
+                producer_flow="if_training",
+                source_mode="batch_index",
+                request_id=f"{self.runtime_config.run_id}:{chunk_index}:{chunk_hash}",
+            ),
+        )
         payload = {
-            "project_name": self.runtime_config.project_name,
-            "feature_spec_version": self.runtime_config.feature_spec_version,
-            "ml_project_name": self.runtime_config.ml_project_name,
+            **canonical_request,
             "start_ts": start_ts,
             "end_ts": end_ts,
             "source": "if_training_remediation",
-            "run_id": self.runtime_config.run_id,
             "chunk_index": chunk_index,
             "chunk_hash": chunk_hash,
             "ranges": [{"start_ts_iso": item["start_ts_iso"], "end_ts_iso": item["end_ts_iso"]} for item in missing_15m],

@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ndr.contracts.NdrTrainingRemediationRequest.v1",
+  "title": "NdrTrainingRemediationRequest.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "consumer",
+    "project_name",
+    "feature_spec_version",
+    "run_id",
+    "training_window",
+    "missing_manifest",
+    "requested_families",
+    "provenance",
+    "idempotency_key"
+  ],
+  "properties": {
+    "contract_version": {"const": "NdrTrainingRemediationRequest.v1"},
+    "consumer": {"const": "training"},
+    "project_name": {"type": "string", "minLength": 1},
+    "feature_spec_version": {"type": "string", "minLength": 1},
+    "ml_project_name": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "training_window": {"$ref": "#/definitions/time_window"},
+    "evaluation_windows": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/time_window"}
+    },
+    "missing_manifest": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["contract_version", "entries"],
+      "properties": {
+        "contract_version": {"type": "string", "minLength": 1},
+        "entries": {"type": "array"}
+      }
+    },
+    "requested_families": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/definitions/training_family"}
+    },
+    "missing_ranges": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/definitions/missing_range"}
+    },
+    "provenance": {"$ref": "#/definitions/provenance"},
+    "idempotency_key": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "definitions": {
+    "training_family": {
+      "type": "string",
+      "enum": ["fg_a_15m", "fg_b_daily", "delta", "fg_a", "pair_counts", "fg_b_baseline", "fg_c"]
+    },
+    "execution_family": {
+      "type": "string",
+      "enum": ["delta", "fg_a", "pair_counts", "fg_b_baseline", "fg_c"]
+    },
+    "iso_ts": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "time_window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_ts_iso", "end_ts_iso"],
+      "properties": {
+        "start_ts_iso": {"$ref": "#/definitions/iso_ts"},
+        "end_ts_iso": {"$ref": "#/definitions/iso_ts"}
+      }
+    },
+    "missing_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["family", "start_ts_iso", "end_ts_iso", "reason_code"],
+      "properties": {
+        "family": {"$ref": "#/definitions/execution_family"},
+        "start_ts_iso": {"$ref": "#/definitions/iso_ts"},
+        "end_ts_iso": {"$ref": "#/definitions/iso_ts"},
+        "reason_code": {"type": "string", "minLength": 1}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_flow", "source_mode", "request_id"],
+      "properties": {
+        "producer_flow": {"type": "string", "minLength": 1},
+        "source_mode": {"type": "string", "enum": ["batch_index", "s3_listing_fallback", "mixed"]},
+        "request_id": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

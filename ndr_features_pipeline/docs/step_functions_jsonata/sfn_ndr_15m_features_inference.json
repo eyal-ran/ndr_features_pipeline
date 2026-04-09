@@ -646,7 +646,7 @@
             "Choices": [
               {
                 "Condition": "{% $features_pipeline_status = 'Succeeded' %}",
-                "Next": "StartInferencePipeline"
+                "Next": "BuildRtArtifactReadinessManifest"
               },
               {
                 "Condition": "{% ($features_pipeline_status = 'Executing' or $features_pipeline_status = 'Stopping') and $features_poll_attempt < 120 %}",
@@ -654,6 +654,191 @@
               }
             ],
             "Default": "BranchFailed"
+          },
+          "BuildRtArtifactReadinessManifest": {
+            "Type": "Pass",
+            "Assign": {
+              "rt_artifact_readiness_manifest": "{% {'contract_version':'rt_artifact_readiness.v1','required_families':['delta','fg_a','pair_counts','fg_c'],'missing_ranges':($exists($states.input.rt_artifact_readiness_manifest.missing_ranges) ? $states.input.rt_artifact_readiness_manifest.missing_ranges : []),'check_status':($count($exists($states.input.rt_artifact_readiness_manifest.missing_ranges) ? $states.input.rt_artifact_readiness_manifest.missing_ranges : []) > 0 ? 'missing' : 'ready'),'check_reason':($count($exists($states.input.rt_artifact_readiness_manifest.missing_ranges) ? $states.input.rt_artifact_readiness_manifest.missing_ranges : []) > 0 ? 'dependency_missing:rt_artifacts' : 'ready'),'idempotency_key':($exists($states.input.rt_artifact_readiness_manifest.idempotency_key) ? $states.input.rt_artifact_readiness_manifest.idempotency_key : '0000000000000000000000000000000000000000000000000000000000000000')} %}",
+              "rt_readiness_cycle": 0
+            },
+            "Next": "CheckRtArtifactReadiness"
+          },
+          "CheckRtArtifactReadiness": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Condition": "{% $count($rt_artifact_readiness_manifest.missing_ranges) = 0 %}",
+                "Next": "StartInferencePipeline"
+              },
+              {
+                "Condition": "{% $rt_readiness_cycle = 0 %}",
+                "Next": "BuildRtBackfillRemediationRequest"
+              }
+            ],
+            "Default": "FailRtArtifactsUnresolvedAfterRemediation"
+          },
+          "BuildRtBackfillRemediationRequest": {
+            "Type": "Pass",
+            "Assign": {
+              "rt_backfill_remediation_request": "{% {'contract_version':'NdrBackfillRequest.v1','consumer':'realtime','project_name':$states.input.project_name,'feature_spec_version':$states.input.feature_spec_version,'ml_project_name':$states.input.ml_project_name,'batch_id':$states.input.mini_batch_id,'requested_families':$distinct($rt_artifact_readiness_manifest.missing_ranges.family),'missing_ranges':$rt_artifact_readiness_manifest.missing_ranges,'source_hint':{'raw_parsed_logs_s3_prefix':$states.input.raw_parsed_logs_s3_prefix},'provenance':{'producer_flow':'rt_15m_features_inference','source_mode':'batch_index','request_id':$states.context.Execution.Id},'idempotency_key':$rt_artifact_readiness_manifest.idempotency_key} %}"
+            },
+            "Next": "UpdateBatchIndexRemediationRequested"
+          },
+          "UpdateBatchIndexRemediationRequested": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+            "Arguments": {
+              "TableName": "${BatchIndexTableName}",
+              "Key": {
+                "PK": {
+                  "S": "{% $states.input.project_name %}"
+                },
+                "SK": {
+                  "S": "{% $states.input.mini_batch_id %}"
+                }
+              },
+              "UpdateExpression": "SET rt_flow_status = :rt_flow_status, rt_remediation_status = :rt_remediation_status, rt_remediation_idempotency_key = :rt_remediation_idempotency_key, last_updated_at = :last_updated_at",
+              "ExpressionAttributeValues": {
+                ":rt_flow_status": {
+                  "S": "REMEDIATION_REQUESTED"
+                },
+                ":rt_remediation_status": {
+                  "S": "REQUESTED"
+                },
+                ":rt_remediation_idempotency_key": {
+                  "S": "{% $rt_backfill_remediation_request.idempotency_key %}"
+                },
+                ":last_updated_at": {
+                  "S": "{% $states.context.State.EnteredTime %}"
+                }
+              },
+              "ConditionExpression": "attribute_exists(PK) AND attribute_exists(SK)"
+            },
+            "Next": "InvokeRtBackfillRemediation",
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "BranchFailed"
+              }
+            ]
+          },
+          "InvokeRtBackfillRemediation": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::states:startExecution.sync:2",
+            "Arguments": {
+              "StateMachineArn": "${BackfillStateMachineArn}",
+              "Input": "{% $rt_backfill_remediation_request %}"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "StepFunctions.ExecutionLimitExceeded",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 3,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "UpdateBatchIndexRemediationFailed"
+              }
+            ],
+            "Next": "UpdateBatchIndexRemediationSucceeded"
+          },
+          "UpdateBatchIndexRemediationSucceeded": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+            "Arguments": {
+              "TableName": "${BatchIndexTableName}",
+              "Key": {
+                "PK": {
+                  "S": "{% $states.input.project_name %}"
+                },
+                "SK": {
+                  "S": "{% $states.input.mini_batch_id %}"
+                }
+              },
+              "UpdateExpression": "SET rt_flow_status = :rt_flow_status, rt_remediation_status = :rt_remediation_status, last_updated_at = :last_updated_at",
+              "ExpressionAttributeValues": {
+                ":rt_flow_status": {
+                  "S": "REMEDIATION_SUCCEEDED"
+                },
+                ":rt_remediation_status": {
+                  "S": "SUCCEEDED"
+                },
+                ":last_updated_at": {
+                  "S": "{% $states.context.State.EnteredTime %}"
+                }
+              },
+              "ConditionExpression": "attribute_exists(PK) AND attribute_exists(SK)"
+            },
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "BranchFailed"
+              }
+            ],
+            "Next": "RecheckRtArtifactReadiness"
+          },
+          "UpdateBatchIndexRemediationFailed": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+            "Arguments": {
+              "TableName": "${BatchIndexTableName}",
+              "Key": {
+                "PK": {
+                  "S": "{% $states.input.project_name %}"
+                },
+                "SK": {
+                  "S": "{% $states.input.mini_batch_id %}"
+                }
+              },
+              "UpdateExpression": "SET rt_flow_status = :rt_flow_status, rt_remediation_status = :rt_remediation_status, last_updated_at = :last_updated_at",
+              "ExpressionAttributeValues": {
+                ":rt_flow_status": {
+                  "S": "REMEDIATION_FAILED"
+                },
+                ":rt_remediation_status": {
+                  "S": "FAILED"
+                },
+                ":last_updated_at": {
+                  "S": "{% $states.context.State.EnteredTime %}"
+                }
+              },
+              "ConditionExpression": "attribute_exists(PK) AND attribute_exists(SK)"
+            },
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "BranchFailed"
+              }
+            ],
+            "Next": "BranchFailed"
+          },
+          "RecheckRtArtifactReadiness": {
+            "Type": "Pass",
+            "Assign": {
+              "rt_artifact_readiness_manifest": "{% $exists($states.input.recheck_rt_artifact_readiness_manifest.missing_ranges) ? {'contract_version':'rt_artifact_readiness.v1','required_families':['delta','fg_a','pair_counts','fg_c'],'missing_ranges':$states.input.recheck_rt_artifact_readiness_manifest.missing_ranges,'check_status':($count($states.input.recheck_rt_artifact_readiness_manifest.missing_ranges) > 0 ? 'missing' : 'ready'),'check_reason':($count($states.input.recheck_rt_artifact_readiness_manifest.missing_ranges) > 0 ? 'dependency_missing:rt_artifacts_after_remediation' : 'ready'),'idempotency_key':($exists($states.input.recheck_rt_artifact_readiness_manifest.idempotency_key) ? $states.input.recheck_rt_artifact_readiness_manifest.idempotency_key : $rt_artifact_readiness_manifest.idempotency_key)} : {'contract_version':'rt_artifact_readiness.v1','required_families':['delta','fg_a','pair_counts','fg_c'],'missing_ranges':[],'check_status':'ready','check_reason':'ready','idempotency_key':$rt_artifact_readiness_manifest.idempotency_key} %}",
+              "rt_readiness_cycle": 1
+            },
+            "Next": "CheckRtArtifactReadiness"
+          },
+          "FailRtArtifactsUnresolvedAfterRemediation": {
+            "Type": "Fail",
+            "Error": "RealtimeArtifactReadinessGateFailed",
+            "Cause": "Unresolved RT dependencies after remediation; dependency_missing:rt_artifacts"
           },
           "WaitBeforeDescribe15mFeatures": {
             "Type": "Wait",

@@ -26,6 +26,11 @@ def parse_args(argv=None):
     parser.add_argument("--eval-start-ts")
     parser.add_argument("--eval-end-ts")
     parser.add_argument(
+        "--mode",
+        default="training",
+        choices=["training", "evaluation", "production"],
+    )
+    parser.add_argument(
         "--stage",
         default="train",
         choices=["verify", "plan", "remediate", "reverify", "train", "publish", "attributes", "deploy"],
@@ -52,6 +57,7 @@ def main(argv=None) -> int:
             "training_end_ts": args.training_end_ts,
             "eval_start_ts": args.eval_start_ts,
             "eval_end_ts": args.eval_end_ts,
+            "mode": args.mode,
             "stage": args.stage,
         },
     )
@@ -68,6 +74,7 @@ def main(argv=None) -> int:
         training_end_ts=args.training_end_ts,
         eval_start_ts=args.eval_start_ts,
         eval_end_ts=args.eval_end_ts,
+        mode=args.mode,
         stage=args.stage,
     )
     run_if_training_from_runtime_config(runtime_config)

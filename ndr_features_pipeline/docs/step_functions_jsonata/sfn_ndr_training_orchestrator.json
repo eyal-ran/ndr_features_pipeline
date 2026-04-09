@@ -30,7 +30,8 @@
         "eval_start_ts": "{% $exists($states.input.eval_start_ts) ? $states.input.eval_start_ts : ($exists($project_defaults.EvalStartTs.S) ? $project_defaults.EvalStartTs.S : '') %}",
         "eval_end_ts": "{% $exists($states.input.eval_end_ts) ? $states.input.eval_end_ts : ($exists($project_defaults.EvalEndTs.S) ? $project_defaults.EvalEndTs.S : '') %}",
         "ml_project_name": "{% $exists($states.input.ml_project_name) ? $states.input.ml_project_name : ($exists($project_defaults.MlProjectName.S) ? $project_defaults.MlProjectName.S : '') %}",
-        "ml_project_names": "{% $exists($states.input.ml_project_names) ? $states.input.ml_project_names : [] %}"
+        "ml_project_names": "{% $exists($states.input.ml_project_names) ? $states.input.ml_project_names : [] %}",
+        "mode": "{% $exists($states.input.mode) ? $lowercase($states.input.mode) : ($exists($project_defaults.Mode.S) ? $lowercase($project_defaults.Mode.S) : 'training') %}"
       },
       "Next": "ValidateResolvedRuntimeParams"
     },
@@ -50,6 +51,10 @@
           "Next": "FailMissingRunId"
         },
         {
+          "Condition": "{% $mode != 'training' and $mode != 'evaluation' and $mode != 'production' %}",
+          "Next": "FailInvalidMode"
+        },
+        {
           "Condition": "{% $training_start_ts = \"\" %}",
           "Next": "FailMissingTrainingStartTs"
         },
@@ -58,12 +63,12 @@
           "Next": "FailMissingTrainingEndTs"
         },
         {
-          "Condition": "{% $eval_start_ts = \"\" %}",
-          "Next": "FailMissingEvalStartTs"
+          "Condition": "{% $mode = 'evaluation' and $eval_start_ts = '' %}",
+          "Next": "FailMissingEvalStartTsForEvaluation"
         },
         {
-          "Condition": "{% $eval_end_ts = \"\" %}",
-          "Next": "FailMissingEvalEndTs"
+          "Condition": "{% $mode = 'evaluation' and $eval_end_ts = '' %}",
+          "Next": "FailMissingEvalEndTsForEvaluation"
         },
         {
           "Condition": "{% ($ml_project_name = '' and $count($ml_project_names)=0) or ($ml_project_name != '' and $count($ml_project_names)>0) %}",
@@ -91,7 +96,8 @@
         "training_end_ts": "{% $training_end_ts %}",
         "eval_start_ts": "{% $eval_start_ts %}",
         "eval_end_ts": "{% $eval_end_ts %}",
-        "ml_project_name": "{% $states.context.Map.Item.Value %}"
+        "ml_project_name": "{% $states.context.Map.Item.Value %}",
+        "mode": "{% $mode %}"
       },
       "ItemProcessor": {
         "ProcessorConfig": {
@@ -136,6 +142,10 @@
                 {
                   "Name": "EvalEndTs",
                   "Value": "{% $states.input.eval_end_ts %}"
+                },
+                {
+                  "Name": "Mode",
+                  "Value": "{% $states.input.mode %}"
                 },
                 {
                   "Name": "DppConfigTableName",
@@ -260,16 +270,6 @@
       "Error": "RuntimeParameterValidationError",
       "Cause": "Missing required runtime parameter: training_end_ts"
     },
-    "FailMissingEvalStartTs": {
-      "Type": "Fail",
-      "Error": "RuntimeParameterValidationError",
-      "Cause": "Missing required runtime parameter: eval_start_ts"
-    },
-    "FailMissingEvalEndTs": {
-      "Type": "Fail",
-      "Error": "RuntimeParameterValidationError",
-      "Cause": "Missing required runtime parameter: eval_end_ts"
-    },
     "FailInvalidMlProjectSelection": {
       "Type": "Fail",
       "Error": "RuntimeParameterValidationError",
@@ -317,6 +317,21 @@
         "mlp_linked_project_name": "{% $exists($states.result.Item.project_name.S) ? $states.result.Item.project_name.S : '' %}"
       },
       "Next": "ResolvePipelineRuntimeParams"
+    },
+    "FailInvalidMode": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Invalid runtime parameter: mode must be one of training,evaluation,production"
+    },
+    "FailMissingEvalStartTsForEvaluation": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter for evaluation mode: eval_start_ts"
+    },
+    "FailMissingEvalEndTsForEvaluation": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter for evaluation mode: eval_end_ts"
     }
   }
 }

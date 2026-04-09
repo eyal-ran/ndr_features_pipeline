@@ -3,6 +3,15 @@ import types
 
 import pytest
 
+if "boto3" not in sys.modules:
+    sys.modules["boto3"] = types.ModuleType("boto3")
+if "boto3.dynamodb" not in sys.modules:
+    sys.modules["boto3.dynamodb"] = types.ModuleType("boto3.dynamodb")
+if "boto3.dynamodb.conditions" not in sys.modules:
+    conditions = types.ModuleType("boto3.dynamodb.conditions")
+    conditions.Key = object
+    sys.modules["boto3.dynamodb.conditions"] = conditions
+
 if "pyspark" not in sys.modules:
     pyspark = types.ModuleType("pyspark")
     pyspark_sql = types.ModuleType("pyspark.sql")

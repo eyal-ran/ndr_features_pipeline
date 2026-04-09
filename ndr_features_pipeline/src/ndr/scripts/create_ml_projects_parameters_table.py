@@ -158,6 +158,7 @@ PIPELINE_RUNTIME_PARAMS = {
         "TrainingEndTs",
         "EvalStartTs",
         "EvalEndTs",
+        "Mode",
         "MlProjectName",
     ],
     "pipeline_backfill_historical_extractor": [

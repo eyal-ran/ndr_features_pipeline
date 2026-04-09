@@ -164,6 +164,7 @@ def test_item19_pipeline_seed_items_present_with_expected_runtime_params():
         "TrainingEndTs",
         "EvalStartTs",
         "EvalEndTs",
+        "Mode",
         "MlProjectName",
     ]
 

@@ -210,6 +210,7 @@ class IFTrainingRuntimeConfig:
     training_end_ts: str | None = None
     eval_start_ts: str | None = None
     eval_end_ts: str | None = None
+    mode: str = "training"
     stage: str = "train"
 
 

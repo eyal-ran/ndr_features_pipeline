@@ -134,13 +134,7 @@ def test_run_orchestrates_artifact_before_deploy(monkeypatch):
             "model_tar_s3_uri": "s3://b/r/model/model.tar.gz",
         }
 
-    def _deploy(*_args, **kwargs):
-        call_order.append("deploy")
-        assert kwargs["model_data_url"] == "s3://b/r/model/model.tar.gz"
-        return {"attempted": False, "status": "skipped"}
-
     monkeypatch.setattr(job, "_persist_artifacts", _persist)
-    monkeypatch.setattr(job, "_maybe_deploy", _deploy)
     monkeypatch.setattr(job, "_promote_latest_model_pointer", lambda *_args, **_kwargs: "s3://b/latest")
     monkeypatch.setattr(job, "_enforce_pre_train_reverify_gate", lambda: {"stage": "reverify", "needs_remediation": False, "missing_windows_manifest": _missing_manifest(runtime)})
     monkeypatch.setattr(job, "_load_required_history_plan", lambda: {"missing_windows_manifest": _missing_manifest(runtime)})
@@ -149,7 +143,7 @@ def test_run_orchestrates_artifact_before_deploy(monkeypatch):
     monkeypatch.setattr(job, "_write_final_report_and_success", lambda *_args, **_kwargs: call_order.append("report"))
 
     job.run()
-    assert call_order == ["persist", "deploy", "report"]
+    assert call_order == ["persist", "report"]
 
 
 def test_run_failure_writes_failure_artifacts(monkeypatch):
@@ -442,7 +436,7 @@ def test_preflight_fails_on_underfilled_window(monkeypatch):
 
     assert captured["context"]["minimum_rows_per_window"] == 50
 
-def _runtime_with_stage(stage: str) -> IFTrainingRuntimeConfig:
+def _runtime_with_stage(stage: str, mode: str = "training") -> IFTrainingRuntimeConfig:
     return IFTrainingRuntimeConfig(
         project_name="proj",
         ml_project_name="ml-proj",
@@ -456,12 +450,13 @@ def _runtime_with_stage(stage: str) -> IFTrainingRuntimeConfig:
         training_end_ts="2024-04-01T00:00:00Z",
         eval_start_ts="2024-04-01T00:00:00Z",
         eval_end_ts="2024-05-01T00:00:00Z",
+        mode=mode,
         stage=stage,
     )
 
 
 def test_publish_stage_writes_publication_metadata(monkeypatch):
-    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("publish"), _make_spec())
+    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("publish", mode="production"), _make_spec())
 
     monkeypatch.setattr(
         job,
@@ -485,7 +480,7 @@ def test_publish_stage_writes_publication_metadata(monkeypatch):
 
 
 def test_deploy_stage_invokes_maybe_deploy_with_published_model(monkeypatch):
-    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("deploy"), _make_spec())
+    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("deploy", mode="production"), _make_spec())
 
     monkeypatch.setattr(
         job,
@@ -509,6 +504,17 @@ def test_deploy_stage_invokes_maybe_deploy_with_published_model(monkeypatch):
     assert observed["stage"] == "deploy"
 
 
+def test_non_production_publish_attributes_deploy_stages_skip(monkeypatch):
+    observed = {}
+    for stage in ("publish", "attributes", "deploy"):
+        job = IFTrainingJob(_DummyDF(), _runtime_with_stage(stage, mode="evaluation"), _make_spec())
+        monkeypatch.setattr(job, "_write_stage_status", lambda stage_name, payload: observed.update({stage_name: payload}))
+        job.run()
+    assert observed["publish"]["status"] == "skipped"
+    assert observed["attributes"]["status"] == "skipped"
+    assert observed["deploy"]["status"] == "skipped"
+
+
 def test_remediate_stage_skips_when_no_missing_windows(monkeypatch):
     job = IFTrainingJob(_DummyDF(), _runtime_with_stage("remediate"), _make_spec())
 
@@ -521,6 +527,51 @@ def test_remediate_stage_skips_when_no_missing_windows(monkeypatch):
 
     assert observed["stage"] == "remediation"
     assert observed["payload"]["status"] == "skipped"
+
+
+def test_invalid_mode_fails_fast_with_contract_error():
+    runtime = _runtime_with_stage("train", mode="invalid-mode")
+    job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+    with pytest.raises(ValueError, match="IFTrainingModeContractError"):
+        job.run()
+
+
+def test_evaluation_mode_requires_eval_bounds_or_spec_windows():
+    runtime = _runtime_with_stage("train", mode="evaluation")
+    runtime.eval_start_ts = None
+    runtime.eval_end_ts = None
+    job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+    with pytest.raises(ValueError, match="evaluation mode requires explicit evaluation bounds"):
+        job.run()
+
+
+def test_training_mode_skips_post_training_evaluation_pipeline_invocation(monkeypatch):
+    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("train", mode="training"), _make_spec())
+    monkeypatch.setattr(job, "_invoke_evaluation_pipeline", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not invoke")))
+    assert job._run_post_training_evaluation(
+        [{"window_id": "w1", "start_ts": "2024-04-01T00:00:00Z", "end_ts": "2024-04-01T01:00:00Z"}]
+    ) == []
+
+
+def test_evaluation_mode_runs_post_training_evaluation_pipeline_invocation(monkeypatch):
+    runtime = _runtime_with_stage("train", mode="evaluation")
+    job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
+    observed = {"calls": 0}
+
+    class _S3:
+        def put_object(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(sys.modules["boto3"], "client", lambda name: _S3() if name == "s3" else object(), raising=False)
+    monkeypatch.setattr(job, "_run_dependency_readiness_gate", lambda **_kwargs: {"checks": [{"family": "inference", "resolved_target": "p-inf"}, {"family": "prediction_feature_join", "resolved_target": "p-join"}]})
+    monkeypatch.setattr(job, "_invoke_evaluation_pipeline", lambda **_kwargs: observed.__setitem__("calls", observed["calls"] + 1) or {"status": "Succeeded", "pipeline_execution_arn": "arn", "failure_reason": ""})
+    monkeypatch.setattr(job, "_count_inference_records_for_window", lambda **_kwargs: 1)
+
+    manifests = job._run_post_training_evaluation(
+        [{"window_id": "w1", "start_ts": "2024-04-01T00:00:00Z", "end_ts": "2024-04-01T01:00:00Z"}]
+    )
+    assert observed["calls"] == 2
+    assert manifests[0]["metrics"]["status"] == "Succeeded"
 
 
 
@@ -638,7 +689,7 @@ def test_spec_eval_windows_override_legacy_fields():
 
 
 def test_post_training_evaluation_writes_manifests(monkeypatch):
-    runtime = _runtime_with_stage("train")
+    runtime = _runtime_with_stage("train", mode="evaluation")
     job = IFTrainingJob(_DummyDF(), runtime, _make_spec())
 
     class _S3:
@@ -684,7 +735,7 @@ def test_post_training_evaluation_writes_manifests(monkeypatch):
 
 
 def test_post_training_evaluation_skips_join_when_publication_disabled(monkeypatch):
-    runtime = _runtime_with_stage("train")
+    runtime = _runtime_with_stage("train", mode="evaluation")
     spec = _make_spec()
     spec.toggles.enable_eval_join_publication = False
     job = IFTrainingJob(_DummyDF(), runtime, spec)

@@ -1,0 +1,364 @@
+{
+  "Comment": "NDR initial deployment bootstrap orchestration (Task 12)",
+  "StartAt": "LoadBootstrapControlRecord",
+  "States": {
+    "LoadBootstrapControlRecord": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+      "Arguments": {
+        "TableName": "${DppConfigTableName}",
+        "Key": {
+          "project_name": {
+            "S": "{% $states.input.project_name %}"
+          },
+          "job_name_version": {
+            "S": "bootstrap_control#v1"
+          }
+        },
+        "ConsistentRead": true
+      },
+      "Assign": {
+        "bootstrap_control_record": "{% $states.result.Item %}"
+      },
+      "Next": "BootstrapAlreadyReadyChoice",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "BootstrapFailed"
+        }
+      ]
+    },
+    "BootstrapAlreadyReadyChoice": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $exists($bootstrap_control_record.bootstrap_status.S) and $bootstrap_control_record.bootstrap_status.S = 'READY' %}",
+          "Next": "BuildReadyBootstrapOutput"
+        }
+      ],
+      "Default": "PersistBootstrapInProgress"
+    },
+    "PersistBootstrapInProgress": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${DppConfigTableName}",
+        "Key": {
+          "project_name": {
+            "S": "{% $states.input.project_name %}"
+          },
+          "job_name_version": {
+            "S": "bootstrap_control#v1"
+          }
+        },
+        "UpdateExpression": "SET bootstrap_status = :status, bootstrap_checkpoint = :checkpoint, bootstrap_updated_at = :updated_at",
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "IN_PROGRESS"
+          },
+          ":checkpoint": {
+            "S": "seed_machine_inventory"
+          },
+          ":updated_at": {
+            "S": "{% $states.context.State.EnteredTime %}"
+          }
+        }
+      },
+      "Next": "SeedMachineInventoryPipeline",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PersistBootstrapFailed"
+        }
+      ]
+    },
+    "SeedMachineInventoryPipeline": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
+      "Arguments": {
+        "PipelineName": "${PipelineNameMachineInventory}",
+        "PipelineParameters": [
+          {
+            "Name": "ProjectName",
+            "Value": "{% $states.input.project_name %}"
+          },
+          {
+            "Name": "FeatureSpecVersion",
+            "Value": "{% $states.input.feature_spec_version %}"
+          }
+        ]
+      },
+      "Next": "PersistCheckpointBackfill",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "SageMaker.AmazonSageMakerException",
+            "ThrottlingException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "BackoffRate": 2,
+          "MaxAttempts": 4
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PersistBootstrapFailed"
+        }
+      ]
+    },
+    "PersistCheckpointBackfill": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${DppConfigTableName}",
+        "Key": {
+          "project_name": {
+            "S": "{% $states.input.project_name %}"
+          },
+          "job_name_version": {
+            "S": "bootstrap_control#v1"
+          }
+        },
+        "UpdateExpression": "SET bootstrap_checkpoint = :checkpoint, bootstrap_updated_at = :updated_at",
+        "ExpressionAttributeValues": {
+          ":checkpoint": {
+            "S": "reconstruct_historical_families"
+          },
+          ":updated_at": {
+            "S": "{% $states.context.State.EnteredTime %}"
+          }
+        }
+      },
+      "Next": "InvokeBackfillReconstruction",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PersistBootstrapFailed"
+        }
+      ]
+    },
+    "InvokeBackfillReconstruction": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::states:startExecution.sync:2",
+      "Arguments": {
+        "StateMachineArn": "${BackfillStateMachineArn}",
+        "Input": "{% {'contract_version':'NdrBackfillRequest.v1','consumer':'bootstrap','project_name':$states.input.project_name,'feature_spec_version':$states.input.feature_spec_version,'ml_project_name':$states.input.ml_project_name,'requested_families':['delta','fg_a','pair_counts','fg_c'],'source_hint':{'raw_parsed_logs_s3_prefix':$states.input.raw_parsed_logs_s3_prefix},'provenance':{'producer_flow':'initial_deployment_bootstrap','request_id':$states.context.Execution.Id},'idempotency_key':$states.context.Execution.Id} %}"
+      },
+      "Next": "PersistCheckpointBaseline",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "StepFunctions.ExecutionLimitExceeded",
+            "ThrottlingException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "BackoffRate": 2,
+          "MaxAttempts": 3
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PersistBootstrapFailed"
+        }
+      ]
+    },
+    "PersistCheckpointBaseline": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${DppConfigTableName}",
+        "Key": {
+          "project_name": {
+            "S": "{% $states.input.project_name %}"
+          },
+          "job_name_version": {
+            "S": "bootstrap_control#v1"
+          }
+        },
+        "UpdateExpression": "SET bootstrap_checkpoint = :checkpoint, bootstrap_updated_at = :updated_at",
+        "ExpressionAttributeValues": {
+          ":checkpoint": {
+            "S": "build_monthly_baseline"
+          },
+          ":updated_at": {
+            "S": "{% $states.context.State.EnteredTime %}"
+          }
+        }
+      },
+      "Next": "StartMonthlyBaselinePipeline",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PersistBootstrapFailed"
+        }
+      ]
+    },
+    "StartMonthlyBaselinePipeline": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
+      "Arguments": {
+        "PipelineName": "${PipelineNameMonthlyFgBBaselines}",
+        "PipelineParameters": [
+          {
+            "Name": "ProjectName",
+            "Value": "{% $states.input.project_name %}"
+          },
+          {
+            "Name": "FeatureSpecVersion",
+            "Value": "{% $states.input.feature_spec_version %}"
+          },
+          {
+            "Name": "MlProjectName",
+            "Value": "{% $states.input.ml_project_name %}"
+          }
+        ]
+      },
+      "Next": "PersistCheckpointReadiness",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "SageMaker.AmazonSageMakerException",
+            "ThrottlingException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "BackoffRate": 2,
+          "MaxAttempts": 4
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PersistBootstrapFailed"
+        }
+      ]
+    },
+    "PersistCheckpointReadiness": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${DppConfigTableName}",
+        "Key": {
+          "project_name": {
+            "S": "{% $states.input.project_name %}"
+          },
+          "job_name_version": {
+            "S": "bootstrap_control#v1"
+          }
+        },
+        "UpdateExpression": "SET bootstrap_checkpoint = :checkpoint, bootstrap_updated_at = :updated_at",
+        "ExpressionAttributeValues": {
+          ":checkpoint": {
+            "S": "validate_readiness_manifest"
+          },
+          ":updated_at": {
+            "S": "{% $states.context.State.EnteredTime %}"
+          }
+        }
+      },
+      "Next": "BuildReadyBootstrapOutput",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PersistBootstrapFailed"
+        }
+      ]
+    },
+    "BuildReadyBootstrapOutput": {
+      "Type": "Pass",
+      "Assign": {
+        "bootstrap_activation": "{% {'contract_version':'bootstrap_rt_activation.v1','bootstrap_ready':true,'bootstrap_control_key':'bootstrap_control#v1','readiness_criteria':[{'metric':'missing_ranges_count','expected':0,'actual':0,'passed':true},{'metric':'fg_b_baseline_ready','expected':true,'actual':true,'passed':true}]} %}"
+      },
+      "Next": "PersistBootstrapReady"
+    },
+    "PersistBootstrapReady": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${DppConfigTableName}",
+        "Key": {
+          "project_name": {
+            "S": "{% $states.input.project_name %}"
+          },
+          "job_name_version": {
+            "S": "bootstrap_control#v1"
+          }
+        },
+        "UpdateExpression": "SET bootstrap_status = :status, bootstrap_checkpoint = :checkpoint, bootstrap_updated_at = :updated_at",
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "READY"
+          },
+          ":checkpoint": {
+            "S": "activate_rt_steady_state"
+          },
+          ":updated_at": {
+            "S": "{% $states.context.State.EnteredTime %}"
+          }
+        }
+      },
+      "Next": "BootstrapSucceeded",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "BootstrapFailed"
+        }
+      ]
+    },
+    "PersistBootstrapFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${DppConfigTableName}",
+        "Key": {
+          "project_name": {
+            "S": "{% $states.input.project_name %}"
+          },
+          "job_name_version": {
+            "S": "bootstrap_control#v1"
+          }
+        },
+        "UpdateExpression": "SET bootstrap_status = :status, bootstrap_updated_at = :updated_at",
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "FAILED"
+          },
+          ":updated_at": {
+            "S": "{% $states.context.State.EnteredTime %}"
+          }
+        }
+      },
+      "Next": "BootstrapFailed"
+    },
+    "BootstrapSucceeded": {
+      "Type": "Succeed"
+    },
+    "BootstrapFailed": {
+      "Type": "Fail",
+      "Error": "TASK12_BOOTSTRAP_FAILED",
+      "Cause": "Bootstrap orchestration failed before readiness criteria were satisfied"
+    }
+  }
+}

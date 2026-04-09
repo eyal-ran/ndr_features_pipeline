@@ -27,6 +27,7 @@ class HistoricalWindowsExtractorRuntimeConfig:
     start_ts_iso: str
     end_ts_iso: str
     window_floor_minutes: list[int]
+    project_name: str | None = None
     preferred_feature_spec_version: str | None = None
     dpp_config_table_name: str | None = None
 
@@ -45,22 +46,23 @@ class HistoricalWindowsExtractorJob:
 
     def _extract_rows(self) -> list[dict[str, str]]:
         index_lookup_error: Exception | None = None
-        project_name = self._infer_project_name_from_input_prefix()
+        s3_lookup_error: Exception | None = None
         try:
             index_rows = self._extract_rows_from_batch_index()
         except Exception as exc:  # index path is best-effort before fallback resolution
             index_rows = []
             index_lookup_error = exc
 
-        if project_name:
-            feature_spec_version = (
-                index_rows[0]["feature_spec_version"]
-                if index_rows
-                else resolve_feature_spec_version(
-                    project_name=project_name,
-                    preferred_feature_spec_version=self.runtime_config.preferred_feature_spec_version,
-                )
-            )
+        s3_rows: list[dict[str, str]] = []
+        if not index_rows:
+            try:
+                s3_rows = self._extract_rows_from_s3_listing()
+            except Exception as exc:  # preserve deterministic failure if both resolvers fail/empty
+                s3_lookup_error = exc
+
+        project_name = self._resolve_project_name(index_rows=index_rows, s3_rows=s3_rows)
+        if index_rows and project_name:
+            feature_spec_version = index_rows[0]["feature_spec_version"]
             dpp_spec = load_project_parameters(
                 project_name,
                 feature_spec_version,
@@ -83,6 +85,35 @@ class HistoricalWindowsExtractorJob:
                     row["resolution_reason"] = resolution.resolution_reason
                 return index_rows
 
+        if s3_rows:
+            if project_name:
+                self._assert_rows_match_project(s3_rows, project_name)
+            for row in s3_rows:
+                row.setdefault("source_mode", "ingestion")
+                row.setdefault("resolution_reason", "s3_listing_fallback")
+            return s3_rows
+
+        if project_name:
+            feature_spec_version = resolve_feature_spec_version(
+                project_name=project_name,
+                preferred_feature_spec_version=self.runtime_config.preferred_feature_spec_version,
+            )
+            dpp_spec = load_project_parameters(
+                project_name,
+                feature_spec_version,
+                dpp_table_name=self.runtime_config.dpp_config_table_name,
+            )
+            fallback = dpp_spec.get("backfill_redshift_fallback") or {}
+            allow_redshift_fallback = bool(fallback) and bool(fallback.get("enabled", True))
+            resolution = RawInputResolver().resolve(
+                ingestion_rows=[],
+                allow_redshift_fallback=allow_redshift_fallback,
+                dpp_spec=dpp_spec,
+                artifact_family="delta",
+                range_start_ts=self.runtime_config.start_ts_iso,
+                range_end_ts=self.runtime_config.end_ts_iso,
+                producer_flow="historical_windows_extractor",
+            )
             return [
                 {
                     "project_name": project_name,
@@ -100,24 +131,15 @@ class HistoricalWindowsExtractorJob:
                 }
             ]
 
-        # If project cannot be inferred from the input prefix, resolver cannot load DPP-owned fallback contracts.
-        if project_name is None:
-            rows = self._extract_rows_from_s3_listing()
-            if rows:
-                for row in rows:
-                    row.setdefault("source_mode", "ingestion")
-                    row.setdefault("resolution_reason", "s3_listing_fallback")
-                return rows
-
         raise RuntimeError(
-            "No ingestion rows resolved and Redshift fallback is disabled"
-        ) from index_lookup_error
+            "HWE_NO_ROWS_RESOLVED: No batch-index rows, no S3 rows, and no resolvable project_name for Redshift fallback"
+        ) from (s3_lookup_error or index_lookup_error)
 
 
     def _extract_rows_from_batch_index(self) -> list[dict[str, str]]:
         start_ts = _parse_iso8601(self.runtime_config.start_ts_iso)
         end_ts = _parse_iso8601(self.runtime_config.end_ts_iso)
-        project_name = self._infer_project_name_from_input_prefix()
+        project_name = self._resolve_runtime_project_name()
         if not project_name:
             return []
         feature_spec_version = resolve_feature_spec_version(
@@ -210,10 +232,39 @@ class HistoricalWindowsExtractorJob:
     def _infer_project_name_from_input_prefix(self) -> str | None:
         _bucket, input_prefix = _split_s3_uri(self.runtime_config.input_s3_prefix)
         parts = [p for p in input_prefix.strip('/').split('/') if p]
-        for part in parts:
-            if part == "fw_paloalto":
-                return part
+        if len(parts) < 2:
+            return None
+        return parts[-1]
+
+    def _resolve_runtime_project_name(self) -> str | None:
+        explicit = (self.runtime_config.project_name or "").strip()
+        if explicit:
+            return explicit
+        inferred = (self._infer_project_name_from_input_prefix() or "").strip()
+        return inferred or None
+
+    def _resolve_project_name(self, *, index_rows: list[dict[str, str]], s3_rows: list[dict[str, str]]) -> str | None:
+        explicit = (self.runtime_config.project_name or "").strip()
+        if explicit:
+            self._assert_rows_match_project(index_rows, explicit)
+            self._assert_rows_match_project(s3_rows, explicit)
+            return explicit
+        index_project_names = {row["project_name"] for row in index_rows if row.get("project_name")}
+        if len(index_project_names) == 1:
+            return next(iter(index_project_names))
+        s3_project_names = {row["project_name"] for row in s3_rows if row.get("project_name")}
+        if len(s3_project_names) == 1:
+            return next(iter(s3_project_names))
         return None
+
+    @staticmethod
+    def _assert_rows_match_project(rows: list[dict[str, str]], expected_project_name: str) -> None:
+        mismatched = sorted({row.get("project_name", "") for row in rows if row.get("project_name") != expected_project_name})
+        if mismatched:
+            raise RuntimeError(
+                "HWE_PROJECT_MISMATCH: runtime project_name does not match resolved rows "
+                f"(project_name={expected_project_name}, row_projects={mismatched})"
+            )
 
     def _write_rows(self, rows: list[dict[str, str]]) -> str:
         out_bucket, out_prefix = _split_s3_uri(self.runtime_config.output_s3_prefix)
@@ -221,7 +272,7 @@ class HistoricalWindowsExtractorJob:
         base_prefix = out_prefix.rstrip('/')
         key = f"{base_prefix}/historical_windows/{now}.json"
         latest_key = f"{base_prefix}/historical_windows/latest_manifest.json"
-        project_name = rows[0]["project_name"] if rows else (self._infer_project_name_from_input_prefix() or "")
+        project_name = rows[0]["project_name"] if rows else (self._resolve_runtime_project_name() or "")
         feature_spec_version = rows[0]["feature_spec_version"] if rows else (
             resolve_feature_spec_version(
                 project_name=project_name,

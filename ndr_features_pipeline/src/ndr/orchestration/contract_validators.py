@@ -8,6 +8,9 @@ from typing import Any, Iterable, Mapping, Sequence
 TASK11_INTEGRATION_GATE_VERSION = "task11_system_readiness_gate.v1"
 TASK11_CONTRACT_ERROR_CODE = "TASK11_CONTRACT_VIOLATION"
 TASK11_GATE_ERROR_CODE = "TASK11_GATE_RED"
+TASK12_BOOTSTRAP_GATE_VERSION = "task12_initial_deployment_bootstrap.v1"
+TASK12_CONTRACT_ERROR_CODE = "TASK12_CONTRACT_VIOLATION"
+TASK12_GATE_ERROR_CODE = "TASK12_BOOTSTRAP_GATE_RED"
 
 _TASK11_REQUIRED_FINDINGS = (
     "F1.1",
@@ -36,6 +39,14 @@ _TASK11_REQUIRED_ALARMS = (
     "fallback_frequency_alarm",
     "backfill_latency_alarm",
     "unresolved_missing_ranges_alarm",
+)
+
+_TASK12_REQUIRED_CHECKPOINTS = (
+    "seed_machine_inventory",
+    "reconstruct_historical_families",
+    "build_monthly_baseline",
+    "validate_readiness_manifest",
+    "activate_rt_steady_state",
 )
 
 
@@ -262,4 +273,139 @@ def evaluate_task11_system_readiness_gate(*, evidence: Mapping[str, Any]) -> dic
             f"{TASK11_GATE_ERROR_CODE}: Task 11 system readiness gate failed checks {failed_checks}"
         )
 
+    return report
+
+
+def evaluate_task12_initial_deployment_bootstrap(*, evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate deterministic day-0 bootstrap orchestration evidence.
+
+    Readiness criteria must be measurable and machine-checkable. If criteria are
+    missing or non-measurable, fail with explicit contract violation so operators
+    stop and fix the readiness definition before rollout.
+    """
+
+    required_sections = (
+        "startup_paths",
+        "control_record",
+        "bootstrap_manifest",
+        "rt_activation",
+        "recovery",
+    )
+    missing_sections = [section for section in required_sections if section not in evidence]
+    if missing_sections:
+        raise ValueError(f"{TASK12_CONTRACT_ERROR_CODE}: missing required sections {missing_sections}")
+
+    startup_paths = evidence["startup_paths"]
+    control_record = evidence["control_record"]
+    bootstrap_manifest = evidence["bootstrap_manifest"]
+    rt_activation = evidence["rt_activation"]
+    recovery = evidence["recovery"]
+
+    for section_name, section_value in (
+        ("startup_paths", startup_paths),
+        ("control_record", control_record),
+        ("bootstrap_manifest", bootstrap_manifest),
+        ("rt_activation", rt_activation),
+        ("recovery", recovery),
+    ):
+        if not isinstance(section_value, Mapping):
+            raise ValueError(f"{TASK12_CONTRACT_ERROR_CODE}: {section_name} must be a mapping")
+
+    checkpoints = bootstrap_manifest.get("checkpoints")
+    if not isinstance(checkpoints, Mapping):
+        raise ValueError(f"{TASK12_CONTRACT_ERROR_CODE}: bootstrap_manifest.checkpoints must be a mapping")
+
+    readiness_criteria = bootstrap_manifest.get("readiness_criteria")
+    if not isinstance(readiness_criteria, Sequence) or not readiness_criteria:
+        raise ValueError(
+            f"{TASK12_CONTRACT_ERROR_CODE}: measurable readiness_criteria are required for bootstrap"
+        )
+
+    malformed_criteria: list[int] = []
+    for idx, criterion in enumerate(readiness_criteria):
+        if not isinstance(criterion, Mapping):
+            malformed_criteria.append(idx)
+            continue
+        metric = str(criterion.get("metric") or "").strip()
+        expected = criterion.get("expected")
+        actual = criterion.get("actual")
+        if not metric or expected is None or actual is None or "passed" not in criterion:
+            malformed_criteria.append(idx)
+    if malformed_criteria:
+        raise ValueError(
+            f"{TASK12_CONTRACT_ERROR_CODE}: readiness_criteria entries must include metric/expected/actual/passed; "
+            f"malformed indexes={malformed_criteria}"
+        )
+
+    checks: list[dict[str, Any]] = []
+
+    def _check(check_id: str, passed: bool, detail: str) -> None:
+        checks.append({"check_id": check_id, "passed": bool(passed), "detail": detail})
+
+    _check(
+        "12.orientation.rt_monthly_backfill_reviewed",
+        bool(startup_paths.get("rt_reviewed")) and bool(startup_paths.get("monthly_reviewed")) and bool(startup_paths.get("backfill_reviewed")),
+        "Startup dependency orientation completed for RT/monthly/backfill",
+    )
+
+    missing_checkpoints = [name for name in _TASK12_REQUIRED_CHECKPOINTS if name not in checkpoints]
+    _check("12.checkpoints.present", not missing_checkpoints, f"Required checkpoints present (missing={missing_checkpoints})")
+    _check(
+        "12.checkpoints.passed",
+        not missing_checkpoints and all(bool((checkpoints.get(name) or {}).get("passed")) for name in _TASK12_REQUIRED_CHECKPOINTS),
+        "Required checkpoints passed deterministically",
+    )
+
+    control_status = str(control_record.get("status") or "").strip().upper()
+    _check(
+        "12.control.ready",
+        control_status == "READY",
+        f"Bootstrap control record status is READY (status={control_status or '<missing>'})",
+    )
+    _check(
+        "12.control.deterministic_key",
+        bool(str(control_record.get("control_key") or "").strip()),
+        "Deterministic bootstrap control key is persisted",
+    )
+
+    _check(
+        "12.readiness.criteria",
+        all(bool((criterion or {}).get("passed")) for criterion in readiness_criteria),
+        "Measurable readiness criteria passed",
+    )
+
+    _check(
+        "12.rt.activation.contract",
+        str(rt_activation.get("contract_version") or "").strip() == "bootstrap_rt_activation.v1"
+        and bool(rt_activation.get("bootstrap_ready")),
+        "Bootstrap outputs are authoritative RT activation inputs",
+    )
+
+    _check(
+        "12.recovery.idempotent_rerun",
+        bool(recovery.get("rerun_no_op_verified")),
+        "Bootstrap rerun is idempotent/no-op safe",
+    )
+    _check(
+        "12.recovery.partial_resume",
+        bool(recovery.get("partial_recovery_verified")),
+        "Partial bootstrap recovery is deterministic",
+    )
+    _check(
+        "12.recovery.retry_and_rollback",
+        bool(recovery.get("retry_strategy_verified")) and bool(recovery.get("rollback_strategy_verified")),
+        "Retry and rollback safeguards are verified",
+    )
+
+    failed_checks = [check["check_id"] for check in checks if not check["passed"]]
+    report = {
+        "contract_version": TASK12_BOOTSTRAP_GATE_VERSION,
+        "status": "go" if not failed_checks else "no-go",
+        "checks": checks,
+        "failed_checks": failed_checks,
+    }
+    if failed_checks:
+        raise ValueError(
+            f"{TASK12_GATE_ERROR_CODE}: Task 12 initial deployment bootstrap gate failed checks {failed_checks}"
+        )
     return report

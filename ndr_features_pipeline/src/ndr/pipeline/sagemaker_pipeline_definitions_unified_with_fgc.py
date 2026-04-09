@@ -56,6 +56,7 @@ from ndr.pipeline.io_contract import resolve_step_code_uri
 
 
 PIPELINE_15M_STREAMING_JOB_NAME = "pipeline_15m_streaming"
+PIPELINE_15M_DEPENDENT_JOB_NAME = "pipeline_15m_dependent"
 PIPELINE_FG_B_BASELINE_JOB_NAME = "pipeline_fg_b_baseline"
 PIPELINE_MACHINE_INVENTORY_UNLOAD_JOB_NAME = "pipeline_machine_inventory_unload"
 
@@ -181,7 +182,7 @@ def build_15m_streaming_pipeline(
     project_name_for_contracts: str,
     feature_spec_version_for_contracts: str,
 ) -> Pipeline:
-    """Create the main 15m streaming pipeline (Delta, FG-A, Pair-Counts).
+    """Create the 15m *core* streaming pipeline (Delta, FG-A, Pair-Counts).
 
     Steps (in order):
 
@@ -269,13 +270,6 @@ def build_15m_streaming_pipeline(
         pipeline_job_name=PIPELINE_15M_STREAMING_JOB_NAME,
         step_name="PairCountsBuilderStep",
     )
-    fg_c_code_uri = resolve_step_code_uri(
-        project_name=project_name_for_contracts,
-        feature_spec_version=feature_spec_version_for_contracts,
-        pipeline_job_name=PIPELINE_15M_STREAMING_JOB_NAME,
-        step_name="FGCCorrBuilderStep",
-    )
-
     delta_step = ProcessingStep(
         name="DeltaBuilderStep",
         processor=processor,
@@ -357,9 +351,62 @@ def build_15m_streaming_pipeline(
     )
     pair_counts_step.add_depends_on([fg_a_step])
 
-    # ------------------------------------------------------------------ #
-    # Step 4: FG-C Correlation Builder                                  #
-    # ------------------------------------------------------------------ #
+    pipeline = Pipeline(
+        name=pipeline_name,
+        parameters=[
+            project_name,
+            feature_spec_version,
+            mini_batch_id,
+            raw_parsed_logs_s3_prefix,
+            batch_start_ts_iso,
+            batch_end_ts_iso,
+        ],
+        steps=[delta_step, fg_a_step, pair_counts_step],
+        sagemaker_session=session,
+    )
+
+    return pipeline
+
+
+def build_15m_dependent_pipeline(
+    pipeline_name: str,
+    role_arn: str,
+    default_bucket: str,
+    region_name: str,
+    project_name_for_contracts: str,
+    feature_spec_version_for_contracts: str,
+) -> Pipeline:
+    """Create the 15m dependent pipeline (FG-C only).
+
+    This pipeline is intentionally isolated from the core 15m pipeline so RT
+    orchestration can run readiness/remediation between phases during cold start.
+    """
+
+    session = sagemaker.session.Session(default_bucket=default_bucket)
+
+    processor = PySparkProcessor(
+        base_job_name="ndr-15m-dependent",
+        framework_version="3.5",
+        py_version="py312",
+        role=role_arn,
+        instance_count=1,
+        instance_type="ml.m5.4xlarge",
+        sagemaker_session=session,
+    )
+
+    project_name = ParameterString(name="ProjectName", default_value="<required:ProjectName>")
+    feature_spec_version = ParameterString(name="FeatureSpecVersion", default_value="<required:FeatureSpecVersion>")
+    mini_batch_id = ParameterString(name="MiniBatchId", default_value="<required:MiniBatchId>")
+    batch_start_ts_iso = ParameterString(name="BatchStartTsIso", default_value="<required:BatchStartTsIso>")
+    batch_end_ts_iso = ParameterString(name="BatchEndTsIso", default_value="<required:BatchEndTsIso>")
+
+    fg_c_code_uri = resolve_step_code_uri(
+        project_name=project_name_for_contracts,
+        feature_spec_version=feature_spec_version_for_contracts,
+        pipeline_job_name=PIPELINE_15M_DEPENDENT_JOB_NAME,
+        step_name="FGCCorrBuilderStep",
+    )
+
     fg_c_step = ProcessingStep(
         name="FGCCorrBuilderStep",
         processor=processor,
@@ -382,23 +429,19 @@ def build_15m_streaming_pipeline(
         inputs=[],
         outputs=[],
     )
-    fg_c_step.add_depends_on([pair_counts_step])
 
-    pipeline = Pipeline(
+    return Pipeline(
         name=pipeline_name,
         parameters=[
             project_name,
             feature_spec_version,
             mini_batch_id,
-            raw_parsed_logs_s3_prefix,
             batch_start_ts_iso,
             batch_end_ts_iso,
         ],
-        steps=[delta_step, fg_a_step, pair_counts_step, fg_c_step],
+        steps=[fg_c_step],
         sagemaker_session=session,
     )
-
-    return pipeline
 
 
 # ---------------------------------------------------------------------------

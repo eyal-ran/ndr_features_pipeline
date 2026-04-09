@@ -122,6 +122,13 @@ PIPELINE_RUNTIME_PARAMS = {
         "BatchEndTsIso",
         "RawParsedLogsS3Prefix",
     ],
+    "pipeline_15m_dependent": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "MiniBatchId",
+        "BatchStartTsIso",
+        "BatchEndTsIso",
+    ],
     "pipeline_fg_b_baseline": [
         "ProjectName",
         "FeatureSpecVersion",
@@ -525,15 +532,29 @@ def _build_bootstrap_items(
                                 "output_pair_counts": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/pair_counts/",
                             },
                         },
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name_version": _versioned_job_name("pipeline_15m_dependent", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_15m_dependent"],
+                "scripts": {
+                    "steps": {
                         "FGCCorrBuilderStep": {
-                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/15m_streaming/FGCCorrBuilderStep/",
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/15m_dependent/FGCCorrBuilderStep/",
                             "entry_script": "run_fg_c_builder.py",
                             "data_prefixes": {
                                 "input_fg_a": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_a/",
                                 "input_fg_b": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_b/",
                                 "output_fg_c": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_c/",
                             },
-                        },
+                        }
                     }
                 },
             },

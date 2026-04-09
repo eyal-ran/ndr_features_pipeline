@@ -30,7 +30,8 @@ outside the builder job.
   - `src/ndr/scripts/run_fg_c_builder.py`
 - Pipelines:
   - `src/ndr/pipeline/sagemaker_pipeline_definitions.py`
-    - `build_15m_streaming_pipeline` now includes `FGCCorrBuilderStep` after `PairCountsBuilderStep`.
+    - `build_15m_streaming_pipeline` is the RT **core** phase (Delta/FG-A/Pair-Counts).
+    - `build_15m_dependent_pipeline` runs `FGCCorrBuilderStep` as the RT **dependent** phase after readiness/remediation.
 
 ## Runtime Contract
 

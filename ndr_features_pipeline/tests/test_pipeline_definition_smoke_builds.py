@@ -88,6 +88,14 @@ def test_pipeline_definitions_smoke_build_with_concrete_contracts(monkeypatch):
         project_name_for_contracts="proj",
         feature_spec_version_for_contracts="v1",
     )
+    p_unified.build_15m_dependent_pipeline(
+        pipeline_name="p15m-dependent",
+        role_arn="arn:aws:iam::123:role/x",
+        default_bucket="bucket",
+        region_name="us-east-1",
+        project_name_for_contracts="proj",
+        feature_spec_version_for_contracts="v1",
+    )
     p_unified.build_fg_b_baseline_pipeline(
         pipeline_name="pfgb",
         role_arn="arn:aws:iam::123:role/x",
@@ -180,6 +188,37 @@ def test_if_training_pipeline_rejects_placeholder_contract_identity(monkeypatch)
         assert "concrete value" in str(exc)
     else:
         raise AssertionError("Expected ValueError")
+
+
+def test_15m_pipelines_are_split_into_core_and_dependent_phases(monkeypatch):
+    _install_sagemaker_stubs()
+    from ndr.pipeline import sagemaker_pipeline_definitions_unified_with_fgc as p_unified
+
+    monkeypatch.setattr(
+        p_unified,
+        "resolve_step_code_uri",
+        lambda **kwargs: f"s3://code/{kwargs['pipeline_job_name']}/{kwargs['step_name']}.py",
+    )
+
+    core = p_unified.build_15m_streaming_pipeline(
+        pipeline_name="p15m-core",
+        role_arn="arn:aws:iam::123:role/x",
+        default_bucket="bucket",
+        region_name="us-east-1",
+        project_name_for_contracts="proj",
+        feature_spec_version_for_contracts="v1",
+    )
+    dependent = p_unified.build_15m_dependent_pipeline(
+        pipeline_name="p15m-dependent",
+        role_arn="arn:aws:iam::123:role/x",
+        default_bucket="bucket",
+        region_name="us-east-1",
+        project_name_for_contracts="proj",
+        feature_spec_version_for_contracts="v1",
+    )
+
+    assert [step.name for step in core.steps] == ["DeltaBuilderStep", "FGABuilderStep", "PairCountsBuilderStep"]
+    assert [step.name for step in dependent.steps] == ["FGCCorrBuilderStep"]
 
 
 def test_backfill_historical_extractor_pipeline_rejects_placeholder_contract_identity(monkeypatch):

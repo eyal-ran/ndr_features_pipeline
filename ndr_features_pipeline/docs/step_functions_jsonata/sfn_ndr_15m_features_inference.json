@@ -833,7 +833,7 @@
           "BuildRtArtifactReadinessManifest": {
             "Type": "Pass",
             "Assign": {
-              "rt_artifact_readiness_manifest": "{% {'contract_version':'rt_artifact_readiness.v1','required_families':['delta','fg_a','pair_counts','fg_c'],'missing_ranges':($exists($states.input.rt_artifact_readiness_manifest.missing_ranges) ? $states.input.rt_artifact_readiness_manifest.missing_ranges : []),'check_status':($count($exists($states.input.rt_artifact_readiness_manifest.missing_ranges) ? $states.input.rt_artifact_readiness_manifest.missing_ranges : []) > 0 ? 'missing' : 'ready'),'check_reason':($count($exists($states.input.rt_artifact_readiness_manifest.missing_ranges) ? $states.input.rt_artifact_readiness_manifest.missing_ranges : []) > 0 ? 'dependency_missing:rt_artifacts' : 'ready'),'idempotency_key':($exists($states.input.rt_artifact_readiness_manifest.idempotency_key) ? $states.input.rt_artifact_readiness_manifest.idempotency_key : '0000000000000000000000000000000000000000000000000000000000000000')} %}",
+              "rt_artifact_readiness_manifest": "{% {'contract_version':'rt_artifact_readiness.v1','required_families':['fg_c'],'missing_ranges':($exists($states.input.rt_artifact_readiness_manifest.missing_ranges) ? $states.input.rt_artifact_readiness_manifest.missing_ranges : []),'check_status':($count($exists($states.input.rt_artifact_readiness_manifest.missing_ranges) ? $states.input.rt_artifact_readiness_manifest.missing_ranges : []) > 0 ? 'missing' : 'ready'),'check_reason':($count($exists($states.input.rt_artifact_readiness_manifest.missing_ranges) ? $states.input.rt_artifact_readiness_manifest.missing_ranges : []) > 0 ? 'dependency_missing:fg_c_dependencies' : 'ready'),'idempotency_key':($exists($states.input.rt_artifact_readiness_manifest.idempotency_key) ? $states.input.rt_artifact_readiness_manifest.idempotency_key : '0000000000000000000000000000000000000000000000000000000000000000')} %}",
               "rt_readiness_cycle": 0
             },
             "Next": "CheckRtArtifactReadiness"
@@ -843,7 +843,7 @@
             "Choices": [
               {
                 "Condition": "{% $count($rt_artifact_readiness_manifest.missing_ranges) = 0 %}",
-                "Next": "StartInferencePipeline"
+                "Next": "Start15mDependentFeaturesPipeline"
               },
               {
                 "Condition": "{% $rt_readiness_cycle = 0 %}",
@@ -1005,7 +1005,7 @@
           "RecheckRtArtifactReadiness": {
             "Type": "Pass",
             "Assign": {
-              "rt_artifact_readiness_manifest": "{% $exists($states.input.recheck_rt_artifact_readiness_manifest.missing_ranges) ? {'contract_version':'rt_artifact_readiness.v1','required_families':['delta','fg_a','pair_counts','fg_c'],'missing_ranges':$states.input.recheck_rt_artifact_readiness_manifest.missing_ranges,'check_status':($count($states.input.recheck_rt_artifact_readiness_manifest.missing_ranges) > 0 ? 'missing' : 'ready'),'check_reason':($count($states.input.recheck_rt_artifact_readiness_manifest.missing_ranges) > 0 ? 'dependency_missing:rt_artifacts_after_remediation' : 'ready'),'idempotency_key':($exists($states.input.recheck_rt_artifact_readiness_manifest.idempotency_key) ? $states.input.recheck_rt_artifact_readiness_manifest.idempotency_key : $rt_artifact_readiness_manifest.idempotency_key)} : {'contract_version':'rt_artifact_readiness.v1','required_families':['delta','fg_a','pair_counts','fg_c'],'missing_ranges':[],'check_status':'ready','check_reason':'ready','idempotency_key':$rt_artifact_readiness_manifest.idempotency_key} %}",
+              "rt_artifact_readiness_manifest": "{% $exists($states.input.recheck_rt_artifact_readiness_manifest.missing_ranges) ? {'contract_version':'rt_artifact_readiness.v1','required_families':['fg_c'],'missing_ranges':$states.input.recheck_rt_artifact_readiness_manifest.missing_ranges,'check_status':($count($states.input.recheck_rt_artifact_readiness_manifest.missing_ranges) > 0 ? 'missing' : 'ready'),'check_reason':($count($states.input.recheck_rt_artifact_readiness_manifest.missing_ranges) > 0 ? 'dependency_missing:fg_c_dependencies_after_remediation' : 'ready'),'idempotency_key':($exists($states.input.recheck_rt_artifact_readiness_manifest.idempotency_key) ? $states.input.recheck_rt_artifact_readiness_manifest.idempotency_key : $rt_artifact_readiness_manifest.idempotency_key)} : {'contract_version':'rt_artifact_readiness.v1','required_families':['fg_c'],'missing_ranges':[],'check_status':'ready','check_reason':'ready','idempotency_key':$rt_artifact_readiness_manifest.idempotency_key} %}",
               "rt_readiness_cycle": 1
             },
             "Next": "CheckRtArtifactReadiness"
@@ -1013,7 +1013,7 @@
           "FailRtArtifactsUnresolvedAfterRemediation": {
             "Type": "Fail",
             "Error": "RealtimeArtifactReadinessGateFailed",
-            "Cause": "Unresolved RT dependencies after remediation; dependency_missing:rt_artifacts"
+            "Cause": "Unresolved RT dependencies after remediation; dependency_missing:fg_c_dependencies"
           },
           "WaitBeforeDescribe15mFeatures": {
             "Type": "Wait",
@@ -1026,6 +1026,117 @@
               "features_poll_attempt": "{% $features_poll_attempt + 1 %}"
             },
             "Next": "Describe15mFeaturesPipeline"
+          },
+          "Start15mDependentFeaturesPipeline": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
+            "Arguments": {
+              "PipelineName": "${PipelineName15mDependent}",
+              "PipelineParameters": [
+                {
+                  "Name": "ProjectName",
+                  "Value": "{% $states.input.project_name %}"
+                },
+                {
+                  "Name": "FeatureSpecVersion",
+                  "Value": "{% $states.input.feature_spec_version %}"
+                },
+                {
+                  "Name": "MiniBatchId",
+                  "Value": "{% $states.input.mini_batch_id %}"
+                },
+                {
+                  "Name": "BatchStartTsIso",
+                  "Value": "{% $states.input.batch_start_ts_iso %}"
+                },
+                {
+                  "Name": "BatchEndTsIso",
+                  "Value": "{% $states.input.batch_end_ts_iso %}"
+                }
+              ]
+            },
+            "Assign": {
+              "dependent_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
+              "dependent_poll_attempt": 0
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "SageMaker.AmazonSageMakerException",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 4,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "BranchFailed"
+              }
+            ],
+            "Next": "Describe15mDependentFeaturesPipeline"
+          },
+          "Describe15mDependentFeaturesPipeline": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
+            "Arguments": {
+              "PipelineExecutionArn": "{% $dependent_pipeline_execution_arn %}"
+            },
+            "Assign": {
+              "dependent_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "SageMaker.AmazonSageMakerException",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "BranchFailed"
+              }
+            ],
+            "Next": "DependentFeaturesPipelineStatusChoice"
+          },
+          "DependentFeaturesPipelineStatusChoice": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Condition": "{% $dependent_pipeline_status = 'Succeeded' %}",
+                "Next": "StartInferencePipeline"
+              },
+              {
+                "Condition": "{% ($dependent_pipeline_status = 'Executing' or $dependent_pipeline_status = 'Stopping') and $dependent_poll_attempt < 120 %}",
+                "Next": "WaitBeforeDescribe15mDependentFeatures"
+              }
+            ],
+            "Default": "BranchFailed"
+          },
+          "WaitBeforeDescribe15mDependentFeatures": {
+            "Type": "Wait",
+            "Seconds": 30,
+            "Next": "IncrementDependentFeaturesPollAttempt"
+          },
+          "IncrementDependentFeaturesPollAttempt": {
+            "Type": "Pass",
+            "Assign": {
+              "dependent_poll_attempt": "{% $dependent_poll_attempt + 1 %}"
+            },
+            "Next": "Describe15mDependentFeaturesPipeline"
           },
           "StartInferencePipeline": {
             "Type": "Task",

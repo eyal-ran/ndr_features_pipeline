@@ -46,6 +46,7 @@ def test_bootstrap_items_include_all_runtime_jobs():
         "if_training",
         "project_parameters",
         "pipeline_15m_streaming",
+        "pipeline_15m_dependent",
         "pipeline_fg_b_baseline",
         "pipeline_machine_inventory_unload",
         "pipeline_inference_predictions",
@@ -93,6 +94,17 @@ def test_pipeline_seed_items_have_runtime_and_script_contracts():
     assert delta_step["code_prefix_s3"].startswith("s3://")
     assert delta_step["entry_script"] == "run_delta_builder.py"
     assert delta_step["data_prefixes"]["input_traffic"].startswith("s3://")
+    assert "FGCCorrBuilderStep" not in pipeline_spec["scripts"]["steps"]
+
+    dependent_spec = by_job["pipeline_15m_dependent"]["spec"]
+    assert dependent_spec["required_runtime_params"] == [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "MiniBatchId",
+        "BatchStartTsIso",
+        "BatchEndTsIso",
+    ]
+    assert dependent_spec["scripts"]["steps"]["FGCCorrBuilderStep"]["entry_script"] == "run_fg_c_builder.py"
 
     extractor_step = by_job["pipeline_backfill_historical_extractor"]["spec"]["scripts"]["steps"]["HistoricalWindowsExtractorStep"]
     assert extractor_step["entry_script"] == "run_historical_windows_extractor.py"

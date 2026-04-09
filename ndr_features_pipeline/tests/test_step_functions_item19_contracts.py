@@ -175,6 +175,10 @@ def test_15m_flow_writes_dual_batch_index_items_and_runs_per_ml_project_map():
     assert "MlProjectName" not in features_params
     assert "MlProjectNamesJson" not in features_params
 
+    dependent_params = {entry["Name"] for entry in states["Start15mDependentFeaturesPipeline"]["Arguments"]["PipelineParameters"]}
+    assert dependent_params == {"ProjectName", "FeatureSpecVersion", "MiniBatchId", "BatchStartTsIso", "BatchEndTsIso"}
+    assert states["Start15mDependentFeaturesPipeline"]["Arguments"]["PipelineName"] == "${PipelineName15mDependent}"
+
     inference_params = {entry["Name"] for entry in states["StartInferencePipeline"]["Arguments"]["PipelineParameters"]}
     assert "MlProjectName" in inference_params
     assert "RawParsedLogsS3Prefix" not in inference_params

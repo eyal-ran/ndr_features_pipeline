@@ -62,6 +62,7 @@ def _install_sagemaker_stubs():
 def test_pipeline_definitions_smoke_build_with_concrete_contracts(monkeypatch):
     _install_sagemaker_stubs()
 
+    from ndr.pipeline import sagemaker_pipeline_definitions_backfill_historical_extractor as p_backfill_hist
     from ndr.pipeline import sagemaker_pipeline_definitions_if_training as p_train
     from ndr.pipeline import sagemaker_pipeline_definitions_inference as p_inf
     from ndr.pipeline import sagemaker_pipeline_definitions_prediction_feature_join as p_join
@@ -72,7 +73,7 @@ def test_pipeline_definitions_smoke_build_with_concrete_contracts(monkeypatch):
         "load_job_spec",
         lambda **_kwargs: {"processing_image_uri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/ndr:latest"},
     )
-    for module in (p_unified, p_inf, p_join, p_train):
+    for module in (p_unified, p_inf, p_join, p_train, p_backfill_hist):
         monkeypatch.setattr(
             module,
             "resolve_step_code_uri",
@@ -127,6 +128,14 @@ def test_pipeline_definitions_smoke_build_with_concrete_contracts(monkeypatch):
         project_name_for_contracts="proj",
         feature_spec_version_for_contracts="v1",
     )
+    p_backfill_hist.build_backfill_historical_extractor_pipeline(
+        pipeline_name="pbackfill-historical",
+        role_arn="arn:aws:iam::123:role/x",
+        default_bucket="bucket",
+        region_name="us-east-1",
+        project_name_for_contracts="proj",
+        feature_spec_version_for_contracts="v1",
+    )
 
 
 def test_if_training_pipeline_enforces_verify_plan_remediate_reverify_train_sequence(monkeypatch):
@@ -161,6 +170,25 @@ def test_if_training_pipeline_rejects_placeholder_contract_identity(monkeypatch)
     try:
         p_train.build_if_training_pipeline(
             pipeline_name="ptrain",
+            role_arn="arn:aws:iam::123:role/x",
+            default_bucket="bucket",
+            region_name="us-east-1",
+            project_name_for_contracts="<required:ProjectName>",
+            feature_spec_version_for_contracts="v1",
+        )
+    except ValueError as exc:
+        assert "concrete value" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
+def test_backfill_historical_extractor_pipeline_rejects_placeholder_contract_identity(monkeypatch):
+    _install_sagemaker_stubs()
+    from ndr.pipeline import sagemaker_pipeline_definitions_backfill_historical_extractor as p_backfill_hist
+
+    try:
+        p_backfill_hist.build_backfill_historical_extractor_pipeline(
+            pipeline_name="pbackfill-historical",
             role_arn="arn:aws:iam::123:role/x",
             default_bucket="bucket",
             region_name="us-east-1",

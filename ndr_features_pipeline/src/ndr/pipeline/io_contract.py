@@ -21,6 +21,7 @@ class StepScriptContract:
 
 
 REQUIRED_CODE_METADATA_FIELDS = ("artifact_mode", "artifact_build_id", "artifact_sha256")
+_FORBIDDEN_IDENTITY_MARKERS = ("<required:", "<placeholder", "${", "env_fallback", "code_default")
 
 
 def _ensure_mapping(value: Any, *, field_name: str) -> Mapping[str, Any]:
@@ -110,7 +111,13 @@ def resolve_step_code_uri(
         "feature_spec_version": feature_spec_version,
         "pipeline_job_name": pipeline_job_name,
     }.items():
-        if not value or value.startswith("<required:"):
+        normalized_value = (value or "").strip()
+        if not normalized_value:
+            raise ValueError(
+                f"{field_name} must be a concrete value for step code resolution; received {value!r}"
+            )
+        lowered_value = normalized_value.lower()
+        if any(marker in lowered_value for marker in _FORBIDDEN_IDENTITY_MARKERS):
             raise ValueError(
                 f"{field_name} must be a concrete value for step code resolution; received {value!r}"
             )

@@ -168,6 +168,14 @@ PIPELINE_RUNTIME_PARAMS = {
         "InputS3Prefix",
         "OutputS3Prefix",
     ],
+    "pipeline_backfill_15m_reprocessing": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "ArtifactFamily",
+        "RangeStartTsIso",
+        "RangeEndTsIso",
+        "IdempotencyKey",
+    ],
 }
 
 REQUIRED_TABLE_CREATE_KEYS = (
@@ -734,6 +742,27 @@ def _build_bootstrap_items(
                             "data_prefixes": {
                                 "input_raw": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/raw/palo_alto/",
                                 "output_windows": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/backfill/windows/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name_version": _versioned_job_name("pipeline_backfill_15m_reprocessing", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_backfill_15m_reprocessing"],
+                "scripts": {
+                    "steps": {
+                        "BackfillRangeExecutorStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/backfill_15m_reprocessing/BackfillRangeExecutorStep/",
+                            "entry_script": "run_backfill_reprocessing_executor.py",
+                            "data_prefixes": {
+                                "output_backfill_status": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/backfill/executions/",
                             },
                         }
                     }

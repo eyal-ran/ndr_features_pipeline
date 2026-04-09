@@ -52,6 +52,7 @@ def test_bootstrap_items_include_all_runtime_jobs():
         "pipeline_prediction_feature_join",
         "pipeline_if_training",
         "pipeline_backfill_historical_extractor",
+        "pipeline_backfill_15m_reprocessing",
     }
 
     assert set(by_job.keys()) == expected_jobs
@@ -95,6 +96,18 @@ def test_pipeline_seed_items_have_runtime_and_script_contracts():
 
     extractor_step = by_job["pipeline_backfill_historical_extractor"]["spec"]["scripts"]["steps"]["HistoricalWindowsExtractorStep"]
     assert extractor_step["entry_script"] == "run_historical_windows_extractor.py"
+
+    backfill_spec = by_job["pipeline_backfill_15m_reprocessing"]["spec"]
+    assert backfill_spec["required_runtime_params"] == [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "ArtifactFamily",
+        "RangeStartTsIso",
+        "RangeEndTsIso",
+        "IdempotencyKey",
+    ]
+    backfill_step = backfill_spec["scripts"]["steps"]["BackfillRangeExecutorStep"]
+    assert backfill_step["entry_script"] == "run_backfill_reprocessing_executor.py"
 
     project_defaults = by_job["project_parameters"]["spec"]["defaults"]
     assert project_defaults["MiniBatchId"] == "auto-mini-batch"

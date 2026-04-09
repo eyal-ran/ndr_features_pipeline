@@ -16,6 +16,7 @@ from ndr.processing.historical_windows_extractor_job import (
     HistoricalWindowsExtractorRuntimeConfig,
     HistoricalWindowsExtractorJob,
 )
+from ndr.processing.raw_input_resolver import RawInputResolution
 
 
 class _Paginator:
@@ -60,6 +61,17 @@ def test_extractor_emits_expected_window_rows(monkeypatch):
     fake_s3 = _S3Client()
     monkeypatch.setattr(module.boto3, "client", lambda *_a, **_k: fake_s3, raising=False)
     monkeypatch.setattr(module, "resolve_feature_spec_version", lambda **_k: "v9")
+    monkeypatch.setattr(module, "load_project_parameters", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        module.RawInputResolver,
+        "resolve",
+        lambda *_a, **_k: RawInputResolution(
+            source_mode="ingestion",
+            raw_input_s3_prefix="s3://bucket/raw/fw_paloalto/org1/org2/2025/01/01/mb-1/",
+            resolution_reason="ingestion_rows_present",
+            provenance={"source_mode": "ingestion"},
+        ),
+    )
 
     runtime = HistoricalWindowsExtractorRuntimeConfig(
         input_s3_prefix="s3://bucket/raw",
@@ -79,6 +91,7 @@ def test_extractor_emits_expected_window_rows(monkeypatch):
     assert body["rows"][0]["batch_start_ts_iso"] == "2025-01-01T10:38:00Z"
     assert body["rows"][0]["batch_end_ts_iso"] == "2025-01-01T10:40:00Z"
     assert body["contract_version"] == "backfill_manifest.v1"
+    assert body["source_mode"] == "ingestion"
 
 
 def test_extractor_prefers_batch_index_rows(monkeypatch):
@@ -87,6 +100,17 @@ def test_extractor_prefers_batch_index_rows(monkeypatch):
     fake_s3 = _S3Client()
     monkeypatch.setattr(module.boto3, "client", lambda *_a, **_k: fake_s3, raising=False)
     monkeypatch.setattr(module, "resolve_feature_spec_version", lambda **_k: "v9")
+    monkeypatch.setattr(module, "load_project_parameters", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        module.RawInputResolver,
+        "resolve",
+        lambda *_a, **_k: RawInputResolution(
+            source_mode="ingestion",
+            raw_input_s3_prefix="s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-9/",
+            resolution_reason="ingestion_rows_present",
+            provenance={"source_mode": "ingestion"},
+        ),
+    )
     monkeypatch.setattr(
         module,
         "BatchIndexLoader",
@@ -123,6 +147,7 @@ def test_extractor_errors_when_index_empty_and_fallback_disabled(monkeypatch):
     fake_s3 = _S3Client()
     monkeypatch.setattr(module.boto3, "client", lambda *_a, **_k: fake_s3, raising=False)
     monkeypatch.setattr(module, "resolve_feature_spec_version", lambda **_k: "v9")
+    monkeypatch.setattr(module, "load_project_parameters", lambda *_a, **_k: {"backfill_redshift_fallback": {"enabled": False}})
     monkeypatch.setattr(module, "BatchIndexLoader", lambda: _BatchIndexLoader([]))
 
     runtime = HistoricalWindowsExtractorRuntimeConfig(
@@ -136,6 +161,6 @@ def test_extractor_errors_when_index_empty_and_fallback_disabled(monkeypatch):
     try:
         HistoricalWindowsExtractorJob(runtime).run()
     except RuntimeError as exc:
-        assert "S3 listing fallback is disabled" in str(exc)
+        assert "Redshift fallback is disabled" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError")

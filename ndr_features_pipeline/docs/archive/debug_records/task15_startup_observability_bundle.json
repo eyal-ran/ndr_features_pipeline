@@ -1,0 +1,150 @@
+{
+  "contract_version": "task15_initial_deployment_observability.v1",
+  "orientation": {
+    "startup_paths": [
+      "rt",
+      "monthly",
+      "backfill",
+      "training"
+    ],
+    "startup_failure_classes_reviewed": true,
+    "remediation_paths_reviewed": true,
+    "review_artifacts": [
+      "docs/INITIAL_DEPLOYMENT_BOOTSTRAP_RUNBOOK.md",
+      "docs/archive/debug_records/task14_startup_contract_validation_bundle.md",
+      "docs/archive/debug_records/task15_startup_failure_classes_and_remediation_paths.md"
+    ]
+  },
+  "observability": {
+    "metrics": [
+      "bootstrap_duration_seconds",
+      "startup_remediation_invocation_count",
+      "startup_unresolved_missing_range_count",
+      "startup_fallback_source_mode_count",
+      "startup_contract_validation_failure_count"
+    ],
+    "alarms": [
+      {
+        "alarm_name": "startup-missing-range-remediation-gap",
+        "metric": "startup_unresolved_missing_range_count",
+        "severity": "sev1",
+        "failure_class": "missing_range_remediation_gap",
+        "noise_budget_max_alerts_per_day": 2,
+        "runbook_id": "rb_missing_range_gap"
+      },
+      {
+        "alarm_name": "startup-extractor-bootstrap-fragility",
+        "metric": "startup_fallback_source_mode_count",
+        "severity": "sev2",
+        "failure_class": "extractor_bootstrap_fragility",
+        "noise_budget_max_alerts_per_day": 4,
+        "runbook_id": "rb_extractor_fragility"
+      },
+      {
+        "alarm_name": "startup-raw-fallback-integration-failure",
+        "metric": "startup_fallback_source_mode_count",
+        "severity": "sev1",
+        "failure_class": "raw_log_fallback_not_integrated",
+        "noise_budget_max_alerts_per_day": 1,
+        "runbook_id": "rb_raw_fallback_integration"
+      },
+      {
+        "alarm_name": "startup-contract-validation-failure",
+        "metric": "startup_contract_validation_failure_count",
+        "severity": "sev2",
+        "failure_class": "startup_contract_validation_failure",
+        "noise_budget_max_alerts_per_day": 3,
+        "runbook_id": "rb_startup_contract_failure"
+      }
+    ],
+    "dashboard": {
+      "name": "ndr-startup-health",
+      "panels": [
+        "bootstrap_duration_seconds",
+        "startup_remediation_invocation_count",
+        "startup_unresolved_missing_range_count",
+        "startup_fallback_source_mode_count",
+        "startup_contract_validation_failure_count"
+      ]
+    },
+    "runbooks": {
+      "rb_missing_range_gap": {
+        "owner_team": "NDR Platform",
+        "document_path": "docs/STARTUP_OBSERVABILITY_ROLLBACK_RUNBOOK.md#failure-class-missing-range-remediation-gap"
+      },
+      "rb_extractor_fragility": {
+        "owner_team": "NDR Platform",
+        "document_path": "docs/STARTUP_OBSERVABILITY_ROLLBACK_RUNBOOK.md#failure-class-extractor-bootstrap-fragility"
+      },
+      "rb_raw_fallback_integration": {
+        "owner_team": "NDR Platform",
+        "document_path": "docs/STARTUP_OBSERVABILITY_ROLLBACK_RUNBOOK.md#failure-class-raw-log-fallback-not-integrated"
+      },
+      "rb_startup_contract_failure": {
+        "owner_team": "NDR Platform",
+        "document_path": "docs/STARTUP_OBSERVABILITY_ROLLBACK_RUNBOOK.md#failure-class-startup-contract-validation-failure"
+      }
+    },
+    "incident_model": {
+      "primary_owner_team": "NDR Platform",
+      "escalation_policy": "NDR-Startup-PagerDuty",
+      "severity_map": {
+        "sev1": "customer-facing outage or data correctness risk",
+        "sev2": "degraded startup path with bounded impact",
+        "sev3": "non-customer-facing warning"
+      }
+    }
+  },
+  "rollback": {
+    "switch": {
+      "name": "BootstrapRollbackMode",
+      "config_source": "dynamodb",
+      "control_table": "${NdrJobControlTable}",
+      "control_key": "bootstrap_rollback#v1",
+      "safe_state": "pre_bootstrap_rt_gate"
+    },
+    "safety": {
+      "idempotency_verified": true,
+      "retry_verified": true,
+      "rollback_verified": true
+    }
+  },
+  "validation": {
+    "synthetic_failures": [
+      {
+        "failure_class": "missing_range_remediation_gap",
+        "alarm_triggered": true,
+        "metric_delta": {
+          "startup_unresolved_missing_range_count": 3
+        }
+      },
+      {
+        "failure_class": "extractor_bootstrap_fragility",
+        "alarm_triggered": true,
+        "metric_delta": {
+          "startup_fallback_source_mode_count": 5
+        }
+      },
+      {
+        "failure_class": "raw_log_fallback_not_integrated",
+        "alarm_triggered": true,
+        "metric_delta": {
+          "startup_fallback_source_mode_count": 9
+        }
+      },
+      {
+        "failure_class": "startup_contract_validation_failure",
+        "alarm_triggered": true,
+        "metric_delta": {
+          "startup_contract_validation_failure_count": 1
+        }
+      }
+    ],
+    "rollback_drill": {
+      "executed": true,
+      "restored_stable_state": true,
+      "no_data_corruption": true,
+      "evidence": "docs/archive/debug_records/task15_startup_observability_test_evidence.md"
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "dashboard_name": "ndr-startup-health",
+  "widgets": [
+    {
+      "title": "Bootstrap duration",
+      "metric": "bootstrap_duration_seconds",
+      "stat": "p95"
+    },
+    {
+      "title": "Startup remediation invocations",
+      "metric": "startup_remediation_invocation_count",
+      "stat": "sum"
+    },
+    {
+      "title": "Unresolved missing ranges",
+      "metric": "startup_unresolved_missing_range_count",
+      "stat": "max"
+    },
+    {
+      "title": "Fallback source mode distribution",
+      "metric": "startup_fallback_source_mode_count",
+      "stat": "sum"
+    },
+    {
+      "title": "Startup contract failures",
+      "metric": "startup_contract_validation_failure_count",
+      "stat": "sum"
+    }
+  ]
+}

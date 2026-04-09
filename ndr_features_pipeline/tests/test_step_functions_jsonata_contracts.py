@@ -5,10 +5,23 @@ from pathlib import Path
 STEP_FUNCTIONS_DIR = Path(__file__).resolve().parents[1] / "docs" / "step_functions_jsonata"
 
 
+def _collect_states(state_machine: dict) -> dict:
+    collected = {}
+
+    def _visit(states: dict):
+        for name, state in states.items():
+            collected[name] = state
+            if isinstance(state, dict) and state.get("Type") == "Map" and "ItemProcessor" in state:
+                _visit(state["ItemProcessor"]["States"])
+
+    _visit(state_machine["States"])
+    return collected
+
+
 def test_step_functions_load_split_control_plane_from_dynamodb():
     for path in STEP_FUNCTIONS_DIR.glob("sfn_ndr_*.json"):
         data = json.loads(path.read_text(encoding="utf-8"))
-        states = data["States"]
+        states = _collect_states(data)
         assert "LoadDppConfigFromDynamo" in states, f"{path.name} missing DPP load state"
         assert "LoadMlpConfigFromDynamo" in states, f"{path.name} missing MLP load state"
         assert states["LoadDppConfigFromDynamo"]["Resource"] == "arn:aws:states:::aws-sdk:dynamodb:getItem"

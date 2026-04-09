@@ -64,11 +64,11 @@
         },
         {
           "Condition": "{% $mode = 'evaluation' and $eval_start_ts = '' %}",
-          "Next": "FailMissingEvalStartTsForEvaluation"
+          "Next": "FailMissingEvalStartTs"
         },
         {
           "Condition": "{% $mode = 'evaluation' and $eval_end_ts = '' %}",
-          "Next": "FailMissingEvalEndTsForEvaluation"
+          "Next": "FailMissingEvalEndTs"
         },
         {
           "Condition": "{% ($ml_project_name = '' and $count($ml_project_names)=0) or ($ml_project_name != '' and $count($ml_project_names)>0) %}",
@@ -80,9 +80,23 @@
     "NormalizeMlProjectBranches": {
       "Type": "Pass",
       "Assign": {
-        "ml_project_branches": "{% $count($ml_project_names) > 0 ? $ml_project_names : [$ml_project_name] %}"
+        "ml_project_branches": "{% $distinct($count($ml_project_names) > 0 ? $ml_project_names : [$ml_project_name]) %}"
       },
-      "Next": "RunTrainingPerMlProject"
+      "Next": "ValidateNormalizedMlProjectBranches"
+    },
+    "ValidateNormalizedMlProjectBranches": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $count($ml_project_branches)=0 %}",
+          "Next": "FailMissingMlProjectBranches"
+        },
+        {
+          "Condition": "{% $count($ml_project_branches[$trim($string($)) = '']) > 0 %}",
+          "Next": "FailInvalidMlProjectBranches"
+        }
+      ],
+      "Default": "RunTrainingPerMlProject"
     },
     "RunTrainingPerMlProject": {
       "Type": "Map",
@@ -103,8 +117,64 @@
         "ProcessorConfig": {
           "Mode": "INLINE"
         },
-        "StartAt": "StartTrainingPipeline",
+        "StartAt": "LoadMlpConfigFromDynamo",
         "States": {
+          "LoadMlpConfigFromDynamo": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+            "Arguments": {
+              "TableName": "${MlpConfigTableName}",
+              "Key": {
+                "ml_project_name": {
+                  "S": "{% $states.input.ml_project_name %}"
+                },
+                "job_name_version": {
+                  "S": "{% 'pipeline_defaults#' & $states.input.feature_spec_version %}"
+                }
+              },
+              "ConsistentRead": true
+            },
+            "Assign": {
+              "mlp_linked_project_name": "{% $exists($states.result.Item.project_name.S) ? $states.result.Item.project_name.S : '' %}"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "DynamoDB.ProvisionedThroughputExceededException",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 4,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Next": "ValidateMlpBranchReciprocalMapping"
+          },
+          "ValidateMlpBranchReciprocalMapping": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Condition": "{% $mlp_linked_project_name = '' %}",
+                "Next": "FailMissingMlpBranchConfig"
+              },
+              {
+                "Condition": "{% $mlp_linked_project_name != $states.input.project_name %}",
+                "Next": "FailMlpBranchReciprocalMismatch"
+              }
+            ],
+            "Default": "StartTrainingPipeline"
+          },
+          "FailMissingMlpBranchConfig": {
+            "Type": "Fail",
+            "Error": "MlpBranchConfigValidationError",
+            "Cause": "MLP config lookup failed for branch: missing item or missing reciprocal project_name linkage"
+          },
+          "FailMlpBranchReciprocalMismatch": {
+            "Type": "Fail",
+            "Error": "MlpBranchConfigValidationError",
+            "Cause": "MLP config reciprocal linkage mismatch for branch ml_project_name"
+          },
           "StartTrainingPipeline": {
             "Type": "Task",
             "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
@@ -275,6 +345,16 @@
       "Error": "RuntimeParameterValidationError",
       "Cause": "Exactly one of ml_project_name or ml_project_names must be provided"
     },
+    "FailMissingMlProjectBranches": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing ml_project_branches after normalization"
+    },
+    "FailInvalidMlProjectBranches": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "ml_project_branches must contain non-empty strings"
+    },
     "Success": {
       "Type": "Succeed"
     },
@@ -296,26 +376,6 @@
       "Assign": {
         "project_defaults": "{% $exists($states.result.Item.spec.M.defaults.M) ? $states.result.Item.spec.M.defaults.M : {} %}"
       },
-      "Next": "LoadMlpConfigFromDynamo"
-    },
-    "LoadMlpConfigFromDynamo": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
-      "Arguments": {
-        "TableName": "${MlpConfigTableName}",
-        "Key": {
-          "ml_project_name": {
-            "S": "{% $exists($states.input.ml_project_name) ? $states.input.ml_project_name : ($exists($project_defaults.MlProjectName.S) ? $project_defaults.MlProjectName.S : '') %}"
-          },
-          "job_name_version": {
-            "S": "{% 'pipeline_defaults#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
-          }
-        },
-        "ConsistentRead": true
-      },
-      "Assign": {
-        "mlp_linked_project_name": "{% $exists($states.result.Item.project_name.S) ? $states.result.Item.project_name.S : '' %}"
-      },
       "Next": "ResolvePipelineRuntimeParams"
     },
     "FailInvalidMode": {
@@ -323,12 +383,12 @@
       "Error": "RuntimeParameterValidationError",
       "Cause": "Invalid runtime parameter: mode must be one of training,evaluation,production"
     },
-    "FailMissingEvalStartTsForEvaluation": {
+    "FailMissingEvalStartTs": {
       "Type": "Fail",
       "Error": "RuntimeParameterValidationError",
       "Cause": "Missing required runtime parameter for evaluation mode: eval_start_ts"
     },
-    "FailMissingEvalEndTsForEvaluation": {
+    "FailMissingEvalEndTs": {
       "Type": "Fail",
       "Error": "RuntimeParameterValidationError",
       "Cause": "Missing required runtime parameter for evaluation mode: eval_end_ts"

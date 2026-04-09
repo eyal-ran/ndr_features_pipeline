@@ -387,26 +387,6 @@
       "Assign": {
         "project_defaults": "{% $exists($states.result.Item.spec.M.defaults.M) ? $states.result.Item.spec.M.defaults.M : {} %}"
       },
-      "Next": "LoadMlpConfigFromDynamo"
-    },
-    "LoadMlpConfigFromDynamo": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
-      "Arguments": {
-        "TableName": "${MlpConfigTableName}",
-        "Key": {
-          "ml_project_name": {
-            "S": "{% $exists($states.input.ml_project_name) ? $states.input.ml_project_name : ($exists($project_defaults.MlProjectName.S) ? $project_defaults.MlProjectName.S : '') %}"
-          },
-          "job_name_version": {
-            "S": "{% 'pipeline_defaults#' & ($exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : '${DefaultFeatureSpecVersion}')) %}"
-          }
-        },
-        "ConsistentRead": true
-      },
-      "Assign": {
-        "mlp_linked_project_name": "{% $exists($states.result.Item.project_name.S) ? $states.result.Item.project_name.S : '' %}"
-      },
       "Next": "ResolvePipelineRuntimeParams"
     },
     "ReadExtractorManifest": {

@@ -1,0 +1,62 @@
+{
+  "contract_bundle_version": "task0.remediation_contract_matrix.v1",
+  "contracts": [
+    {
+      "contract_version": "NdrBackfillRequest.v1",
+      "producer_flow": "rt_15m_inference",
+      "consumer_flow": "backfill_reprocessing",
+      "consumer_entry": "docs/step_functions_jsonata/sfn_ndr_backfill_reprocessing.json",
+      "producer_to_consumer_field_map": {
+        "project_name": "ResolvePipelineRuntimeParams.project_name -> StartHistoricalWindowsExtractorPipeline.ProjectName",
+        "feature_spec_version": "ResolvePipelineRuntimeParams.feature_spec_version -> StartHistoricalWindowsExtractorPipeline.FeatureSpecVersion",
+        "missing_ranges[*].start_ts_iso": "min(missing_ranges.start_ts_iso) -> ResolvePipelineRuntimeParams.start_ts",
+        "missing_ranges[*].end_ts_iso": "max(missing_ranges.end_ts_iso) -> ResolvePipelineRuntimeParams.end_ts",
+        "requested_families": "ValidateExtractorManifest/ResolveBackfillWindows -> RunBackfillWindows.ItemSelector.family",
+        "source_hint.raw_parsed_logs_s3_prefix": "source_hint.raw_parsed_logs_s3_prefix -> ResolvePipelineRuntimeParams.input_s3_prefix (optional override)",
+        "idempotency_key": "AcquireMiniBatchLock/ExecutionAlreadyExists handling (no-op metadata)",
+        "provenance.producer_flow": "event/log enrichment (no-op metadata)",
+        "provenance.source_mode": "event/log enrichment (no-op metadata)",
+        "provenance.request_id": "execution name seed + observability metadata"
+      }
+    },
+    {
+      "contract_version": "NdrBaselineRemediationRequest.v1",
+      "producer_flow": "monthly_fg_b_baselines",
+      "consumer_flow": "backfill_reprocessing",
+      "consumer_entry": "docs/step_functions_jsonata/sfn_ndr_backfill_reprocessing.json",
+      "producer_to_consumer_field_map": {
+        "project_name": "ResolvePipelineRuntimeParams.project_name",
+        "feature_spec_version": "ResolvePipelineRuntimeParams.feature_spec_version",
+        "reference_month": "expanded to missing_ranges by producer (validated no-op metadata at consumer)",
+        "required_families": "RunBackfillWindows.ItemSelector.family",
+        "missing_ranges[*].start_ts_iso": "min(missing_ranges.start_ts_iso) -> start_ts",
+        "missing_ranges[*].end_ts_iso": "max(missing_ranges.end_ts_iso) -> end_ts",
+        "idempotency_key": "dedupe lock / retry replay metadata",
+        "provenance.producer_flow": "event/log enrichment",
+        "provenance.source_mode": "event/log enrichment",
+        "provenance.request_id": "execution identity and correlation"
+      }
+    },
+    {
+      "contract_version": "NdrTrainingRemediationRequest.v1",
+      "producer_flow": "if_training",
+      "consumer_flow": "backfill_reprocessing",
+      "consumer_entry": "docs/step_functions_jsonata/sfn_ndr_backfill_reprocessing.json",
+      "producer_to_consumer_field_map": {
+        "project_name": "ResolvePipelineRuntimeParams.project_name",
+        "feature_spec_version": "ResolvePipelineRuntimeParams.feature_spec_version",
+        "run_id": "execution name + trace metadata",
+        "training_window": "validated envelope metadata (no-op for backfill runtime)",
+        "evaluation_windows": "validated no-op metadata",
+        "requested_families": "RunBackfillWindows.ItemSelector.family",
+        "missing_ranges[*].start_ts_iso": "min(missing_ranges.start_ts_iso) -> start_ts",
+        "missing_ranges[*].end_ts_iso": "max(missing_ranges.end_ts_iso) -> end_ts",
+        "missing_manifest": "planner hint and post-remediation verification input",
+        "idempotency_key": "execution idempotency + dedupe metadata",
+        "provenance.producer_flow": "event/log enrichment",
+        "provenance.source_mode": "event/log enrichment",
+        "provenance.request_id": "execution identity and correlation"
+      }
+    }
+  ]
+}

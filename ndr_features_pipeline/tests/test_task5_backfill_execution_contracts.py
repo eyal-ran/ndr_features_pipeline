@@ -1,6 +1,17 @@
 import json
+import sys
+import types
 
 import pytest
+
+boto3_stub = types.ModuleType("boto3")
+boto3_stub.client = lambda *_args, **_kwargs: None
+dynamodb_module = types.ModuleType("boto3.dynamodb")
+conditions_module = types.ModuleType("boto3.dynamodb.conditions")
+conditions_module.Key = object
+sys.modules.setdefault("boto3", boto3_stub)
+sys.modules.setdefault("boto3.dynamodb", dynamodb_module)
+sys.modules.setdefault("boto3.dynamodb.conditions", conditions_module)
 
 from ndr.orchestration.backfill_execution_contract import (
     CONTRACT_ERROR_CODE,
@@ -36,6 +47,15 @@ def test_execution_request_fails_fast_with_explicit_error_code_for_contract_viol
 
 
 def test_executor_cli_emits_completion_payload_with_deterministic_idempotency_key(capsys):
+    import ndr.scripts.run_backfill_reprocessing_executor as module
+
+    class _SageMaker:
+        def start_pipeline_execution(self, **_kwargs):
+            return {"PipelineExecutionArn": "arn:aws:sagemaker:us-east-1:123456789012:pipeline-execution/fgb-1"}
+
+    module.load_project_parameters = lambda **_kwargs: {"orchestration_targets": {"fg_b_baseline": "pipeline-fgb"}}  # type: ignore[assignment]
+    module.boto3.client = lambda name, **_kwargs: _SageMaker() if name == "sagemaker" else None  # type: ignore[assignment]
+
     rc = main(
         [
             "--project-name",
@@ -55,4 +75,5 @@ def test_executor_cli_emits_completion_payload_with_deterministic_idempotency_ke
     payload = json.loads(capsys.readouterr().out.strip())
     assert payload["status"] == "Succeeded"
     assert payload["artifact_families"] == ["delta", "fg_a", "pair_counts", "fg_b_baseline", "fg_c"]
+    assert payload["fg_b_baseline_results"][0]["status"] == "Started"
     assert payload["idempotency_key"].startswith("bkf-")

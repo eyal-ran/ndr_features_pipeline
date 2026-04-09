@@ -283,7 +283,7 @@ class HistoricalWindowsExtractorJob:
             "delta": [{"start_ts": row["batch_start_ts_iso"], "end_ts": row["batch_end_ts_iso"]} for row in rows],
             "fg_a": [{"start_ts": row["batch_start_ts_iso"], "end_ts": row["batch_end_ts_iso"]} for row in rows],
             "pair_counts": [{"start_ts": row["batch_start_ts_iso"], "end_ts": row["batch_end_ts_iso"]} for row in rows],
-            "fg_b_baseline": [],
+            "fg_b_baseline": _derive_fg_b_reference_ranges(rows),
             "fg_c": [{"start_ts": row["batch_start_ts_iso"], "end_ts": row["batch_end_ts_iso"]} for row in rows],
         }
         source_mode = rows[0].get("source_mode", "ingestion") if rows else "ingestion"
@@ -324,3 +324,29 @@ def _now_iso() -> str:
 
 def _parse_iso8601(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _derive_fg_b_reference_ranges(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Derive deterministic FG-B daily reference windows from extracted batch rows.
+
+    Policy:
+    - one FG-B range per distinct UTC reference day,
+    - reference day inferred from batch_end_ts_iso,
+    - range spans [day_start, day_end] in UTC.
+    """
+    day_starts: set[datetime] = set()
+    for row in rows:
+        batch_end = _parse_iso8601(row["batch_end_ts_iso"])
+        day_start = batch_end.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_starts.add(day_start)
+
+    ranges: list[dict[str, str]] = []
+    for day_start in sorted(day_starts):
+        day_end = day_start.replace(hour=23, minute=59, second=59, microsecond=0)
+        ranges.append(
+            {
+                "start_ts": to_iso_z(day_start),
+                "end_ts": to_iso_z(day_end),
+            }
+        )
+    return ranges

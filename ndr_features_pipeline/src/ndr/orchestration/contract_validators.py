@@ -11,6 +11,16 @@ TASK11_GATE_ERROR_CODE = "TASK11_GATE_RED"
 TASK12_BOOTSTRAP_GATE_VERSION = "task12_initial_deployment_bootstrap.v1"
 TASK12_CONTRACT_ERROR_CODE = "TASK12_CONTRACT_VIOLATION"
 TASK12_GATE_ERROR_CODE = "TASK12_BOOTSTRAP_GATE_RED"
+TASK14_STARTUP_CONFORMANCE_VERSION = "task14_startup_contract_conformance.v1"
+TASK14_CONTRACT_ERROR_CODE = "TASK14_CONTRACT_VIOLATION"
+TASK14_GATE_ERROR_CODE = "TASK14_STARTUP_CONTRACT_RED"
+
+TASK14_BACKFILL_SFN_TO_EXECUTOR_PRODUCER_MISMATCH = "TASK14_BACKFILL_SFN_TO_EXECUTOR_PRODUCER_MISMATCH"
+TASK14_BACKFILL_SFN_TO_EXECUTOR_CONSUMER_MISMATCH = "TASK14_BACKFILL_SFN_TO_EXECUTOR_CONSUMER_MISMATCH"
+TASK14_TRAINING_TO_FGB_PRODUCER_MISMATCH = "TASK14_TRAINING_TO_FGB_PRODUCER_MISMATCH"
+TASK14_TRAINING_TO_FGB_CONSUMER_MISMATCH = "TASK14_TRAINING_TO_FGB_CONSUMER_MISMATCH"
+TASK14_EXTRACTOR_RUNTIME_TO_MANIFEST_PRODUCER_MISMATCH = "TASK14_EXTRACTOR_RUNTIME_TO_MANIFEST_PRODUCER_MISMATCH"
+TASK14_EXTRACTOR_RUNTIME_TO_MANIFEST_CONSUMER_MISMATCH = "TASK14_EXTRACTOR_RUNTIME_TO_MANIFEST_CONSUMER_MISMATCH"
 
 _TASK11_REQUIRED_FINDINGS = (
     "F1.1",
@@ -48,6 +58,27 @@ _TASK12_REQUIRED_CHECKPOINTS = (
     "validate_readiness_manifest",
     "activate_rt_steady_state",
 )
+
+_TASK14_REQUIRED_INTERFACES = (
+    "backfill_sfn_to_backfill_executor",
+    "training_remediation_to_fgb_pipeline",
+    "extractor_runtime_to_manifest",
+)
+
+_TASK14_INTERFACE_ERROR_CODES = {
+    "backfill_sfn_to_backfill_executor": (
+        TASK14_BACKFILL_SFN_TO_EXECUTOR_PRODUCER_MISMATCH,
+        TASK14_BACKFILL_SFN_TO_EXECUTOR_CONSUMER_MISMATCH,
+    ),
+    "training_remediation_to_fgb_pipeline": (
+        TASK14_TRAINING_TO_FGB_PRODUCER_MISMATCH,
+        TASK14_TRAINING_TO_FGB_CONSUMER_MISMATCH,
+    ),
+    "extractor_runtime_to_manifest": (
+        TASK14_EXTRACTOR_RUNTIME_TO_MANIFEST_PRODUCER_MISMATCH,
+        TASK14_EXTRACTOR_RUNTIME_TO_MANIFEST_CONSUMER_MISMATCH,
+    ),
+}
 
 
 def normalize_ml_project_names(
@@ -407,5 +438,146 @@ def evaluate_task12_initial_deployment_bootstrap(*, evidence: Mapping[str, Any])
     if failed_checks:
         raise ValueError(
             f"{TASK12_GATE_ERROR_CODE}: Task 12 initial deployment bootstrap gate failed checks {failed_checks}"
+        )
+    return report
+
+
+def evaluate_task14_startup_contract_conformance(*, evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate startup-critical producer/consumer contracts before deploy.
+
+    Every startup-critical interface is validated in both directions:
+    - producer-required fields must be consumable by consumer schema
+    - consumer-required fields must be sourced by producer payload
+    """
+
+    required_sections = ("interfaces", "release_gate", "safeguards")
+    missing_sections = [section for section in required_sections if section not in evidence]
+    if missing_sections:
+        raise ValueError(f"{TASK14_CONTRACT_ERROR_CODE}: missing required sections {missing_sections}")
+
+    interfaces = evidence["interfaces"]
+    release_gate = evidence["release_gate"]
+    safeguards = evidence["safeguards"]
+
+    if not isinstance(interfaces, Sequence):
+        raise ValueError(f"{TASK14_CONTRACT_ERROR_CODE}: interfaces must be a sequence")
+    if not isinstance(release_gate, Mapping):
+        raise ValueError(f"{TASK14_CONTRACT_ERROR_CODE}: release_gate must be a mapping")
+    if not isinstance(safeguards, Mapping):
+        raise ValueError(f"{TASK14_CONTRACT_ERROR_CODE}: safeguards must be a mapping")
+
+    by_interface_id: dict[str, Mapping[str, Any]] = {}
+    for item in interfaces:
+        if not isinstance(item, Mapping):
+            raise ValueError(f"{TASK14_CONTRACT_ERROR_CODE}: each interfaces entry must be a mapping")
+        interface_id = str(item.get("interface_id") or "").strip()
+        if not interface_id:
+            raise ValueError(f"{TASK14_CONTRACT_ERROR_CODE}: interface_id is required for every interface")
+        by_interface_id[interface_id] = item
+
+    missing_interfaces = [iid for iid in _TASK14_REQUIRED_INTERFACES if iid not in by_interface_id]
+    if missing_interfaces:
+        raise ValueError(
+            f"{TASK14_CONTRACT_ERROR_CODE}: missing startup interfaces {missing_interfaces}"
+        )
+
+    checks: list[dict[str, Any]] = []
+
+    def _check(check_id: str, passed: bool, detail: str) -> None:
+        checks.append({"check_id": check_id, "passed": bool(passed), "detail": detail})
+
+    def _validate_interface(interface_id: str) -> None:
+        interface = by_interface_id[interface_id]
+        producer_fields = {str(v).strip() for v in (interface.get("producer_fields") or []) if str(v).strip()}
+        consumer_fields = {str(v).strip() for v in (interface.get("consumer_fields") or []) if str(v).strip()}
+        producer_to_consumer = interface.get("producer_to_consumer_map") or {}
+        consumer_to_producer = interface.get("consumer_to_producer_map") or {}
+
+        if not isinstance(producer_to_consumer, Mapping) or not isinstance(consumer_to_producer, Mapping):
+            raise ValueError(
+                f"{TASK14_CONTRACT_ERROR_CODE}: {interface_id} maps must be mapping values"
+            )
+
+        missing_on_consumer = sorted(producer_fields - consumer_fields)
+        missing_on_producer = sorted(consumer_fields - producer_fields)
+        producer_code, consumer_code = _TASK14_INTERFACE_ERROR_CODES[interface_id]
+        _check(
+            f"14.contract.{interface_id}.producer_to_consumer",
+            not missing_on_consumer,
+            f"{producer_code}: producer fields not accepted by consumer={missing_on_consumer}",
+        )
+        _check(
+            f"14.contract.{interface_id}.consumer_to_producer",
+            not missing_on_producer,
+            f"{consumer_code}: consumer-required fields missing from producer={missing_on_producer}",
+        )
+
+        producer_map_keys = {str(k).strip() for k in producer_to_consumer}
+        producer_map_targets = {str(v).strip() for v in producer_to_consumer.values()}
+        consumer_map_keys = {str(k).strip() for k in consumer_to_producer}
+        consumer_map_targets = {str(v).strip() for v in consumer_to_producer.values()}
+
+        _check(
+            f"14.mapping.{interface_id}.producer_keys",
+            producer_map_keys == producer_fields,
+            f"{producer_code}: producer map keys must match producer_fields (missing={sorted(producer_fields - producer_map_keys)}, extra={sorted(producer_map_keys - producer_fields)})",
+        )
+        _check(
+            f"14.mapping.{interface_id}.producer_targets",
+            producer_map_targets <= consumer_fields,
+            f"{producer_code}: producer map targets must resolve to consumer_fields (unknown={sorted(producer_map_targets - consumer_fields)})",
+        )
+        _check(
+            f"14.mapping.{interface_id}.consumer_keys",
+            consumer_map_keys == consumer_fields,
+            f"{consumer_code}: consumer map keys must match consumer_fields (missing={sorted(consumer_fields - consumer_map_keys)}, extra={sorted(consumer_map_keys - consumer_fields)})",
+        )
+        _check(
+            f"14.mapping.{interface_id}.consumer_targets",
+            consumer_map_targets <= producer_fields,
+            f"{consumer_code}: consumer map targets must resolve to producer_fields (unknown={sorted(consumer_map_targets - producer_fields)})",
+        )
+
+    for interface_id in _TASK14_REQUIRED_INTERFACES:
+        _validate_interface(interface_id)
+
+    _check(
+        "14.release.block_on_red",
+        bool(release_gate.get("block_on_red")),
+        "TASK14_RELEASE_GATE_POLICY_MISSING: release gate must block deploy on red startup contract status",
+    )
+    _check(
+        "14.release.status_green",
+        str(release_gate.get("status") or "").strip().lower() == "green",
+        "TASK14_RELEASE_GATE_RED: startup contract matrix status must be green",
+    )
+    _check(
+        "14.safeguards.idempotency",
+        bool(safeguards.get("idempotency_verified")),
+        "TASK14_IDEMPOTENCY_GUARD_MISSING: startup retries require deterministic idempotency validation",
+    )
+    _check(
+        "14.safeguards.retry",
+        bool(safeguards.get("retry_verified")),
+        "TASK14_RETRY_GUARD_MISSING: startup retries must be contract-safe",
+    )
+    _check(
+        "14.safeguards.rollback",
+        bool(safeguards.get("rollback_verified")),
+        "TASK14_ROLLBACK_GUARD_MISSING: startup rollback strategy must be validated",
+    )
+
+    failed_checks = [check["check_id"] for check in checks if not check["passed"]]
+    report = {
+        "contract_version": TASK14_STARTUP_CONFORMANCE_VERSION,
+        "status": "go" if not failed_checks else "no-go",
+        "checks": checks,
+        "failed_checks": failed_checks,
+    }
+    if failed_checks:
+        failed_details = [check["detail"] for check in checks if not check["passed"]]
+        raise ValueError(
+            f"{TASK14_GATE_ERROR_CODE}: Task 14 startup contract conformance gate failed checks "
+            f"{failed_checks}; diagnostics={failed_details}"
         )
     return report

@@ -1,0 +1,107 @@
+{
+  "contract_version": "task14_startup_contract_conformance.v1",
+  "interfaces": [
+    {
+      "interface_id": "backfill_sfn_to_backfill_executor",
+      "producer_fields": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "ArtifactFamily",
+        "RangeStartTsIso",
+        "RangeEndTsIso"
+      ],
+      "consumer_fields": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "ArtifactFamily",
+        "RangeStartTsIso",
+        "RangeEndTsIso"
+      ],
+      "producer_to_consumer_map": {
+        "ProjectName": "ProjectName",
+        "FeatureSpecVersion": "FeatureSpecVersion",
+        "ArtifactFamily": "ArtifactFamily",
+        "RangeStartTsIso": "RangeStartTsIso",
+        "RangeEndTsIso": "RangeEndTsIso"
+      },
+      "consumer_to_producer_map": {
+        "ProjectName": "ProjectName",
+        "FeatureSpecVersion": "FeatureSpecVersion",
+        "ArtifactFamily": "ArtifactFamily",
+        "RangeStartTsIso": "RangeStartTsIso",
+        "RangeEndTsIso": "RangeEndTsIso"
+      }
+    },
+    {
+      "interface_id": "training_remediation_to_fgb_pipeline",
+      "producer_fields": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "ReferenceTimeIso",
+        "Mode"
+      ],
+      "consumer_fields": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "ReferenceTimeIso",
+        "Mode"
+      ],
+      "producer_to_consumer_map": {
+        "ProjectName": "ProjectName",
+        "FeatureSpecVersion": "FeatureSpecVersion",
+        "ReferenceTimeIso": "ReferenceTimeIso",
+        "Mode": "Mode"
+      },
+      "consumer_to_producer_map": {
+        "ProjectName": "ProjectName",
+        "FeatureSpecVersion": "FeatureSpecVersion",
+        "ReferenceTimeIso": "ReferenceTimeIso",
+        "Mode": "Mode"
+      }
+    },
+    {
+      "interface_id": "extractor_runtime_to_manifest",
+      "producer_fields": [
+        "project_name",
+        "feature_spec_version",
+        "start_ts_iso",
+        "end_ts_iso",
+        "source_mode",
+        "resolution_reason"
+      ],
+      "consumer_fields": [
+        "project_name",
+        "feature_spec_version",
+        "start_ts_iso",
+        "end_ts_iso",
+        "source_mode",
+        "resolution_reason"
+      ],
+      "producer_to_consumer_map": {
+        "project_name": "project_name",
+        "feature_spec_version": "feature_spec_version",
+        "start_ts_iso": "start_ts_iso",
+        "end_ts_iso": "end_ts_iso",
+        "source_mode": "source_mode",
+        "resolution_reason": "resolution_reason"
+      },
+      "consumer_to_producer_map": {
+        "project_name": "project_name",
+        "feature_spec_version": "feature_spec_version",
+        "start_ts_iso": "start_ts_iso",
+        "end_ts_iso": "end_ts_iso",
+        "source_mode": "source_mode",
+        "resolution_reason": "resolution_reason"
+      }
+    }
+  ],
+  "release_gate": {
+    "block_on_red": true,
+    "status": "green"
+  },
+  "safeguards": {
+    "idempotency_verified": true,
+    "retry_verified": true,
+    "rollback_verified": true
+  }
+}

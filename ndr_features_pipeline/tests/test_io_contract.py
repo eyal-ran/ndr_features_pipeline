@@ -81,6 +81,20 @@ def test_resolve_step_code_uri_rejects_placeholder_inputs():
         raise AssertionError("Expected ValueError")
 
 
+def test_resolve_step_code_uri_rejects_placeholder_markers():
+    try:
+        resolve_step_code_uri(
+            project_name="ndr-project",
+            feature_spec_version="<placeholder:FeatureSpecVersion>",
+            pipeline_job_name="pipeline_15m_streaming",
+            step_name="DeltaBuilderStep",
+        )
+    except ValueError as exc:
+        assert "concrete value" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
 def test_validate_step_code_metadata_requires_packaging_fields():
     try:
         validate_step_code_metadata(

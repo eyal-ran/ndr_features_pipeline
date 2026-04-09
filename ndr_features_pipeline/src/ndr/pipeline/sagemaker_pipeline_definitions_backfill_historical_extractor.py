@@ -18,6 +18,8 @@ def build_backfill_historical_extractor_pipeline(
     role_arn: str,
     default_bucket: str,
     region_name: str,
+    project_name_for_contracts: str,
+    feature_spec_version_for_contracts: str,
 ) -> Pipeline:
     """Create pipeline that extracts historical mini-batch windows for backfill map runs."""
     session = sagemaker.session.Session(default_bucket=default_bucket)
@@ -48,8 +50,8 @@ def build_backfill_historical_extractor_pipeline(
     )
 
     resolved_code_uri = resolve_step_code_uri(
-        project_name=project_name.default_value,
-        feature_spec_version=feature_spec_version.default_value,
+        project_name=project_name_for_contracts,
+        feature_spec_version=feature_spec_version_for_contracts,
         pipeline_job_name=PIPELINE_JOB_NAME,
         step_name="HistoricalWindowsExtractorStep",
     )

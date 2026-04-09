@@ -93,7 +93,7 @@
       "Choices": [
         {
           "Condition": "{% $inventory_pipeline_status = 'Succeeded' %}",
-          "Next": "StartFGBBaselinePipeline"
+          "Next": "BuildBaselineDependencyCheckManifest"
         },
         {
           "Condition": "{% ($inventory_pipeline_status = 'Executing' or $inventory_pipeline_status = 'Stopping') and $inventory_poll_attempt < 120 %}",
@@ -113,6 +113,81 @@
         "inventory_poll_attempt": "{% $inventory_poll_attempt + 1 %}"
       },
       "Next": "DescribeInventoryPipeline"
+    },
+    "BuildBaselineDependencyCheckManifest": {
+      "Type": "Pass",
+      "Assign": {
+        "baseline_dependency_manifest": "{% {'contract_version': 'monthly_fg_b_readiness.v1', 'required_families': ['fg_a'], 'missing_ranges': ($exists($states.input.baseline_dependency_manifest.missing_ranges) ? $states.input.baseline_dependency_manifest.missing_ranges : []), 'check_status': ($count($exists($states.input.baseline_dependency_manifest.missing_ranges) ? $states.input.baseline_dependency_manifest.missing_ranges : []) > 0 ? 'missing' : 'ready'), 'check_reason': ($count($exists($states.input.baseline_dependency_manifest.missing_ranges) ? $states.input.baseline_dependency_manifest.missing_ranges : []) > 0 ? 'dependency_missing:fg_a_history' : 'ready')} %}",
+        "baseline_gate_cycle": 0
+      },
+      "Next": "CheckBaselineDependencies"
+    },
+    "CheckBaselineDependencies": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $count($baseline_dependency_manifest.missing_ranges) = 0 %}",
+          "Next": "StartFGBBaselinePipeline"
+        },
+        {
+          "Condition": "{% $baseline_gate_cycle = 0 %}",
+          "Next": "BuildBaselineRemediationRequest"
+        }
+      ],
+      "Default": "FailBaselineDependenciesUnresolved"
+    },
+    "BuildBaselineRemediationRequest": {
+      "Type": "Pass",
+      "Assign": {
+        "baseline_remediation_request": "{% {'contract_version':'NdrBaselineRemediationRequest.v1','consumer':'monthly_baseline','project_name':$project_name,'feature_spec_version':$feature_spec_version,'reference_month':$reference_month,'required_families':['delta','fg_a'],'missing_ranges':$baseline_dependency_manifest.missing_ranges,'provenance':{'producer_flow':'monthly_fg_b_baselines','source_mode':'batch_index','request_id':$states.context.Execution.Id},'idempotency_key':($exists($states.input.baseline_dependency_manifest.idempotency_key) ? $states.input.baseline_dependency_manifest.idempotency_key : '0000000000000000000000000000000000000000000000000000000000000000')} %}",
+        "baseline_remediation_window": "{% {'start_ts': $min($baseline_dependency_manifest.missing_ranges.start_ts_iso), 'end_ts': $max($baseline_dependency_manifest.missing_ranges.end_ts_iso)} %}"
+      },
+      "Next": "InvokeBaselineDependencyRemediation"
+    },
+    "InvokeBaselineDependencyRemediation": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::states:startExecution.sync:2",
+      "Arguments": {
+        "StateMachineArn": "${BackfillStateMachineArn}",
+        "Input": {
+          "project_name": "{% $project_name %}",
+          "feature_spec_version": "{% $feature_spec_version %}",
+          "start_ts": "{% $baseline_remediation_window.start_ts %}",
+          "end_ts": "{% $baseline_remediation_window.end_ts %}",
+          "reference_month": "{% $reference_month %}",
+          "required_families": "{% $baseline_remediation_request.required_families %}",
+          "missing_ranges": "{% $baseline_remediation_request.missing_ranges %}",
+          "provenance": "{% $baseline_remediation_request.provenance %}",
+          "contract_version": "{% $baseline_remediation_request.contract_version %}",
+          "idempotency_key": "{% $baseline_remediation_request.idempotency_key %}"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "StepFunctions.ExecutionLimitExceeded",
+            "ThrottlingException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "RecheckBaselineDependencies"
+    },
+    "RecheckBaselineDependencies": {
+      "Type": "Pass",
+      "Assign": {
+        "baseline_dependency_manifest": "{% $exists($states.input.recheck_baseline_dependency_manifest.missing_ranges) ? {'contract_version':'monthly_fg_b_readiness.v1','required_families':['fg_a'],'missing_ranges':$states.input.recheck_baseline_dependency_manifest.missing_ranges,'check_status':($count($states.input.recheck_baseline_dependency_manifest.missing_ranges) > 0 ? 'missing' : 'ready'),'check_reason':($count($states.input.recheck_baseline_dependency_manifest.missing_ranges) > 0 ? 'dependency_missing:fg_a_history_after_remediation' : 'ready')} : {'contract_version':'monthly_fg_b_readiness.v1','required_families':['fg_a'],'missing_ranges':[],'check_status':'ready','check_reason':'ready'} %}",
+        "baseline_gate_cycle": 1
+      },
+      "Next": "CheckBaselineDependencies"
+    },
+    "FailBaselineDependenciesUnresolved": {
+      "Type": "Fail",
+      "Error": "BaselineDependencyGateFailed",
+      "Cause": "Unresolved FG-A dependency after remediation; dependency_missing:fg_a_history"
     },
     "StartFGBBaselinePipeline": {
       "Type": "Task",

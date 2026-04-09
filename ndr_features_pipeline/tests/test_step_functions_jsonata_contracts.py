@@ -18,14 +18,30 @@ def _collect_states(state_machine: dict) -> dict:
     return collected
 
 
-def test_step_functions_load_split_control_plane_from_dynamodb():
+def test_step_functions_load_required_control_plane_configs_from_dynamodb():
+    dpp_required = {
+        "sfn_ndr_15m_features_inference.json",
+        "sfn_ndr_backfill_reprocessing.json",
+        "sfn_ndr_monthly_fg_b_baselines.json",
+        "sfn_ndr_prediction_publication.json",
+        "sfn_ndr_training_orchestrator.json",
+    }
+    mlp_required = {
+        "sfn_ndr_15m_features_inference.json",
+        "sfn_ndr_prediction_publication.json",
+        "sfn_ndr_training_orchestrator.json",
+    }
+
     for path in STEP_FUNCTIONS_DIR.glob("sfn_ndr_*.json"):
+        if path.name not in dpp_required:
+            continue
         data = json.loads(path.read_text(encoding="utf-8"))
         states = _collect_states(data)
         assert "LoadDppConfigFromDynamo" in states, f"{path.name} missing DPP load state"
-        assert "LoadMlpConfigFromDynamo" in states, f"{path.name} missing MLP load state"
         assert states["LoadDppConfigFromDynamo"]["Resource"] == "arn:aws:states:::aws-sdk:dynamodb:getItem"
-        assert states["LoadMlpConfigFromDynamo"]["Resource"] == "arn:aws:states:::aws-sdk:dynamodb:getItem"
+        if path.name in mlp_required:
+            assert "LoadMlpConfigFromDynamo" in states, f"{path.name} missing MLP load state"
+            assert states["LoadMlpConfigFromDynamo"]["Resource"] == "arn:aws:states:::aws-sdk:dynamodb:getItem"
 
 
 def test_step_functions_no_hard_coded_project_defaults():

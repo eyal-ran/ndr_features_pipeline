@@ -35,13 +35,21 @@ class _Paginator:
         ]
 
 
+class _EmptyPaginator:
+    def paginate(self, Bucket, Prefix):
+        assert Bucket == "bucket"
+        assert Prefix == "raw"
+        return [{"Contents": []}]
+
+
 class _S3Client:
-    def __init__(self):
+    def __init__(self, paginator=None):
         self.put_calls = []
+        self._paginator = paginator or _Paginator()
 
     def get_paginator(self, name):
         assert name == "list_objects_v2"
-        return _Paginator()
+        return self._paginator
 
     def put_object(self, **kwargs):
         self.put_calls.append(kwargs)
@@ -141,10 +149,33 @@ def test_extractor_prefers_batch_index_rows(monkeypatch):
     assert body["rows"][0]["raw_parsed_logs_s3_prefix"] == "s3://bucket/fw_paloalto/org1/org2/2025/01/01/mb-9/"
 
 
-def test_extractor_errors_when_index_empty_and_fallback_disabled(monkeypatch):
+def test_extractor_uses_s3_fallback_when_index_empty(monkeypatch):
     import ndr.processing.historical_windows_extractor_job as module
 
     fake_s3 = _S3Client()
+    monkeypatch.setattr(module.boto3, "client", lambda *_a, **_k: fake_s3, raising=False)
+    monkeypatch.setattr(module, "resolve_feature_spec_version", lambda **_k: "v9")
+    monkeypatch.setattr(module, "load_project_parameters", lambda *_a, **_k: {"backfill_redshift_fallback": {"enabled": False}})
+    monkeypatch.setattr(module, "BatchIndexLoader", lambda: _BatchIndexLoader([]))
+
+    runtime = HistoricalWindowsExtractorRuntimeConfig(
+        input_s3_prefix="s3://bucket/raw",
+        output_s3_prefix="s3://bucket/out",
+        start_ts_iso="2025-01-01T00:00:00Z",
+        end_ts_iso="2025-01-02T00:00:00Z",
+        window_floor_minutes=[8, 23, 38, 53],
+    )
+    HistoricalWindowsExtractorJob(runtime).run()
+    body = json.loads(fake_s3.put_calls[0]["Body"].decode("utf-8"))
+    assert body["source_mode"] == "ingestion"
+    assert body["resolution_reason"] == "s3_listing_fallback"
+    assert body["rows"][0]["project_name"] == "fw_paloalto"
+
+
+def test_extractor_errors_when_index_empty_and_fallback_disabled(monkeypatch):
+    import ndr.processing.historical_windows_extractor_job as module
+
+    fake_s3 = _S3Client(paginator=_EmptyPaginator())
     monkeypatch.setattr(module.boto3, "client", lambda *_a, **_k: fake_s3, raising=False)
     monkeypatch.setattr(module, "resolve_feature_spec_version", lambda **_k: "v9")
     monkeypatch.setattr(module, "load_project_parameters", lambda *_a, **_k: {"backfill_redshift_fallback": {"enabled": False}})
@@ -161,6 +192,53 @@ def test_extractor_errors_when_index_empty_and_fallback_disabled(monkeypatch):
     try:
         HistoricalWindowsExtractorJob(runtime).run()
     except RuntimeError as exc:
-        assert "Redshift fallback is disabled" in str(exc)
+        assert "HWE_NO_ROWS_RESOLVED" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+
+def test_extractor_accepts_explicit_project_name_runtime(monkeypatch):
+    import ndr.processing.historical_windows_extractor_job as module
+
+    fake_s3 = _S3Client()
+    monkeypatch.setattr(module.boto3, "client", lambda *_a, **_k: fake_s3, raising=False)
+    monkeypatch.setattr(module, "resolve_feature_spec_version", lambda **_k: "v9")
+    monkeypatch.setattr(module, "load_project_parameters", lambda *_a, **_k: {"backfill_redshift_fallback": {"enabled": False}})
+    monkeypatch.setattr(module, "BatchIndexLoader", lambda: _BatchIndexLoader([]))
+
+    runtime = HistoricalWindowsExtractorRuntimeConfig(
+        input_s3_prefix="s3://bucket/raw",
+        output_s3_prefix="s3://bucket/out",
+        start_ts_iso="2025-01-01T00:00:00Z",
+        end_ts_iso="2025-01-02T00:00:00Z",
+        window_floor_minutes=[8, 23, 38, 53],
+        project_name="fw_paloalto",
+    )
+    HistoricalWindowsExtractorJob(runtime).run()
+    body = json.loads(fake_s3.put_calls[0]["Body"].decode("utf-8"))
+    assert body["project_name"] == "fw_paloalto"
+
+
+def test_extractor_rejects_explicit_project_mismatch(monkeypatch):
+    import ndr.processing.historical_windows_extractor_job as module
+
+    fake_s3 = _S3Client()
+    monkeypatch.setattr(module.boto3, "client", lambda *_a, **_k: fake_s3, raising=False)
+    monkeypatch.setattr(module, "resolve_feature_spec_version", lambda **_k: "v9")
+    monkeypatch.setattr(module, "load_project_parameters", lambda *_a, **_k: {"backfill_redshift_fallback": {"enabled": False}})
+    monkeypatch.setattr(module, "BatchIndexLoader", lambda: _BatchIndexLoader([]))
+
+    runtime = HistoricalWindowsExtractorRuntimeConfig(
+        input_s3_prefix="s3://bucket/raw",
+        output_s3_prefix="s3://bucket/out",
+        start_ts_iso="2025-01-01T00:00:00Z",
+        end_ts_iso="2025-01-02T00:00:00Z",
+        window_floor_minutes=[8, 23, 38, 53],
+        project_name="other_project",
+    )
+    try:
+        HistoricalWindowsExtractorJob(runtime).run()
+    except RuntimeError as exc:
+        assert "HWE_PROJECT_MISMATCH" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError")

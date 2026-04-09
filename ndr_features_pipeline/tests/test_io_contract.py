@@ -184,3 +184,13 @@ def test_if_training_pipeline_defines_ml_project_name_parameter():
     source = Path("src/ndr/pipeline/sagemaker_pipeline_definitions_if_training.py").read_text()
     assert 'name="MlProjectName"' in source
     assert '"--ml-project-name"' in source
+
+
+def test_historical_extractor_script_accepts_project_name():
+    script = Path("src/ndr/scripts/run_historical_windows_extractor.py").read_text()
+    assert "--project-name" in script
+
+
+def test_historical_extractor_pipeline_passes_project_name():
+    source = Path("src/ndr/pipeline/sagemaker_pipeline_definitions_backfill_historical_extractor.py").read_text()
+    assert '"--project-name"' in source

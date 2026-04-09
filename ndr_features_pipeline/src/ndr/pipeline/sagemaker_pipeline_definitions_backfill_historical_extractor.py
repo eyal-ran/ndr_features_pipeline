@@ -62,6 +62,8 @@ def build_backfill_historical_extractor_pipeline(
             "python",
             "-m",
             "ndr.scripts.run_historical_windows_extractor",
+            "--project-name",
+            project_name,
             "--input-s3-prefix",
             input_s3_prefix,
             "--output-s3-prefix",

@@ -14,7 +14,11 @@ sys.modules.setdefault("pyspark.sql", pyspark_sql_module)
 sys.modules.setdefault("pyspark.sql.functions", pyspark_sql_functions_module)
 
 from ndr.processing.machine_inventory_unload_job import (
+    MachineInventoryOutputSpec,
     MachineInventoryQuerySpec,
+    MachineInventoryUnloadJob,
+    MachineInventoryUnloadRuntimeConfig,
+    RedshiftDataApiConfig,
     build_snapshot_month,
     build_snapshot_output_prefix,
     build_unload_staging_prefix,
@@ -40,6 +44,24 @@ def test_build_unload_staging_prefix():
         build_unload_staging_prefix("s3://bucket/prefix", "2025-12", "run123")
         == "s3://bucket/prefix/snapshot_month=2025-12/_tmp_run_id=run123/"
     )
+
+
+def test_month_partition_prefix_is_deterministic_for_replay():
+    month = build_snapshot_month("2025/12")
+    assert build_snapshot_output_prefix("s3://bucket/prefix", month) == (
+        "s3://bucket/prefix/snapshot_month=2025-12/"
+    )
+    assert build_snapshot_output_prefix("s3://bucket/prefix/", month) == (
+        "s3://bucket/prefix/snapshot_month=2025-12/"
+    )
+
+
+def test_month_over_month_partition_prefixes_remain_distinct():
+    dec = build_snapshot_output_prefix("s3://bucket/prefix", build_snapshot_month("2025/12"))
+    jan = build_snapshot_output_prefix("s3://bucket/prefix", build_snapshot_month("2026/01"))
+    assert dec != jan
+    assert dec.endswith("snapshot_month=2025-12/")
+    assert jan.endswith("snapshot_month=2026-01/")
 
 
 def test_build_source_query_with_descriptor_sql():
@@ -118,3 +140,91 @@ def test_parse_machine_inventory_spec_requires_query_sql():
         assert "query.sql" in str(exc)
     else:
         raise AssertionError("Expected ValueError for missing query.sql")
+
+
+class _StubDataApi:
+    def __init__(self, count_records=None):
+        self._count_records = [[{"longValue": 2}]] if count_records is None else count_records
+        self.get_statement_result_calls = []
+
+    def get_statement_result(self, **kwargs):
+        self.get_statement_result_calls.append(kwargs)
+        return {"Records": self._count_records}
+
+
+def _build_job():
+    return MachineInventoryUnloadJob(
+        spark=None,
+        job_spec={},
+        runtime_config=MachineInventoryUnloadRuntimeConfig(
+            project_name="proj",
+            feature_spec_version="v1",
+            reference_month="2025/12",
+        ),
+    )
+
+
+def _build_redshift_cfg():
+    return RedshiftDataApiConfig(
+        cluster_identifier="cluster",
+        database="db",
+        secret_arn="arn:secret",
+        region="us-east-1",
+        iam_role="arn:aws:iam::123456789012:role/RedshiftRole",
+    )
+
+
+def test_unload_from_redshift_uses_full_snapshot_query(monkeypatch):
+    job = _build_job()
+    data_api = _StubDataApi()
+    captured_sql = []
+
+    def _fake_execute_statement(data_api_client, config, sql):
+        captured_sql.append(sql)
+        if sql.startswith("UNLOAD"):
+            return "unload_stmt"
+        return "count_stmt"
+
+    monkeypatch.setattr(job, "_execute_statement", _fake_execute_statement)
+    monkeypatch.setattr(job, "_get_unload_row_count", lambda *_args, **_kwargs: 2)
+    source_rows, unloaded_rows = job._unload_from_redshift(
+        data_api=data_api,
+        redshift_cfg=_build_redshift_cfg(),
+        query_spec=MachineInventoryQuerySpec(
+            sql="select ip_address, machine_name from dim_machine where is_active = true",
+            descriptor_id="machine_inventory_monthly_v1",
+            ip_column="ip_address",
+            name_column="machine_name",
+            active_filter=None,
+            additional_filters=[],
+        ),
+        output_spec=MachineInventoryOutputSpec(
+            s3_prefix="s3://bucket/prefix/",
+            output_format="PARQUET",
+            partitioning=["snapshot_month"],
+        ),
+        output_prefix="s3://bucket/prefix/snapshot_month=2025-12/_tmp_run_id=abc/",
+    )
+
+    assert source_rows == 2
+    assert unloaded_rows == 2
+    assert any("SELECT COUNT(*) AS row_count" in sql for sql in captured_sql)
+    assert any("UNLOAD" in sql for sql in captured_sql)
+    assert not any("tmp_existing_ips" in sql for sql in captured_sql)
+
+
+def test_get_query_row_count_raises_on_empty_result(monkeypatch):
+    job = _build_job()
+    data_api = _StubDataApi(count_records=[])
+    monkeypatch.setattr(job, "_execute_statement", lambda *_args, **_kwargs: "stmt")
+
+    try:
+        job._get_query_row_count(
+            data_api=data_api,
+            config=_build_redshift_cfg(),
+            query="select 1",
+        )
+    except RuntimeError as exc:
+        assert "MACHINE_INVENTORY_SOURCE_COUNT_FAILED" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for empty source count result")

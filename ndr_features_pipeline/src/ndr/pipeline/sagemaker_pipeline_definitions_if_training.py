@@ -32,6 +32,7 @@ def _build_if_training_step(
     training_end_ts: ParameterString,
     eval_start_ts: ParameterString,
     eval_end_ts: ParameterString,
+    mode: ParameterString,
     stage: str,
     depends_on: list[ProcessingStep] | None = None,
 ) -> ProcessingStep:
@@ -74,6 +75,8 @@ def _build_if_training_step(
             eval_start_ts,
             "--eval-end-ts",
             eval_end_ts,
+            "--mode",
+            mode,
             "--stage",
             stage,
         ],
@@ -106,6 +109,7 @@ def build_if_training_pipeline(
     training_end_ts = ParameterString(name="TrainingEndTs", default_value="<required:TrainingEndTs>")
     eval_start_ts = ParameterString(name="EvalStartTs", default_value="<required:EvalStartTs>")
     eval_end_ts = ParameterString(name="EvalEndTs", default_value="<required:EvalEndTs>")
+    mode = ParameterString(name="Mode", default_value="training")
 
     processing_image_uri = ParameterString(
         name="ProcessingImageUri",
@@ -142,6 +146,7 @@ def build_if_training_pipeline(
         training_end_ts=training_end_ts,
         eval_start_ts=eval_start_ts,
         eval_end_ts=eval_end_ts,
+        mode=mode,
         stage="verify",
     )
     planning_step = _build_if_training_step(
@@ -161,6 +166,7 @@ def build_if_training_pipeline(
         training_end_ts=training_end_ts,
         eval_start_ts=eval_start_ts,
         eval_end_ts=eval_end_ts,
+        mode=mode,
         stage="plan",
         depends_on=[verifier_step],
     )
@@ -181,6 +187,7 @@ def build_if_training_pipeline(
         training_end_ts=training_end_ts,
         eval_start_ts=eval_start_ts,
         eval_end_ts=eval_end_ts,
+        mode=mode,
         stage="remediate",
         depends_on=[planning_step],
     )
@@ -201,6 +208,7 @@ def build_if_training_pipeline(
         training_end_ts=training_end_ts,
         eval_start_ts=eval_start_ts,
         eval_end_ts=eval_end_ts,
+        mode=mode,
         stage="reverify",
         depends_on=[remediation_step],
     )
@@ -221,6 +229,7 @@ def build_if_training_pipeline(
         training_end_ts=training_end_ts,
         eval_start_ts=eval_start_ts,
         eval_end_ts=eval_end_ts,
+        mode=mode,
         stage="train",
         depends_on=[reverification_step],
     )
@@ -241,6 +250,7 @@ def build_if_training_pipeline(
         training_end_ts=training_end_ts,
         eval_start_ts=eval_start_ts,
         eval_end_ts=eval_end_ts,
+        mode=mode,
         stage="publish",
         depends_on=[training_step],
     )
@@ -261,6 +271,7 @@ def build_if_training_pipeline(
         training_end_ts=training_end_ts,
         eval_start_ts=eval_start_ts,
         eval_end_ts=eval_end_ts,
+        mode=mode,
         stage="attributes",
         depends_on=[publish_step],
     )
@@ -281,6 +292,7 @@ def build_if_training_pipeline(
         training_end_ts=training_end_ts,
         eval_start_ts=eval_start_ts,
         eval_end_ts=eval_end_ts,
+        mode=mode,
         stage="deploy",
         depends_on=[attributes_step],
     )
@@ -300,6 +312,7 @@ def build_if_training_pipeline(
             training_end_ts,
             eval_start_ts,
             eval_end_ts,
+            mode,
             processing_image_uri,
             processing_instance_type,
             processing_instance_count,

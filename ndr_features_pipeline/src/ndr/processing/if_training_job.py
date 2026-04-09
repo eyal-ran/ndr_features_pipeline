@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_REMEDIATION_CHUNK_SIZE = 25
 TARGET_CONTRACT_ERROR_CODE = "IFTrainingOrchestrationTargetContractError"
 TASK8_INTEGRATION_GATE_VERSION = "task8_integration_gate.v1"
+MODE_CONTRACT_ERROR_CODE = "IFTrainingModeContractError"
+ALLOWED_TRAINING_MODES = {"training", "evaluation", "production"}
 
 
 class IFTrainingJob(BaseProcessingJobRunner):
@@ -55,6 +57,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
 
     def _validate_runtime_contract(self) -> None:
         """Validate runtime timestamps passed by orchestration before heavy compute starts."""
+        mode = self._normalized_mode()
         required = {
             "training_start_ts": self.runtime_config.training_start_ts,
             "training_end_ts": self.runtime_config.training_end_ts,
@@ -66,6 +69,30 @@ class IFTrainingJob(BaseProcessingJobRunner):
         missing = [name for name, value in required.items() if not value]
         if missing:
             raise ValueError(f"Missing required unified training runtime parameters: {', '.join(missing)}")
+        if mode == "evaluation":
+            eval_missing = [
+                name
+                for name, value in {
+                    "eval_start_ts": self.runtime_config.eval_start_ts,
+                    "eval_end_ts": self.runtime_config.eval_end_ts,
+                }.items()
+                if not value
+            ]
+            if eval_missing and not self.training_spec.evaluation_windows:
+                raise ValueError(
+                    f"{MODE_CONTRACT_ERROR_CODE}: evaluation mode requires explicit evaluation bounds; "
+                    f"missing {', '.join(eval_missing)} and no evaluation windows are configured in JobSpec"
+                )
+
+    def _normalized_mode(self) -> str:
+        """Return normalized runtime mode and reject unsupported values."""
+        mode = (self.runtime_config.mode or "training").strip().lower()
+        if mode not in ALLOWED_TRAINING_MODES:
+            raise ValueError(
+                f"{MODE_CONTRACT_ERROR_CODE}: invalid mode '{self.runtime_config.mode}'. "
+                f"Allowed values: {sorted(ALLOWED_TRAINING_MODES)}"
+            )
+        return mode
 
     @staticmethod
     def _parse_iso_ts(value: str) -> datetime:
@@ -996,6 +1023,16 @@ class IFTrainingJob(BaseProcessingJobRunner):
 
     def _run_publish_stage(self) -> None:
         """Persist deterministic model publication metadata."""
+        if self._normalized_mode() != "production":
+            self._write_stage_status(
+                "publish",
+                {
+                    "status": "skipped",
+                    "reason": f"mode={self._normalized_mode()} does not allow publish",
+                    "mode": self._normalized_mode(),
+                },
+            )
+            return
         report = self._load_final_training_report()
         publication = {
             "run_id": self.runtime_config.run_id,
@@ -1013,6 +1050,16 @@ class IFTrainingJob(BaseProcessingJobRunner):
 
     def _run_attributes_stage(self) -> None:
         """Persist deterministic model attributes metadata."""
+        if self._normalized_mode() != "production":
+            self._write_stage_status(
+                "attributes",
+                {
+                    "status": "skipped",
+                    "reason": f"mode={self._normalized_mode()} does not allow attributes publication",
+                    "mode": self._normalized_mode(),
+                },
+            )
+            return
         publish = self._load_stage_status("publish")
         attributes = {
             "run_id": self.runtime_config.run_id,
@@ -1029,6 +1076,16 @@ class IFTrainingJob(BaseProcessingJobRunner):
 
     def _run_deploy_stage(self) -> None:
         """Deploy model from publication metadata and persist rollout status."""
+        if self._normalized_mode() != "production":
+            self._write_stage_status(
+                "deploy",
+                {
+                    "status": "skipped",
+                    "reason": f"mode={self._normalized_mode()} does not allow deployment",
+                    "mode": self._normalized_mode(),
+                },
+            )
+            return
         publish = self._load_stage_status("publish")
         gates = publish.get("validation_gates", {})
         normalized_gates = {
@@ -1218,6 +1275,8 @@ class IFTrainingJob(BaseProcessingJobRunner):
         """Emit per-window evaluation replay/join artifacts using reuse-first orchestration metadata."""
         import boto3
 
+        if self._normalized_mode() != "evaluation":
+            return []
         if not self._resolve_toggle(
             self.training_spec.toggles.enable_post_training_evaluation,
         ):
@@ -1385,6 +1444,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
     def run(self) -> None:
         """Execute the full workflow for this job runner."""
         self._validate_runtime_contract()
+        mode = self._normalized_mode()
         lifecycle_stage = (self.runtime_config.stage or "train").lower()
         if lifecycle_stage in {"verify", "reverify"}:
             self._run_verification_stage(lifecycle_stage)
@@ -1499,11 +1559,12 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 train_end=train_end,
             )
 
-            stage = "deploy"
-            deployment_status = self._maybe_deploy(
-                model_data_url=artifact_ctx["model_tar_s3_uri"],
-                gates=gates,
-            )
+            deployment_status = {
+                "attempted": False,
+                "status": "skipped",
+                "reason": "deployment is executed only by deploy stage in production mode",
+                "mode": mode,
+            }
 
             latest_model_path = None
             if all(g["passed"] for g in gates.values()):
@@ -2301,6 +2362,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 "model_version": self.training_spec.model_version,
                 "run_id": self.runtime_config.run_id,
                 "execution_ts": self.runtime_config.execution_ts_iso,
+                "mode": self._normalized_mode(),
                 "random_seed": self.training_spec.random_seed,
             },
             "input_datasets": {
@@ -2746,6 +2808,7 @@ def run_if_training_from_runtime_config(runtime_config: IFTrainingRuntimeConfig)
         runtime_config,
         eval_start_ts=runtime_config.eval_start_ts or runtime_defaults.get("EvalStartTs"),
         eval_end_ts=runtime_config.eval_end_ts or runtime_defaults.get("EvalEndTs"),
+        mode=(runtime_config.mode or runtime_defaults.get("Mode") or "training"),
     )
     training_spec = parse_if_training_spec(job_spec)
     spark = SparkSession.builder.getOrCreate()

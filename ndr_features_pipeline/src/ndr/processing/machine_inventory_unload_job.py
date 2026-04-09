@@ -8,10 +8,10 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
 from ndr.config.job_spec_loader import load_job_spec
@@ -64,7 +64,7 @@ class MachineInventoryOutputSpec:
 
 
 class MachineInventoryUnloadJob(BaseRunner):
-    """Unload active machine inventory from Redshift to S3, avoiding duplicates."""
+    """Unload full active machine inventory snapshots from Redshift to S3."""
 
     def __init__(
         self,
@@ -89,26 +89,21 @@ class MachineInventoryUnloadJob(BaseRunner):
             datetime.utcnow().strftime("%Y%m%d%H%M%S"),
         )
 
-        existing_ips = self._load_existing_ips(
-            output_spec.s3_prefix,
-            output_spec.ip_output_column,
-        )
-        self.logger.info(
-            "Loaded %s existing IPs from %s.",
-            len(existing_ips),
-            output_spec.s3_prefix,
-        )
-
         data_api = boto3.client("redshift-data", region_name=redshift_cfg.region)
 
-        unloaded_rows = self._unload_from_redshift(
+        source_row_count, unloaded_rows = self._unload_from_redshift(
             data_api=data_api,
             redshift_cfg=redshift_cfg,
             query_spec=query_spec,
-            existing_ips=existing_ips,
             output_spec=output_spec,
             output_prefix=unload_prefix,
         )
+        if source_row_count != unloaded_rows:
+            raise RuntimeError(
+                "MACHINE_INVENTORY_SNAPSHOT_PARITY_FAILED: "
+                f"source_row_count={source_row_count}, unloaded_rows={unloaded_rows}, "
+                f"snapshot_month={snapshot_month}, descriptor_id={query_spec.descriptor_id}"
+            )
         self._stage_unload_output_locally_and_write_partition(
             unload_prefix=unload_prefix,
             partition_prefix=partition_prefix,
@@ -117,35 +112,12 @@ class MachineInventoryUnloadJob(BaseRunner):
         )
         self._delete_prefix(*parse_s3_uri(unload_prefix))
         self.logger.info(
-            "Redshift UNLOAD completed for snapshot_month=%s, descriptor_id=%s, rows=%s.",
+            "Redshift UNLOAD completed for snapshot_month=%s, descriptor_id=%s, source_rows=%s, unloaded_rows=%s.",
             snapshot_month,
             query_spec.descriptor_id,
+            source_row_count,
             unloaded_rows,
         )
-
-    def _load_existing_ips(self, s3_prefix: str, ip_column: str) -> List[str]:
-        """Execute the load existing ips stage of the workflow."""
-        if not s3_prefix:
-            return []
-        if not s3_prefix.startswith("s3://"):
-            raise ValueError(f"Invalid S3 prefix: {s3_prefix}")
-
-        bucket, key_prefix = parse_s3_uri(s3_prefix)
-        s3 = boto3.client("s3")
-        response = s3.list_objects_v2(Bucket=bucket, Prefix=key_prefix, MaxKeys=1)
-        if response.get("KeyCount", 0) == 0:
-            return []
-
-        df = self.spark.read.parquet(s3_prefix)
-        if ip_column not in df.columns:
-            raise ValueError(
-                f"Expected IP column '{ip_column}' in existing inventory data. "
-                f"Found columns: {df.columns}"
-            )
-        return [
-            row[ip_column]
-            for row in df.select(ip_column).dropna().distinct().collect()
-        ]
 
     def _stage_unload_output_locally_and_write_partition(
         self,
@@ -207,31 +179,20 @@ class MachineInventoryUnloadJob(BaseRunner):
         data_api: Any,
         redshift_cfg: RedshiftDataApiConfig,
         query_spec: MachineInventoryQuerySpec,
-        existing_ips: List[str],
         output_spec: MachineInventoryOutputSpec,
         output_prefix: str,
-    ) -> int:
+    ) -> Tuple[int, int]:
         """Execute the unload from redshift stage of the workflow."""
         source_query = build_source_query(query_spec)
-        if existing_ips:
-            self._execute_statement(
-                data_api,
-                redshift_cfg,
-                "CREATE TEMP TABLE tmp_existing_ips (ip_address VARCHAR(128))",
-            )
-            self._insert_existing_ips(data_api, redshift_cfg, existing_ips)
-            filtered_query = (
-                "SELECT DISTINCT src.ip_address, src.machine_name "
-                "FROM ({source_query}) AS src "
-                "LEFT JOIN tmp_existing_ips ex "
-                "ON src.ip_address = ex.ip_address "
-                "WHERE ex.ip_address IS NULL"
-            ).format(source_query=source_query)
-        else:
-            filtered_query = (
-                "SELECT DISTINCT src.ip_address, src.machine_name "
-                "FROM ({source_query}) AS src"
-            ).format(source_query=source_query)
+        filtered_query = (
+            "SELECT DISTINCT src.ip_address, src.machine_name "
+            "FROM ({source_query}) AS src"
+        ).format(source_query=source_query)
+        source_row_count = self._get_query_row_count(
+            data_api=data_api,
+            config=redshift_cfg,
+            query=filtered_query,
+        )
 
         unload_sql = build_unload_sql(
             filtered_query=filtered_query,
@@ -240,7 +201,27 @@ class MachineInventoryUnloadJob(BaseRunner):
             iam_role=redshift_cfg.iam_role,
         )
         statement_id = self._execute_statement(data_api, redshift_cfg, unload_sql)
-        return self._get_unload_row_count(data_api, statement_id)
+        unloaded_rows = self._get_unload_row_count(data_api, statement_id)
+        return source_row_count, unloaded_rows
+
+    def _get_query_row_count(self, data_api: Any, config: RedshiftDataApiConfig, query: str) -> int:
+        """Execute the source query row-count stage of the workflow."""
+        count_sql = "SELECT COUNT(*) AS row_count FROM ({query}) AS src".format(query=query)
+        statement_id = self._execute_statement(data_api, config, count_sql)
+        result = data_api.get_statement_result(Id=statement_id)
+        records = result.get("Records", [])
+        if not records or not records[0]:
+            raise RuntimeError(
+                "MACHINE_INVENTORY_SOURCE_COUNT_FAILED: Empty row-count result from Redshift Data API."
+            )
+        scalar = records[0][0]
+        if "longValue" in scalar:
+            return int(scalar["longValue"])
+        if "stringValue" in scalar:
+            return int(scalar["stringValue"])
+        raise RuntimeError(
+            "MACHINE_INVENTORY_SOURCE_COUNT_FAILED: Unsupported COUNT(*) scalar format."
+        )
 
     def _execute_statement(self, data_api: Any, config: RedshiftDataApiConfig, sql: str) -> str:
         """Execute the execute statement stage of the workflow."""
@@ -256,31 +237,6 @@ class MachineInventoryUnloadJob(BaseRunner):
         statement_id = response["Id"]
         self._wait_for_statement(data_api, statement_id)
         return statement_id
-
-    def _insert_existing_ips(
-        self,
-        data_api: Any,
-        config: RedshiftDataApiConfig,
-        existing_ips: List[str],
-    ) -> None:
-        """Execute the insert existing ips stage of the workflow."""
-        chunk_size = 500
-        for chunk in chunked(existing_ips, chunk_size):
-            parameters = [
-                [{"name": "ip_address", "value": {"stringValue": ip}}]
-                for ip in chunk
-            ]
-            params: Dict[str, Any] = {
-                "ClusterIdentifier": config.cluster_identifier,
-                "Database": config.database,
-                "SecretArn": config.secret_arn,
-                "Sql": "INSERT INTO tmp_existing_ips (ip_address) VALUES (:ip_address)",
-                "ParameterSets": parameters,
-            }
-            if config.db_user:
-                params["DbUser"] = config.db_user
-            response = data_api.batch_execute_statement(**params)
-            self._wait_for_statement(data_api, response["Id"])
 
     def _wait_for_statement(self, data_api: Any, statement_id: str) -> None:
         """Execute the wait for statement stage of the workflow."""
@@ -412,18 +368,6 @@ def parse_s3_uri(uri: str) -> Tuple[str, str]:
     bucket = parts[0]
     prefix = parts[1] if len(parts) > 1 else ""
     return bucket, prefix
-
-
-def chunked(items: Iterable[str], size: int) -> Iterable[List[str]]:
-    """Execute the chunked stage of the workflow."""
-    chunk: List[str] = []
-    for item in items:
-        chunk.append(item)
-        if len(chunk) >= size:
-            yield chunk
-            chunk = []
-    if chunk:
-        yield chunk
 
 
 def run_machine_inventory_unload_from_runtime_config(

@@ -441,6 +441,7 @@ from ndr.pipeline.sagemaker_pipeline_definitions_inference import build_inferenc
 from ndr.pipeline.sagemaker_pipeline_definitions_prediction_feature_join import build_prediction_feature_join_pipeline
 from ndr.pipeline.sagemaker_pipeline_definitions_if_training import build_if_training_pipeline
 from ndr.pipeline.sagemaker_pipeline_definitions_backfill_historical_extractor import build_backfill_historical_extractor_pipeline
+from ndr.pipeline.sagemaker_pipeline_definitions_backfill_15m_reprocessing import build_backfill_15m_reprocessing_pipeline
 
 region = DEPLOY["region"]
 role_arn = DEPLOY["execution_role_arn"]
@@ -454,6 +455,14 @@ pipelines = [
     build_prediction_feature_join_pipeline(DEPLOY["pipeline_prediction_join_name"], role_arn, bucket, region),
     build_if_training_pipeline(DEPLOY["pipeline_if_training_name"], role_arn, bucket, region),
     build_backfill_historical_extractor_pipeline(DEPLOY["pipeline_backfill_extractor_name"], role_arn, bucket, region),
+    build_backfill_15m_reprocessing_pipeline(
+        DEPLOY["pipeline_backfill_15m_name"],
+        role_arn,
+        bucket,
+        region,
+        project_name_for_contracts=DEPLOY["project_name"],
+        feature_spec_version_for_contracts=DEPLOY["feature_spec_version"],
+    ),
 ]
 
 delta_uri = (

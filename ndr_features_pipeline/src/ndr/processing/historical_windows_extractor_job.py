@@ -10,13 +10,14 @@ from urllib.parse import urlparse
 import boto3
 
 from ndr.config.batch_index_loader import BatchIndexLoader
-from ndr.config.project_parameters_loader import resolve_feature_spec_version
+from ndr.config.project_parameters_loader import load_project_parameters, resolve_feature_spec_version
 from ndr.orchestration.backfill_contracts import build_execution_manifest, build_family_range_plan
 from ndr.orchestration.palo_alto_batch_utils import (
     parse_batch_path_from_s3_key,
     derive_window_bounds,
     to_iso_z,
 )
+from ndr.processing.raw_input_resolver import RawInputResolver
 
 
 @dataclass
@@ -27,6 +28,7 @@ class HistoricalWindowsExtractorRuntimeConfig:
     end_ts_iso: str
     window_floor_minutes: list[int]
     preferred_feature_spec_version: str | None = None
+    dpp_config_table_name: str | None = None
 
 
 class HistoricalWindowsExtractorJob:
@@ -43,22 +45,72 @@ class HistoricalWindowsExtractorJob:
 
     def _extract_rows(self) -> list[dict[str, str]]:
         index_lookup_error: Exception | None = None
+        project_name = self._infer_project_name_from_input_prefix()
         try:
             index_rows = self._extract_rows_from_batch_index()
-        except Exception as exc:  # index path is best-effort before optional S3 fallback
+        except Exception as exc:  # index path is best-effort before fallback resolution
             index_rows = []
             index_lookup_error = exc
-        if index_rows:
-            return index_rows
 
-        # If project cannot be inferred from the input prefix, batch-index lookup cannot be authoritative.
-        if self._infer_project_name_from_input_prefix() is None:
+        if project_name:
+            feature_spec_version = (
+                index_rows[0]["feature_spec_version"]
+                if index_rows
+                else resolve_feature_spec_version(
+                    project_name=project_name,
+                    preferred_feature_spec_version=self.runtime_config.preferred_feature_spec_version,
+                )
+            )
+            dpp_spec = load_project_parameters(
+                project_name,
+                feature_spec_version,
+                dpp_table_name=self.runtime_config.dpp_config_table_name,
+            )
+            fallback = dpp_spec.get("backfill_redshift_fallback") or {}
+            allow_redshift_fallback = bool(fallback) and bool(fallback.get("enabled", True))
+            resolution = RawInputResolver().resolve(
+                ingestion_rows=index_rows,
+                allow_redshift_fallback=allow_redshift_fallback,
+                dpp_spec=dpp_spec,
+                artifact_family="delta",
+                range_start_ts=self.runtime_config.start_ts_iso,
+                range_end_ts=self.runtime_config.end_ts_iso,
+                producer_flow="historical_windows_extractor",
+            )
+            if resolution.source_mode == "ingestion":
+                for row in index_rows:
+                    row["source_mode"] = resolution.source_mode
+                    row["resolution_reason"] = resolution.resolution_reason
+                return index_rows
+
+            return [
+                {
+                    "project_name": project_name,
+                    "feature_spec_version": feature_spec_version,
+                    "mini_batch_id": _fallback_batch_id(
+                        self.runtime_config.start_ts_iso,
+                        self.runtime_config.end_ts_iso,
+                    ),
+                    "raw_parsed_logs_s3_prefix": resolution.raw_input_s3_prefix,
+                    "batch_start_ts_iso": self.runtime_config.start_ts_iso,
+                    "batch_end_ts_iso": self.runtime_config.end_ts_iso,
+                    "source_last_modified_ts_iso": _now_iso(),
+                    "source_mode": resolution.source_mode,
+                    "resolution_reason": resolution.resolution_reason,
+                }
+            ]
+
+        # If project cannot be inferred from the input prefix, resolver cannot load DPP-owned fallback contracts.
+        if project_name is None:
             rows = self._extract_rows_from_s3_listing()
             if rows:
+                for row in rows:
+                    row.setdefault("source_mode", "ingestion")
+                    row.setdefault("resolution_reason", "s3_listing_fallback")
                 return rows
 
         raise RuntimeError(
-            "No batch-index rows resolved for historical window and S3 listing fallback is disabled"
+            "No ingestion rows resolved and Redshift fallback is disabled"
         ) from index_lookup_error
 
 
@@ -183,6 +235,8 @@ class HistoricalWindowsExtractorJob:
             "fg_b_baseline": [],
             "fg_c": [{"start_ts": row["batch_start_ts_iso"], "end_ts": row["batch_end_ts_iso"]} for row in rows],
         }
+        source_mode = rows[0].get("source_mode", "ingestion") if rows else "ingestion"
+        resolution_reason = rows[0].get("resolution_reason", "batch_index") if rows else "empty"
         manifest = build_execution_manifest(
             project_name=project_name,
             feature_spec_version=feature_spec_version,
@@ -191,6 +245,8 @@ class HistoricalWindowsExtractorJob:
             family_plan=build_family_range_plan(family_ranges=family_ranges),
         )
         manifest["rows"] = rows
+        manifest["source_mode"] = source_mode
+        manifest["resolution_reason"] = resolution_reason
         body = json.dumps(manifest, sort_keys=True) + "\n"
         encoded_body = body.encode("utf-8")
         self._s3.put_object(Bucket=out_bucket, Key=key, Body=encoded_body)
@@ -203,6 +259,16 @@ def _split_s3_uri(uri: str) -> tuple[str, str]:
     if parsed.scheme != "s3" or not parsed.netloc:
         raise ValueError(f"Expected s3:// URI, got: {uri}")
     return parsed.netloc, parsed.path.lstrip("/")
+
+
+def _fallback_batch_id(start_ts_iso: str, end_ts_iso: str) -> str:
+    start = start_ts_iso.replace("-", "").replace(":", "")
+    end = end_ts_iso.replace("-", "").replace(":", "")
+    return f"fallback-{start}-{end}"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _parse_iso8601(value: str) -> datetime:

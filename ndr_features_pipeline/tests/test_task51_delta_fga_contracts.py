@@ -67,6 +67,7 @@ from ndr.processing.delta_builder_job import (
     DeltaBuilderJobRuntimeConfig,
     run_delta_builder_from_runtime_config,
 )
+from ndr.processing.raw_input_resolver import RawInputResolution
 from ndr.processing.fg_a_builder_job import (
     FGABuilderJobRuntimeConfig,
     run_fg_a_builder_from_runtime_config,
@@ -165,6 +166,17 @@ def test_run_delta_builder_runtime_uses_batch_index_paths(monkeypatch):
 
     monkeypatch.setattr(module, "JobSpecLoader", lambda: _Loader())
     monkeypatch.setattr(module, "BatchIndexLoader", _BatchIndex)
+    monkeypatch.setattr(module, "load_project_parameters", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        module.RawInputResolver,
+        "resolve",
+        lambda *_a, **_k: RawInputResolution(
+            source_mode="ingestion",
+            raw_input_s3_prefix="s3://batch-index/raw/mb-1/",
+            resolution_reason="ingestion_rows_present",
+            provenance={"source_mode": "ingestion"},
+        ),
+    )
     monkeypatch.setattr(module.SparkSession, "builder", _SparkBuilder())
     monkeypatch.setattr(
         module,

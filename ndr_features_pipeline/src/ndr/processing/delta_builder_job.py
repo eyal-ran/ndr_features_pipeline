@@ -19,6 +19,8 @@ from ndr.processing.raw_traffic_fields import (
     REQUIRED_DELTA_TRAFFIC_FIELDS,
 )
 from ndr.config.batch_index_loader import BatchIndexLoader
+from ndr.config.project_parameters_loader import load_project_parameters
+from ndr.processing.raw_input_resolver import RawInputResolver
 
 
 class DeltaBuilderRunner(BaseProcessingRunner):
@@ -249,6 +251,7 @@ class DeltaBuilderJobRuntimeConfig:
     batch_start_ts_iso: str = ""
     batch_end_ts_iso: str = ""
     batch_index_table_name: str | None = None
+    dpp_config_table_name: str | None = None
 
 
 def run_delta_builder_from_runtime_config(runtime_config: DeltaBuilderJobRuntimeConfig) -> None:
@@ -261,6 +264,9 @@ def run_delta_builder_from_runtime_config(runtime_config: DeltaBuilderJobRuntime
     )
 
     raw_parsed_logs_s3_prefix = runtime_config.raw_parsed_logs_s3_prefix
+    ingestion_rows: list[dict[str, str]] = []
+    if raw_parsed_logs_s3_prefix:
+        ingestion_rows.append({"raw_parsed_logs_s3_prefix": raw_parsed_logs_s3_prefix})
     if not raw_parsed_logs_s3_prefix:
         record = BatchIndexLoader(table_name=runtime_config.batch_index_table_name).get_batch(
             project_name=runtime_config.project_name,
@@ -271,7 +277,8 @@ def run_delta_builder_from_runtime_config(runtime_config: DeltaBuilderJobRuntime
                 "Unable to resolve Delta runtime input from Batch Index for "
                 f"project_name={runtime_config.project_name}, batch_id={runtime_config.mini_batch_id}"
             )
-        raw_parsed_logs_s3_prefix = record.raw_parsed_logs_s3_prefix
+        if str(getattr(record, "raw_parsed_logs_s3_prefix", "")).strip():
+            ingestion_rows.append({"raw_parsed_logs_s3_prefix": str(record.raw_parsed_logs_s3_prefix)})
         delta_prefix = record.s3_prefixes.get("dpp", {}).get("delta")
         if not delta_prefix:
             raise KeyError(
@@ -279,6 +286,25 @@ def run_delta_builder_from_runtime_config(runtime_config: DeltaBuilderJobRuntime
                 f"project_name={runtime_config.project_name}, batch_id={runtime_config.mini_batch_id}"
             )
         job_spec.output.s3_prefix = str(delta_prefix)
+
+    project_parameters = load_project_parameters(
+        runtime_config.project_name,
+        runtime_config.feature_spec_version,
+        dpp_table_name=runtime_config.dpp_config_table_name,
+    )
+    fallback = project_parameters.get("backfill_redshift_fallback") or {}
+    allow_redshift_fallback = bool(fallback) and bool(fallback.get("enabled", True))
+    source_resolution = RawInputResolver().resolve(
+        ingestion_rows=ingestion_rows,
+        allow_redshift_fallback=allow_redshift_fallback,
+        dpp_spec=project_parameters,
+        artifact_family="delta",
+        range_start_ts=runtime_config.batch_start_ts_iso,
+        range_end_ts=runtime_config.batch_end_ts_iso,
+        producer_flow="delta_builder",
+        request_id=runtime_config.mini_batch_id,
+    )
+    raw_parsed_logs_s3_prefix = source_resolution.raw_input_s3_prefix
 
     runtime = RuntimeParams(
         project_name=runtime_config.project_name,
@@ -288,6 +314,7 @@ def run_delta_builder_from_runtime_config(runtime_config: DeltaBuilderJobRuntime
         run_id=runtime_config.mini_batch_id,
         slice_start_ts=runtime_config.batch_start_ts_iso,
         slice_end_ts=runtime_config.batch_end_ts_iso,
+        extra={"raw_input_resolution": source_resolution.provenance},
     )
 
     spark = (

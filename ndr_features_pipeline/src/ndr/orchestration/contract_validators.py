@@ -22,6 +22,27 @@ TASK14_TRAINING_TO_FGB_CONSUMER_MISMATCH = "TASK14_TRAINING_TO_FGB_CONSUMER_MISM
 TASK14_EXTRACTOR_RUNTIME_TO_MANIFEST_PRODUCER_MISMATCH = "TASK14_EXTRACTOR_RUNTIME_TO_MANIFEST_PRODUCER_MISMATCH"
 TASK14_EXTRACTOR_RUNTIME_TO_MANIFEST_CONSUMER_MISMATCH = "TASK14_EXTRACTOR_RUNTIME_TO_MANIFEST_CONSUMER_MISMATCH"
 
+TASK15_STARTUP_OBSERVABILITY_VERSION = "task15_initial_deployment_observability.v1"
+TASK15_CONTRACT_ERROR_CODE = "TASK15_CONTRACT_VIOLATION"
+TASK15_GATE_ERROR_CODE = "TASK15_OBSERVABILITY_GATE_RED"
+
+_TASK15_REQUIRED_METRICS = (
+    "bootstrap_duration_seconds",
+    "startup_remediation_invocation_count",
+    "startup_unresolved_missing_range_count",
+    "startup_fallback_source_mode_count",
+    "startup_contract_validation_failure_count",
+)
+
+_TASK15_REQUIRED_FAILURE_CLASSES = (
+    "missing_range_remediation_gap",
+    "extractor_bootstrap_fragility",
+    "raw_log_fallback_not_integrated",
+    "startup_contract_validation_failure",
+)
+
+_TASK15_ALLOWED_SEVERITIES = ("sev1", "sev2", "sev3")
+
 _TASK11_REQUIRED_FINDINGS = (
     "F1.1",
     "F1.2",
@@ -579,5 +600,181 @@ def evaluate_task14_startup_contract_conformance(*, evidence: Mapping[str, Any])
         raise ValueError(
             f"{TASK14_GATE_ERROR_CODE}: Task 14 startup contract conformance gate failed checks "
             f"{failed_checks}; diagnostics={failed_details}"
+        )
+    return report
+
+
+def evaluate_task15_initial_deployment_observability(*, evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate startup observability/rollback package readiness for production rollout."""
+
+    required_sections = ("orientation", "observability", "rollback", "validation")
+    missing_sections = [section for section in required_sections if section not in evidence]
+    if missing_sections:
+        raise ValueError(f"{TASK15_CONTRACT_ERROR_CODE}: missing required sections {missing_sections}")
+
+    orientation = evidence["orientation"]
+    observability = evidence["observability"]
+    rollback = evidence["rollback"]
+    validation = evidence["validation"]
+
+    for section_name, section_value in (
+        ("orientation", orientation),
+        ("observability", observability),
+        ("rollback", rollback),
+        ("validation", validation),
+    ):
+        if not isinstance(section_value, Mapping):
+            raise ValueError(f"{TASK15_CONTRACT_ERROR_CODE}: {section_name} must be a mapping")
+
+    startup_paths = {str(v).strip() for v in (orientation.get("startup_paths") or []) if str(v).strip()}
+    reviewed_failures = bool(orientation.get("startup_failure_classes_reviewed"))
+    reviewed_remediation = bool(orientation.get("remediation_paths_reviewed"))
+
+    metrics = {str(v).strip() for v in (observability.get("metrics") or []) if str(v).strip()}
+    alarms = observability.get("alarms") or []
+    dashboard = observability.get("dashboard") or {}
+    runbooks = observability.get("runbooks") or {}
+    incident_model = observability.get("incident_model") or {}
+
+    if not isinstance(alarms, Sequence):
+        raise ValueError(f"{TASK15_CONTRACT_ERROR_CODE}: observability.alarms must be a sequence")
+    if not isinstance(dashboard, Mapping):
+        raise ValueError(f"{TASK15_CONTRACT_ERROR_CODE}: observability.dashboard must be a mapping")
+    if not isinstance(runbooks, Mapping):
+        raise ValueError(f"{TASK15_CONTRACT_ERROR_CODE}: observability.runbooks must be a mapping")
+    if not isinstance(incident_model, Mapping):
+        raise ValueError(f"{TASK15_CONTRACT_ERROR_CODE}: observability.incident_model must be a mapping")
+
+    ownership_defined = bool(str(incident_model.get("primary_owner_team") or "").strip()) and bool(
+        str(incident_model.get("escalation_policy") or "").strip()
+    )
+    if not ownership_defined:
+        raise ValueError(
+            "TASK15_OWNERSHIP_MODEL_UNDEFINED: incident ownership/escalation model is required before implementation"
+        )
+
+    checks: list[dict[str, Any]] = []
+
+    def _check(check_id: str, passed: bool, detail: str) -> None:
+        checks.append({"check_id": check_id, "passed": bool(passed), "detail": detail})
+
+    _check(
+        "15.orientation.startup_paths",
+        startup_paths >= {"rt", "monthly", "backfill", "training"},
+        f"Startup orientation covers RT/monthly/backfill/training (observed={sorted(startup_paths)})",
+    )
+    _check("15.orientation.failure_classes", reviewed_failures, "Startup failure classes reviewed")
+    _check("15.orientation.remediation_paths", reviewed_remediation, "Startup remediation paths reviewed")
+
+    missing_metrics = sorted(set(_TASK15_REQUIRED_METRICS) - metrics)
+    _check("15.observability.metrics", not missing_metrics, f"Required startup metrics emitted (missing={missing_metrics})")
+
+    alarm_records: list[Mapping[str, Any]] = []
+    for idx, alarm in enumerate(alarms):
+        if not isinstance(alarm, Mapping):
+            raise ValueError(f"{TASK15_CONTRACT_ERROR_CODE}: alarms[{idx}] must be a mapping")
+        alarm_records.append(alarm)
+
+    covered_failure_classes = {
+        str(record.get("failure_class") or "").strip() for record in alarm_records if str(record.get("failure_class") or "").strip()
+    }
+    severities = {str(record.get("severity") or "").strip().lower() for record in alarm_records if str(record.get("severity") or "").strip()}
+    noisy_alarms = [
+        str(record.get("alarm_name") or f"alarms[{idx}]")
+        for idx, record in enumerate(alarm_records)
+        if int(record.get("noise_budget_max_alerts_per_day") or 0) <= 0
+    ]
+    alarms_missing_runbooks = [
+        str(record.get("alarm_name") or f"alarms[{idx}]")
+        for idx, record in enumerate(alarm_records)
+        if not str(record.get("runbook_id") or "").strip() or str(record.get("runbook_id") or "").strip() not in runbooks
+    ]
+
+    _check(
+        "15.observability.failure_class_alarms",
+        covered_failure_classes >= set(_TASK15_REQUIRED_FAILURE_CLASSES),
+        f"Failure classes have actionable alarms (missing={sorted(set(_TASK15_REQUIRED_FAILURE_CLASSES) - covered_failure_classes)})",
+    )
+    _check(
+        "15.observability.severity_mapping",
+        severities <= set(_TASK15_ALLOWED_SEVERITIES) and {"sev1", "sev2"} <= severities,
+        f"Alarm severities follow production mapping (observed={sorted(severities)})",
+    )
+    _check("15.observability.noise_budget", not noisy_alarms, f"Noise budgets configured for all alarms (invalid={noisy_alarms})")
+    _check(
+        "15.observability.runbooks",
+        not alarms_missing_runbooks and all(bool((runbooks.get(k) or {}).get("owner_team")) for k in runbooks),
+        f"Every alarm references an owned runbook (missing={alarms_missing_runbooks})",
+    )
+
+    dashboard_panels = {str(v).strip() for v in (dashboard.get("panels") or []) if str(v).strip()}
+    _check(
+        "15.observability.dashboard",
+        set(_TASK15_REQUIRED_METRICS) <= dashboard_panels,
+        f"Dashboard exposes startup metrics used by alarms/readiness (missing={sorted(set(_TASK15_REQUIRED_METRICS)-dashboard_panels)})",
+    )
+
+    rollback_switch = rollback.get("switch") or {}
+    rollback_safety = rollback.get("safety") or {}
+    if not isinstance(rollback_switch, Mapping):
+        raise ValueError(f"{TASK15_CONTRACT_ERROR_CODE}: rollback.switch must be a mapping")
+    if not isinstance(rollback_safety, Mapping):
+        raise ValueError(f"{TASK15_CONTRACT_ERROR_CODE}: rollback.safety must be a mapping")
+
+    _check(
+        "15.rollback.switch.ddb_first",
+        str(rollback_switch.get("config_source") or "").strip().lower() == "dynamodb"
+        and bool(str(rollback_switch.get("control_key") or "").strip()),
+        "Rollback switch is DDB-first with deterministic control key",
+    )
+    _check(
+        "15.rollback.safety",
+        bool(rollback_safety.get("idempotency_verified"))
+        and bool(rollback_safety.get("retry_verified"))
+        and bool(rollback_safety.get("rollback_verified")),
+        "Rollback switch safety checks include idempotency/retry/rollback",
+    )
+
+    synthetic_failures = validation.get("synthetic_failures") or []
+    rollback_drill = validation.get("rollback_drill") or {}
+    if not isinstance(synthetic_failures, Sequence):
+        raise ValueError(f"{TASK15_CONTRACT_ERROR_CODE}: validation.synthetic_failures must be a sequence")
+    if not isinstance(rollback_drill, Mapping):
+        raise ValueError(f"{TASK15_CONTRACT_ERROR_CODE}: validation.rollback_drill must be a mapping")
+
+    triggered_classes = {
+        str(item.get("failure_class") or "").strip()
+        for item in synthetic_failures
+        if isinstance(item, Mapping) and str(item.get("failure_class") or "").strip()
+    }
+    synthetic_alarm_failures = [
+        str(item.get("failure_class") or "<missing>")
+        for item in synthetic_failures
+        if isinstance(item, Mapping) and not bool(item.get("alarm_triggered"))
+    ]
+
+    _check(
+        "15.validation.synthetic",
+        triggered_classes >= set(_TASK15_REQUIRED_FAILURE_CLASSES) and not synthetic_alarm_failures,
+        f"Synthetic startup failures trigger expected alarms (missing_classes={sorted(set(_TASK15_REQUIRED_FAILURE_CLASSES)-triggered_classes)}, alarm_failures={synthetic_alarm_failures})",
+    )
+    _check(
+        "15.validation.rollback_drill",
+        bool(rollback_drill.get("executed"))
+        and bool(rollback_drill.get("restored_stable_state"))
+        and bool(rollback_drill.get("no_data_corruption")),
+        "Rollback drill restores stable state without data corruption",
+    )
+
+    failed_checks = [check["check_id"] for check in checks if not check["passed"]]
+    report = {
+        "contract_version": TASK15_STARTUP_OBSERVABILITY_VERSION,
+        "status": "go" if not failed_checks else "no-go",
+        "checks": checks,
+        "failed_checks": failed_checks,
+    }
+    if failed_checks:
+        raise ValueError(
+            f"{TASK15_GATE_ERROR_CODE}: Task 15 startup observability gate failed checks {failed_checks}"
         )
     return report

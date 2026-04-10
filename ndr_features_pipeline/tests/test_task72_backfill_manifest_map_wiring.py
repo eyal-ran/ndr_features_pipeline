@@ -48,3 +48,7 @@ def test_manifest_read_and_map_failure_paths_are_deterministic():
 
     assert states["FailInvalidExtractorManifest"]["Type"] == "Fail"
     assert states["RunBackfillWindows"]["ItemProcessor"]["States"]["BackfillPipelineStatusChoice"]["Default"] == "BackfillWindowFailed"
+    assert states["RunBackfillWindows"]["Next"] == "BackfillCompletionVerifier"
+    assert states["BackfillCompletionVerifier"]["Next"] == "BackfillCompletionChoice"
+    assert states["BackfillCompletionChoice"]["Default"] == "FailBackfillCompletionContract"
+    assert states["FailBackfillCompletionContract"]["Error"] == "BackfillCompletionContractError"

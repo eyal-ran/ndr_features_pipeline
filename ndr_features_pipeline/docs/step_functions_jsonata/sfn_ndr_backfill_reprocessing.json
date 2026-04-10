@@ -260,7 +260,7 @@
           }
         }
       },
-      "Next": "EmitBackfillReconciliationEvent"
+      "Next": "BackfillCompletionVerifier"
     },
     "EmitBackfillReconciliationEvent": {
       "Type": "Task",
@@ -431,6 +431,31 @@
       "Type": "Fail",
       "Error": "ExtractorManifestValidationError",
       "Cause": "Extractor manifest missing or invalid for backfill map execution"
+    },
+    "BackfillCompletionVerifier": {
+      "Type": "Pass",
+      "Assign": {
+        "requested_families": "{% $extractor_manifest.family_plan[execute=true].family %}",
+        "executed_families": "{% $distinct($windows.family) %}",
+        "unresolved_families": "{% $filter($requested_families, function($f){$not($contains($executed_families, $f))}) %}",
+        "all_families_succeeded": "{% $count($requested_families) > 0 and $count($unresolved_families) = 0 %}"
+      },
+      "Next": "BackfillCompletionChoice"
+    },
+    "BackfillCompletionChoice": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $all_families_succeeded = true %}",
+          "Next": "EmitBackfillReconciliationEvent"
+        }
+      ],
+      "Default": "FailBackfillCompletionContract"
+    },
+    "FailBackfillCompletionContract": {
+      "Type": "Fail",
+      "Error": "BackfillCompletionContractError",
+      "Cause": "Backfill completion verifier blocked event publication because requested families are unresolved"
     }
   }
 }

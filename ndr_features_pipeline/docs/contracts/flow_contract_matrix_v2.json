@@ -126,7 +126,9 @@
           ],
           "optional": [
             "idempotency_key",
-            "dpp_config_table_name"
+            "dpp_config_table_name",
+            "retry_attempt",
+            "missing_entries_json"
           ]
         },
         "pipeline_params": {
@@ -149,7 +151,9 @@
           ],
           "optional": [
             "--idempotency-key",
-            "--dpp-config-table-name"
+            "--dpp-config-table-name",
+            "--retry-attempt",
+            "--missing-entries-json"
           ]
         },
         "runtime_fields": {
@@ -161,7 +165,9 @@
             "range_end_ts_iso"
           ],
           "optional": [
-            "idempotency_key"
+            "idempotency_key",
+            "retry_attempt",
+            "missing_entries"
           ]
         },
         "ddb_keys": {

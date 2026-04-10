@@ -190,9 +190,19 @@ def test_item19_pipeline_seed_items_present_with_expected_runtime_params():
 
 def test_split_table_contracts_use_canonical_table_names():
     contracts = build_split_table_contracts()
-    assert set(contracts.keys()) == {"dpp_config", "mlp_config", "batch_index"}
+    assert set(contracts.keys()) == {
+        "dpp_config",
+        "mlp_config",
+        "batch_index",
+        "ml_projects_routing",
+        "processing_lock",
+        "publication_lock",
+    }
     assert contracts["dpp_config"]["KeySchema"][1]["AttributeName"] == "job_name_version"
     assert contracts["mlp_config"]["KeySchema"][0]["AttributeName"] == "ml_project_name"
+    assert contracts["ml_projects_routing"]["KeySchema"][0]["AttributeName"] == "org_key"
+    assert contracts["processing_lock"]["KeySchema"][0]["AttributeName"] == "pk"
+    assert contracts["publication_lock"]["KeySchema"][1]["AttributeName"] == "sk"
 
 
 def test_split_seed_items_enforce_reciprocal_linkage_fields():

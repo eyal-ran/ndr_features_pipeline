@@ -6,7 +6,7 @@ This plan deploys, in order:
 
 1. S3 layout (DPP vs MLP separation),
 2. all required code artifacts (`src/ndr` package + entry scripts),
-3. DynamoDB tables (`dpp_config`, `mlp_config`, `batch_index`),
+3. DynamoDB tables (`dpp_config`, `mlp_config`, `batch_index`, `ml_projects_routing`, `processing_lock`, `publication_lock`),
 4. DDB seed records (reciprocal linkage + full pipeline/job bootstrap),
 5. all SageMaker pipelines,
 6. all NDR Step Functions JSONata definitions,
@@ -271,7 +271,7 @@ print("[manifest]", f"s3://{bucket}/{manifest_key}")
 
 ```python
 """
-CELL 3 — CREATE dpp_config, mlp_config, batch_index TABLES
+CELL 3 — CREATE CONTROL-PLANE TABLES
 
 Purpose
 -------
@@ -334,6 +334,36 @@ TABLES = {
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             }
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+    },
+    DEPLOY["project_routing_table_name"]: {
+        "TableName": DEPLOY["project_routing_table_name"],
+        "AttributeDefinitions": [{"AttributeName": "org_key", "AttributeType": "S"}],
+        "KeySchema": [{"AttributeName": "org_key", "KeyType": "HASH"}],
+        "BillingMode": "PAY_PER_REQUEST",
+    },
+    DEPLOY["processing_lock_table_name"]: {
+        "TableName": DEPLOY["processing_lock_table_name"],
+        "AttributeDefinitions": [
+            {"AttributeName": "pk", "AttributeType": "S"},
+            {"AttributeName": "sk", "AttributeType": "S"},
+        ],
+        "KeySchema": [
+            {"AttributeName": "pk", "KeyType": "HASH"},
+            {"AttributeName": "sk", "KeyType": "RANGE"},
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+    },
+    DEPLOY["publication_lock_table_name"]: {
+        "TableName": DEPLOY["publication_lock_table_name"],
+        "AttributeDefinitions": [
+            {"AttributeName": "pk", "AttributeType": "S"},
+            {"AttributeName": "sk", "AttributeType": "S"},
+        ],
+        "KeySchema": [
+            {"AttributeName": "pk", "KeyType": "HASH"},
+            {"AttributeName": "sk", "KeyType": "RANGE"},
         ],
         "BillingMode": "PAY_PER_REQUEST",
     },
@@ -747,7 +777,14 @@ import boto3
 ddb = boto3.client("dynamodb", region_name=DEPLOY["region"])
 res = boto3.resource("dynamodb", region_name=DEPLOY["region"])
 
-for t in [DEPLOY["dpp_table_name"], DEPLOY["mlp_table_name"], DEPLOY["batch_index_table_name"]]:
+for t in [
+    DEPLOY["dpp_table_name"],
+    DEPLOY["mlp_table_name"],
+    DEPLOY["batch_index_table_name"],
+    DEPLOY["project_routing_table_name"],
+    DEPLOY["processing_lock_table_name"],
+    DEPLOY["publication_lock_table_name"],
+]:
     td = ddb.describe_table(TableName=t)["Table"]
     print(t, td["TableStatus"])
     if t == DEPLOY["batch_index_table_name"]:
@@ -759,6 +796,20 @@ item = res.Table(DEPLOY["dpp_table_name"]).get_item(Key={
 }).get("Item")
 assert item is not None
 print("[ok] dpp project_parameters exists")
+
+# Preflight validator for exception control-plane tables
+import subprocess, shlex
+cmd = (
+    "PYTHONPATH=src python -m ndr.scripts.run_exception_table_preflight "
+    f"--region {DEPLOY['region']} "
+    f"--routing-table-name {DEPLOY['project_routing_table_name']} "
+    f"--processing-lock-table-name {DEPLOY['processing_lock_table_name']} "
+    f"--publication-lock-table-name {DEPLOY['publication_lock_table_name']} "
+    "--flow all"
+)
+print("[run]", cmd)
+subprocess.check_call(shlex.split(cmd))
+print("[ok] exception table preflight passed")
 ```
 
 ### Cell 9 — pipeline existence check

@@ -199,7 +199,7 @@
           }
         }
       },
-      "Next": "StartMonthlyBaselinePipeline",
+      "Next": "ValidateMonthlyBootstrapInvocation",
       "Catch": [
         {
           "ErrorEquals": [
@@ -209,31 +209,29 @@
         }
       ]
     },
-    "StartMonthlyBaselinePipeline": {
+    "ValidateMonthlyBootstrapInvocation": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $exists($states.input.reference_month) = false or $states.input.reference_month = '' %}",
+          "Next": "FailMissingReferenceMonthForMonthlyBootstrap"
+        }
+      ],
+      "Default": "StartMonthlyBaselineOrchestration"
+    },
+    "StartMonthlyBaselineOrchestration": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
+      "Resource": "arn:aws:states:::states:startExecution.sync:2",
       "Arguments": {
-        "PipelineName": "${PipelineNameMonthlyFgBBaselines}",
-        "PipelineParameters": [
-          {
-            "Name": "ProjectName",
-            "Value": "{% $states.input.project_name %}"
-          },
-          {
-            "Name": "FeatureSpecVersion",
-            "Value": "{% $states.input.feature_spec_version %}"
-          },
-          {
-            "Name": "MlProjectName",
-            "Value": "{% $states.input.ml_project_name %}"
-          }
-        ]
+        "StateMachineArn": "${MonthlyStateMachineArn}",
+        "Name": "{% 'bootstrap-monthly-' & $states.input.project_name & '-' & $states.input.feature_spec_version & '-' & $replace($states.input.reference_month, '-', '') %}",
+        "Input": "{% {'project_name':$states.input.project_name,'feature_spec_version':$states.input.feature_spec_version,'reference_month':$states.input.reference_month} %}"
       },
       "Next": "PersistCheckpointReadiness",
       "Retry": [
         {
           "ErrorEquals": [
-            "SageMaker.AmazonSageMakerException",
+            "StepFunctions.ExecutionLimitExceeded",
             "ThrottlingException",
             "States.TaskFailed"
           ],
@@ -245,11 +243,22 @@
       "Catch": [
         {
           "ErrorEquals": [
+            "StepFunctions.ExecutionAlreadyExists"
+          ],
+          "Next": "PersistCheckpointReadiness"
+        },
+        {
+          "ErrorEquals": [
             "States.ALL"
           ],
           "Next": "PersistBootstrapFailed"
         }
       ]
+    },
+    "FailMissingReferenceMonthForMonthlyBootstrap": {
+      "Type": "Fail",
+      "Error": "BootstrapMonthlyContractViolation",
+      "Cause": "BOOTSTRAP_MONTHLY_INPUT_CONTRACT_VIOLATION: Missing required runtime parameter: reference_month"
     },
     "PersistCheckpointReadiness": {
       "Type": "Task",

@@ -47,7 +47,11 @@ def _spec():
     return parse_if_training_spec(
         {
             "feature_inputs": {"fg_a": {"s3_prefix": "s3://a"}, "fg_c": {"s3_prefix": "s3://c"}},
-            "output": {"artifacts_s3_prefix": "s3://artifacts", "report_s3_prefix": "s3://reports"},
+            "output": {
+                "artifacts_s3_prefix": "s3://artifacts",
+                "report_s3_prefix": "s3://reports",
+                "production_model_root": "s3://prod-models",
+            },
             "model": {"version": "v1"},
         }
     )

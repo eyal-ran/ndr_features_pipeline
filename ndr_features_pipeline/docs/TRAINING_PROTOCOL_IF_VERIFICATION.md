@@ -32,6 +32,7 @@ The review is code-level (no end-to-end AWS execution), consistent with expected
 | 17) DDB-owned orchestration target resolver with provenance | ✅ Implemented | IF training remediation/evaluation resolve enabled-branch targets only from `if_training.spec.orchestration_targets`; missing/invalid targets fail fast with `IFTrainingOrchestrationTargetContractError`, and selected target metadata is persisted into remediation/evaluation artifacts with `resolution_source=\"ddb_contract\"`. |
 | 18) Dependency readiness gate before expensive execution | ✅ Implemented | Dependency preflight checks are executed before training/remediation/evaluation and persisted in `dependency_readiness.json`; required dependency failures fail-fast. |
 | 19) Evaluation windows ordering/overlap contract validation | ✅ Implemented | Runtime/JobSpec windows are validated for ISO parseability, start<end, and non-overlapping sorted order before execution. |
+| 20) Recompute authoritative readiness at plan/remediate/pre-train gates | ✅ Implemented | Training readiness is recomputed from Batch Index at each critical gate, persisted as `training_readiness_manifest.v2` / `missing_windows_manifest.v2`, and compared against prior snapshots with deterministic drift deltas. |
 
 ## Additional Protocol Coverage
 
@@ -59,14 +60,18 @@ The protocol is **substantially implemented to a fine standard** with strong orc
 - Verify orchestration enforces explicit pre-train lifecycle ordering:
   `verify -> plan -> remediate -> reverify -> train`.
 - Verify train stage hard-fails when reverify status still reports unresolved required windows.
+- Verify plan/remediate/pre-train gate decisions always use freshly recomputed readiness snapshots (never stale precomputed manifests).
 - Verify `history_planner.json` exists and includes formula outputs (`w_15m`, `b_start`, `b_end`, `w_required`) and provenance (`from_job_spec` vs `from_default_constants`).
 - Verify readiness artifact set is complete and Batch Index-evidenced:
   - `training_readiness_manifest.json`,
   - `missing_windows_manifest.json`,
+  - `training_readiness_manifest.v2.json`,
+  - `missing_windows_manifest.v2.json`,
+  - `manifest_drift.<gate>.json`,
   - `remediation_plan.json`,
   - and each includes Batch Index selector/evidence fields for traceability.
 - Verify remediation stage records orchestrated actions for both branches (`backfill_15m`, `fg_b_baseline`) and executes deterministic manifest chunks with idempotent retries per chunk.
-- Verify verify/plan/remediate/reverify all exchange one canonical missing-window manifest (`if_training_missing_windows.v1`) with per-entry fields:
+- Verify verify/plan/remediate/reverify/train gates exchange one canonical missing-window manifest (`if_training_missing_windows.v2`, backward-compatible reader for `v1`) with per-entry fields:
   `artifact_family`, `ranges`, `source`, `ml_project_name`, `project_name`, `feature_spec_version`, `run_id`.
 - Verify schema-version guard fails fast on any manifest `contract_version` mismatch.
 - Verify remediation stage stores real execution IDs/ARNs and terminal states for both orchestrations.

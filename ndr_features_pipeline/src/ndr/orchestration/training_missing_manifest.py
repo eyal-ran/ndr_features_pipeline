@@ -5,15 +5,26 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
-CONTRACT_VERSION = "if_training_missing_windows.v1"
+CONTRACT_VERSION = "if_training_missing_windows.v2"
+SUPPORTED_CONTRACT_VERSIONS = {"if_training_missing_windows.v1", CONTRACT_VERSION}
 
 
-def canonical_manifest(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+def canonical_manifest(
+    entries: List[Dict[str, Any]],
+    *,
+    as_of_ts: str | None = None,
+    previous_as_of_ts: str | None = None,
+) -> Dict[str, Any]:
     """Build a canonical manifest payload with schema-version guard."""
-    return {
+    payload: Dict[str, Any] = {
         "contract_version": CONTRACT_VERSION,
         "entries": validate_manifest_entries(entries),
     }
+    if as_of_ts:
+        payload["as_of_ts"] = str(as_of_ts)
+    if previous_as_of_ts:
+        payload["previous_as_of_ts"] = str(previous_as_of_ts)
+    return payload
 
 
 def validate_manifest_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -43,14 +54,19 @@ def ensure_manifest(payload: Dict[str, Any] | None) -> Dict[str, Any]:
     """Validate manifest wrapper and enforce backward-incompatible version guard."""
     payload = payload or {}
     contract_version = payload.get("contract_version")
-    if contract_version != CONTRACT_VERSION:
+    if contract_version not in SUPPORTED_CONTRACT_VERSIONS:
         raise ValueError(
-            f"Unsupported missing-window manifest version '{contract_version}'. Expected '{CONTRACT_VERSION}'."
+            f"Unsupported missing-window manifest version '{contract_version}'. Expected one of {sorted(SUPPORTED_CONTRACT_VERSIONS)}."
         )
     entries = payload.get("entries")
     if not isinstance(entries, list):
         raise ValueError("Missing-window manifest must include list field 'entries'")
-    return {"contract_version": contract_version, "entries": validate_manifest_entries(entries)}
+    normalized = {"contract_version": contract_version, "entries": validate_manifest_entries(entries)}
+    if "as_of_ts" in payload:
+        normalized["as_of_ts"] = str(payload["as_of_ts"])
+    if "previous_as_of_ts" in payload:
+        normalized["previous_as_of_ts"] = str(payload["previous_as_of_ts"])
+    return normalized
 
 
 def from_missing_sources(
@@ -61,6 +77,8 @@ def from_missing_sources(
     feature_spec_version: str,
     ml_project_name: str,
     run_id: str,
+    as_of_ts: str | None = None,
+    previous_as_of_ts: str | None = None,
 ) -> Dict[str, Any]:
     """Build canonical entries from legacy missing-window detector outputs."""
     entries: List[Dict[str, Any]] = []
@@ -101,7 +119,7 @@ def from_missing_sources(
                 "run_id": run_id,
             }
         )
-    return canonical_manifest(entries)
+    return canonical_manifest(entries, as_of_ts=as_of_ts, previous_as_of_ts=previous_as_of_ts)
 
 
 def _normalize_ranges(ranges: List[Dict[str, str]]) -> List[Dict[str, str]]:

@@ -61,6 +61,7 @@ class TrainingOutputSpec:
 
     artifacts_s3_prefix: str
     report_s3_prefix: str
+    production_model_root: str
     model_image_prefix: str | None = None
 
 
@@ -258,6 +259,8 @@ def parse_if_training_spec(job_spec: Dict[str, Any]) -> IFTrainingSpec:
         raise ValueError("IF training output.artifacts_s3_prefix is required")
     if "report_s3_prefix" not in output_payload:
         raise ValueError("IF training output.report_s3_prefix is required")
+    if "production_model_root" not in output_payload:
+        raise ValueError("IF training output.production_model_root is required")
 
     model_payload = job_spec.get("model") or {}
     model_version = model_payload.get("version")
@@ -284,6 +287,7 @@ def parse_if_training_spec(job_spec: Dict[str, Any]) -> IFTrainingSpec:
         output=TrainingOutputSpec(
             artifacts_s3_prefix=output_payload["artifacts_s3_prefix"],
             report_s3_prefix=output_payload["report_s3_prefix"],
+            production_model_root=output_payload["production_model_root"],
             model_image_prefix=output_payload.get("model_image_prefix"),
         ),
         model_version=model_version,

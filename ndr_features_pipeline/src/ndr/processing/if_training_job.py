@@ -1034,17 +1034,24 @@ class IFTrainingJob(BaseProcessingJobRunner):
             )
             return
         report = self._load_final_training_report()
+        gates = report.get("validation_gates") or {}
+        if not gates or not all(bool((value or {}).get("passed")) for value in gates.values() if isinstance(value, dict)):
+            raise ValueError("IFTrainingProductionPromotionContractError: publish requires all validation gates to pass before promotion")
+        promoted = self._promote_production_artifact(
+            candidate_model_uri=str(report["final_model"]["model_image_copy_path"]),
+            expected_model_hash=str(report["final_model"].get("artifact_hash", "")),
+        )
         publication = {
-            "run_id": self.runtime_config.run_id,
-            "project_name": self.runtime_config.project_name,
-            "ml_project_name": self.runtime_config.ml_project_name,
-            "feature_spec_version": self.runtime_config.feature_spec_version,
-            "model_version": self.training_spec.model_version,
-            "published_at": self.runtime_config.execution_ts_iso,
-            "model_tar_s3_uri": report["final_model"]["model_image_copy_path"],
-            "model_hash": report["final_model"].get("artifact_hash"),
-            "validation_gates": report.get("validation_gates", {}),
+            "contract_version": "if_training_production_publication.v1",
             "status": "published",
+            "published_at": promoted["promoted_at"],
+            "source_run_id": self.runtime_config.run_id,
+            "production_model_uri": promoted["production_model_uri"],
+            "production_model_hash": promoted["production_model_hash"],
+            "production_model_version": promoted["production_model_version"],
+            "last_known_good_model_uri": promoted.get("last_known_good_model_uri"),
+            "last_known_good_model_hash": promoted.get("last_known_good_model_hash"),
+            "last_known_good_model_version": promoted.get("last_known_good_model_version"),
         }
         self._write_stage_status("publish", publication)
 
@@ -1087,27 +1094,19 @@ class IFTrainingJob(BaseProcessingJobRunner):
             )
             return
         publish = self._load_stage_status("publish")
-        gates = publish.get("validation_gates", {})
-        normalized_gates = {
-            name: value if isinstance(value, dict) else {"passed": bool(value)}
-            for name, value in gates.items()
-        }
-        if not normalized_gates:
-            normalized_gates = {
-                "min_relative_improvement": {"passed": True},
-                "max_alert_volume_delta": {"passed": True},
-                "max_score_drift": {"passed": True},
-            }
+        deploy_contract = self._resolve_deploy_contract(publish)
         deploy_status = self._maybe_deploy(
-            model_data_url=publish["model_tar_s3_uri"],
-            gates=normalized_gates,
+            model_data_url=deploy_contract["production_model_uri"],
+            gates={"production_contract_validated": {"passed": True}},
         )
         self._write_stage_status(
             "deploy",
             {
                 "run_id": self.runtime_config.run_id,
-                "model_tar_s3_uri": publish["model_tar_s3_uri"],
-                "gates": normalized_gates,
+                "production_model_uri": deploy_contract["production_model_uri"],
+                "production_model_hash": deploy_contract["production_model_hash"],
+                "production_model_version": deploy_contract["production_model_version"],
+                "deploy_pointer_target": deploy_contract["deploy_pointer_target"],
                 "deployment_status": deploy_status,
             },
         )
@@ -2727,9 +2726,167 @@ class IFTrainingJob(BaseProcessingJobRunner):
             info = tarfile.TarInfo(name="model.joblib")
             info.size = len(model_bytes)
             tar.addfile(info, file_data)
-        client.put_object(Bucket=bucket, Key=model_tar_key, Body=tar_buffer.getvalue())
+        tar_bytes = tar_buffer.getvalue()
+        client.put_object(Bucket=bucket, Key=model_tar_key, Body=tar_bytes)
 
-        return hashlib.sha256(model_bytes).hexdigest()
+        return hashlib.sha256(tar_bytes).hexdigest()
+
+    def _promote_production_artifact(self, *, candidate_model_uri: str, expected_model_hash: str) -> Dict[str, Any]:
+        """Promote a validated candidate model tarball to immutable production location."""
+        import boto3
+
+        if not candidate_model_uri.startswith("s3://"):
+            raise ValueError("IFTrainingProductionPromotionContractError: candidate_model_uri must be an s3:// URI")
+        if not expected_model_hash:
+            raise ValueError("IFTrainingProductionPromotionContractError: expected_model_hash is required")
+        source_bucket, source_key = _split_s3_uri(candidate_model_uri)
+        source_hash = self._hash_s3_object(source_bucket, source_key)
+        if source_hash != expected_model_hash:
+            raise ValueError(
+                "IFTrainingProductionPromotionHashMismatchError: "
+                f"source artifact hash mismatch expected={expected_model_hash} actual={source_hash}"
+            )
+
+        target_bucket, target_root = _split_s3_uri(self.training_spec.output.production_model_root)
+        target_key = (
+            f"{target_root.rstrip('/')}/model_version={self.training_spec.model_version}/"
+            f"artifact_hash={expected_model_hash}/model.tar.gz"
+        )
+        client = boto3.client("s3")
+        client.copy_object(
+            Bucket=target_bucket,
+            Key=target_key,
+            CopySource={"Bucket": source_bucket, "Key": source_key},
+        )
+        promoted_hash = self._hash_s3_object(target_bucket, target_key)
+        if promoted_hash != expected_model_hash:
+            raise ValueError(
+                "IFTrainingProductionPromotionHashMismatchError: "
+                f"promoted artifact hash mismatch expected={expected_model_hash} actual={promoted_hash}"
+            )
+        record = self._write_production_registry_pointer(
+            production_model_uri=f"s3://{target_bucket}/{target_key}",
+            production_model_hash=promoted_hash,
+            production_model_version=self.training_spec.model_version,
+        )
+        return {
+            "production_model_uri": record["production_model_uri"],
+            "production_model_hash": record["production_model_hash"],
+            "production_model_version": record["production_model_version"],
+            "promoted_at": record["updated_at"],
+            "last_known_good_model_uri": record.get("last_known_good_model_uri"),
+            "last_known_good_model_hash": record.get("last_known_good_model_hash"),
+            "last_known_good_model_version": record.get("last_known_good_model_version"),
+        }
+
+    def _hash_s3_object(self, bucket: str, key: str) -> str:
+        """Compute SHA-256 for an S3 object."""
+        import boto3
+
+        response = boto3.client("s3").get_object(Bucket=bucket, Key=key)
+        data = response["Body"].read()
+        return hashlib.sha256(data).hexdigest()
+
+    def _production_registry_key(self) -> Dict[str, str]:
+        return {
+            "project_name": self.runtime_config.project_name,
+            "job_name_version": f"if_training_production_registry#{self.runtime_config.feature_spec_version}",
+        }
+
+    def _write_production_registry_pointer(
+        self,
+        *,
+        production_model_uri: str,
+        production_model_hash: str,
+        production_model_version: str,
+    ) -> Dict[str, Any]:
+        """Persist deterministic production + last-known-good pointers in control-plane DDB."""
+        import boto3
+
+        table_name = (self.runtime_config.mlp_config_table_name or "").strip()
+        if not table_name:
+            raise ValueError("IFTrainingProductionPromotionContractError: missing mlp_config_table_name runtime parameter")
+        table = boto3.resource("dynamodb").Table(table_name)
+        key = self._production_registry_key()
+        existing = table.get_item(Key=key).get("Item") or {}
+        previous_uri = str(existing.get("production_model_uri", "")).strip()
+        previous_hash = str(existing.get("production_model_hash", "")).strip()
+        previous_version = str(existing.get("production_model_version", "")).strip()
+        payload = {
+            "contract_version": "if_training_production_registry.v1",
+            "project_name": self.runtime_config.project_name,
+            "feature_spec_version": self.runtime_config.feature_spec_version,
+            "ml_project_name": self.runtime_config.ml_project_name,
+            "production_model_uri": production_model_uri,
+            "production_model_hash": production_model_hash,
+            "production_model_version": production_model_version,
+            "updated_at": self.runtime_config.execution_ts_iso,
+            "source_run_id": self.runtime_config.run_id,
+        }
+        if previous_uri and previous_uri != production_model_uri:
+            payload["last_known_good_model_uri"] = previous_uri
+            payload["last_known_good_model_hash"] = previous_hash
+            payload["last_known_good_model_version"] = previous_version
+        else:
+            payload["last_known_good_model_uri"] = str(existing.get("last_known_good_model_uri", "")).strip()
+            payload["last_known_good_model_hash"] = str(existing.get("last_known_good_model_hash", "")).strip()
+            payload["last_known_good_model_version"] = str(existing.get("last_known_good_model_version", "")).strip()
+        table.put_item(Item={**key, **payload})
+        return payload
+
+    def _restore_last_known_good_pointer(self) -> Dict[str, Any]:
+        """Restore production pointer from stored last-known-good contract."""
+        import boto3
+
+        table_name = (self.runtime_config.mlp_config_table_name or "").strip()
+        if not table_name:
+            raise ValueError("IFTrainingProductionPromotionContractError: missing mlp_config_table_name runtime parameter")
+        table = boto3.resource("dynamodb").Table(table_name)
+        key = self._production_registry_key()
+        current = table.get_item(Key=key).get("Item") or {}
+        lkg_uri = str(current.get("last_known_good_model_uri", "")).strip()
+        lkg_hash = str(current.get("last_known_good_model_hash", "")).strip()
+        lkg_version = str(current.get("last_known_good_model_version", "")).strip()
+        if not (lkg_uri and lkg_hash and lkg_version):
+            raise ValueError("IFTrainingProductionRollbackContractError: last-known-good pointer is not available")
+        restored = self._write_production_registry_pointer(
+            production_model_uri=lkg_uri,
+            production_model_hash=lkg_hash,
+            production_model_version=lkg_version,
+        )
+        restored["rollback_restored"] = True
+        return restored
+
+    def _resolve_deploy_contract(self, publish_payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Resolve deploy input contract and enforce production-only URI usage."""
+        target = str((publish_payload.get("deploy_pointer_target") or "production")).strip().lower()
+        if target not in {"production", "last_known_good"}:
+            raise ValueError(f"IFTrainingDeployContractError: unsupported deploy_pointer_target={target}")
+        if target == "last_known_good":
+            publish_payload = {
+                "production_model_uri": publish_payload.get("last_known_good_model_uri"),
+                "production_model_hash": publish_payload.get("last_known_good_model_hash"),
+                "production_model_version": publish_payload.get("last_known_good_model_version"),
+            }
+        uri = str(publish_payload.get("production_model_uri", "")).strip()
+        model_hash = str(publish_payload.get("production_model_hash", "")).strip()
+        version = str(publish_payload.get("production_model_version", "")).strip()
+        if not (uri and model_hash and version):
+            raise ValueError("IFTrainingDeployContractError: publish contract must include production_model_uri/hash/version")
+        expected_root = self.training_spec.output.production_model_root.rstrip("/") + "/"
+        if not uri.startswith(expected_root):
+            raise ValueError(
+                "IFTrainingDeployNonProductionArtifactError: "
+                f"uri={uri} does not belong to production_model_root={self.training_spec.output.production_model_root}"
+            )
+        if "/model_version=" not in uri or "/artifact_hash=" not in uri:
+            raise ValueError("IFTrainingDeployContractError: production_model_uri must include immutable model_version and artifact_hash path segments")
+        return {
+            "production_model_uri": uri,
+            "production_model_hash": model_hash,
+            "production_model_version": version,
+            "deploy_pointer_target": target,
+        }
 
 
 def _safe_create_experiment(client, experiment_name: str) -> None:

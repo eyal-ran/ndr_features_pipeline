@@ -244,13 +244,21 @@ It includes:
    - Purpose: train/validate/refit, persist artifacts, write final report and SUCCESS marker.
 5. `ModelPublishStep`
    - Runs: `python -m ndr.scripts.run_if_training --stage publish`
-   - Purpose: persist publication metadata derived from final report for deterministic downstream lifecycle state.
+   - Purpose: execute deterministic production artifact promotion contract:
+     - verifies source model tar hash from final report (`artifact_hash`) before promotion;
+     - copies to immutable production key under `output.production_model_root/model_version=<version>/artifact_hash=<sha256>/model.tar.gz`;
+     - writes durable production pointer metadata (current + last-known-good) to MLP control-plane DDB registry;
+     - emits only production publish contract fields (`production_model_uri/hash/version`, publish timestamp, source run id, LKG pointer fields).
 6. `ModelAttributesStep`
    - Runs: `python -m ndr.scripts.run_if_training --stage attributes`
    - Purpose: persist model attributes payload (join/preprocessing/window metadata) with idempotent run key.
 7. `ModelDeployStep`
    - Runs: `python -m ndr.scripts.run_if_training --stage deploy`
-   - Purpose: perform deployment gate evaluation + deployment call and persist rollout status artifact.
+   - Purpose: consume production publish contract directly and deploy only validated production artifact URIs.
+   - Guardrails:
+     - rejects non-production URIs (outside configured `output.production_model_root`);
+     - rejects mutable URIs that do not contain immutable `model_version` + `artifact_hash` path segments;
+     - supports explicit last-known-good pointer deployment target (`deploy_pointer_target=last_known_good`).
 
 ### Item 26 runtime behavior (strict closure)
 - All IF training stages execute through the same runtime resolver path in `run_if_training`/`if_training_job`, ensuring DDB-first target selection and dependency-readiness preflight checks before expensive train/remediate/evaluation operations.

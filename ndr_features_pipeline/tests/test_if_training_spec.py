@@ -4,7 +4,7 @@ from ndr.processing.if_training_spec import parse_if_training_spec
 def test_parse_if_training_spec_requires_fg_inputs():
     spec = {
         "feature_inputs": {"fg_a": {"s3_prefix": "s3://fg-a"}},
-        "output": {"artifacts_s3_prefix": "s3://a", "report_s3_prefix": "s3://r"},
+        "output": {"artifacts_s3_prefix": "s3://a", "report_s3_prefix": "s3://r", "production_model_root": "s3://prod/models"},
         "model": {"version": "v1"},
     }
     try:
@@ -13,6 +13,23 @@ def test_parse_if_training_spec_requires_fg_inputs():
         assert "feature_inputs.fg_c" in str(exc)
     else:
         raise AssertionError("Expected missing fg_c error")
+
+
+def test_parse_if_training_spec_requires_production_model_root():
+    spec = {
+        "feature_inputs": {
+            "fg_a": {"s3_prefix": "s3://fg-a"},
+            "fg_c": {"s3_prefix": "s3://fg-c"},
+        },
+        "output": {"artifacts_s3_prefix": "s3://a", "report_s3_prefix": "s3://r"},
+        "model": {"version": "v1"},
+    }
+    try:
+        parse_if_training_spec(spec)
+    except ValueError as exc:
+        assert "output.production_model_root" in str(exc)
+    else:
+        raise AssertionError("Expected missing production_model_root error")
 
 
 def test_parse_if_training_spec_happy_path_defaults():
@@ -24,6 +41,7 @@ def test_parse_if_training_spec_happy_path_defaults():
         "output": {
             "artifacts_s3_prefix": "s3://models/if_training",
             "report_s3_prefix": "s3://models/reports",
+            "production_model_root": "s3://models/production",
         },
         "model": {"version": "v2"},
     }
@@ -54,6 +72,7 @@ def test_parse_if_training_spec_uses_validation_gate_improvement():
         "output": {
             "artifacts_s3_prefix": "s3://models/if_training",
             "report_s3_prefix": "s3://models/reports",
+            "production_model_root": "s3://models/production",
         },
         "model": {"version": "v2"},
         "tuning": {"min_relative_improvement": 0.01},
@@ -76,6 +95,7 @@ def test_parse_if_training_cost_guardrail_override():
         "output": {
             "artifacts_s3_prefix": "s3://models/if_training",
             "report_s3_prefix": "s3://models/reports",
+            "production_model_root": "s3://models/production",
         },
         "model": {"version": "v2"},
         "cost_guardrail": {"option1_monthly_budget_usd": 50.0, "option4_batch_minutes": 10.0},
@@ -94,6 +114,7 @@ def test_parse_if_training_imputation_override():
         "output": {
             "artifacts_s3_prefix": "s3://models/if_training",
             "report_s3_prefix": "s3://models/reports",
+            "production_model_root": "s3://models/production",
         },
         "model": {"version": "v2"},
         "preprocessing": {"imputation_strategy": "constant", "imputation_constant": -1.0},
@@ -112,6 +133,7 @@ def test_parse_if_training_reliability_override():
         "output": {
             "artifacts_s3_prefix": "s3://models/if_training",
             "report_s3_prefix": "s3://models/reports",
+            "production_model_root": "s3://models/production",
         },
         "model": {"version": "v2"},
         "reliability": {"min_partition_coverage_ratio": 0.9, "min_rows_per_window": 40, "max_rows_per_join_key": 3.0},
@@ -131,6 +153,7 @@ def test_parse_if_training_evaluation_windows_and_toggles():
         "output": {
             "artifacts_s3_prefix": "s3://models/if_training",
             "report_s3_prefix": "s3://models/reports",
+            "production_model_root": "s3://models/production",
         },
         "model": {"version": "v2"},
         "evaluation": {

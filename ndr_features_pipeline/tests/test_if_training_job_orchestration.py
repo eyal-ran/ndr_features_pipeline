@@ -68,6 +68,7 @@ def _make_spec():
             "output": {
                 "artifacts_s3_prefix": "s3://models/if_training",
                 "report_s3_prefix": "s3://models/reports",
+                "production_model_root": "s3://models/production",
             },
             "model": {"version": "v2"},
         }
@@ -471,12 +472,25 @@ def test_publish_stage_writes_publication_metadata(monkeypatch):
     )
     writes = {}
     monkeypatch.setattr(job, "_write_stage_status", lambda stage, payload: writes.update({"stage": stage, "payload": payload}))
+    monkeypatch.setattr(
+        job,
+        "_promote_production_artifact",
+        lambda **_kwargs: {
+            "production_model_uri": "s3://models/production/model_version=v2/artifact_hash=abc123/model.tar.gz",
+            "production_model_hash": "abc123",
+            "production_model_version": "v2",
+            "promoted_at": "2025-01-01T00:00:00Z",
+            "last_known_good_model_uri": "s3://models/production/model_version=v1/artifact_hash=old/model.tar.gz",
+            "last_known_good_model_hash": "old",
+            "last_known_good_model_version": "v1",
+        },
+    )
 
     job.run()
 
     assert writes["stage"] == "publish"
     assert writes["payload"]["status"] == "published"
-    assert writes["payload"]["model_tar_s3_uri"] == "s3://bucket/model.tar.gz"
+    assert writes["payload"]["production_model_uri"].startswith("s3://models/production/")
 
 
 def test_deploy_stage_invokes_maybe_deploy_with_published_model(monkeypatch):
@@ -486,8 +500,9 @@ def test_deploy_stage_invokes_maybe_deploy_with_published_model(monkeypatch):
         job,
         "_load_stage_status",
         lambda *_args, **_kwargs: {
-            "model_tar_s3_uri": "s3://bucket/model.tar.gz",
-            "validation_gates": {"max_score_drift": {"passed": True}},
+            "production_model_uri": "s3://models/production/model_version=v2/artifact_hash=abc123/model.tar.gz",
+            "production_model_hash": "abc123",
+            "production_model_version": "v2",
         },
     )
     observed = {}
@@ -500,8 +515,77 @@ def test_deploy_stage_invokes_maybe_deploy_with_published_model(monkeypatch):
 
     job.run()
 
-    assert observed["deploy_call"]["model_data_url"] == "s3://bucket/model.tar.gz"
+    assert observed["deploy_call"]["model_data_url"] == "s3://models/production/model_version=v2/artifact_hash=abc123/model.tar.gz"
     assert observed["stage"] == "deploy"
+
+
+def test_publish_stage_fails_fast_on_hash_mismatch(monkeypatch):
+    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("publish", mode="production"), _make_spec())
+    monkeypatch.setattr(
+        job,
+        "_load_final_training_report",
+        lambda: {
+            "final_model": {"model_image_copy_path": "s3://bucket/model.tar.gz", "artifact_hash": "abc123"},
+            "validation_gates": {"min_relative_improvement": {"passed": True}},
+        },
+    )
+    monkeypatch.setattr(
+        job,
+        "_promote_production_artifact",
+        lambda **_kwargs: (_ for _ in ()).throw(ValueError("IFTrainingProductionPromotionHashMismatchError: mismatch")),
+    )
+    with pytest.raises(ValueError, match="IFTrainingProductionPromotionHashMismatchError"):
+        job.run()
+
+
+def test_deploy_stage_refuses_non_production_uri():
+    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("deploy", mode="production"), _make_spec())
+    with pytest.raises(ValueError, match="IFTrainingDeployNonProductionArtifactError"):
+        job._resolve_deploy_contract(
+            {
+                "production_model_uri": "s3://other/location/model.tar.gz",
+                "production_model_hash": "abc",
+                "production_model_version": "v2",
+            }
+        )
+
+
+def test_restore_last_known_good_pointer(monkeypatch):
+    job = IFTrainingJob(_DummyDF(), _runtime_with_stage("publish", mode="production"), _make_spec())
+    captured = {}
+    monkeypatch.setattr(
+        job,
+        "_write_production_registry_pointer",
+        lambda **kwargs: captured.update(kwargs) or {
+            "production_model_uri": kwargs["production_model_uri"],
+            "production_model_hash": kwargs["production_model_hash"],
+            "production_model_version": kwargs["production_model_version"],
+            "updated_at": "2025-01-01T00:00:00Z",
+            "last_known_good_model_uri": "",
+            "last_known_good_model_hash": "",
+            "last_known_good_model_version": "",
+        },
+    )
+
+    class _FakeTable:
+        @staticmethod
+        def get_item(Key):  # pylint: disable=unused-argument
+            return {"Item": {"last_known_good_model_uri": "s3://models/production/model_version=v1/artifact_hash=old/model.tar.gz", "last_known_good_model_hash": "old", "last_known_good_model_version": "v1"}}
+
+    class _FakeDDB:
+        @staticmethod
+        def Table(_name):
+            return _FakeTable()
+
+    class _FakeBoto3:
+        @staticmethod
+        def resource(_name):
+            return _FakeDDB()
+
+    monkeypatch.setitem(sys.modules, "boto3", _FakeBoto3())
+    restored = job._restore_last_known_good_pointer()
+    assert restored["rollback_restored"] is True
+    assert captured["production_model_version"] == "v1"
 
 
 def test_non_production_publish_attributes_deploy_stages_skip(monkeypatch):

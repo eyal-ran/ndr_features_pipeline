@@ -180,14 +180,14 @@ It includes:
    - Script: `src/ndr/scripts/run_machine_inventory_unload.py`
    - Second-hand processing entrypoint: `run_machine_inventory_unload_from_runtime_config`
    - Processing module: `src/ndr/processing/machine_inventory_unload_job.py`
-   - Processing purpose: unload active machine inventory (Redshift -> S3).
+   - Processing purpose: unload active machine inventory (Redshift -> S3), validate monthly snapshot manifest, and atomically advance DPP pointer `project_parameters.ip_machine_mapping_s3_prefix` to the validated `snapshot_month=YYYY-MM` root before monthly flow proceeds to FG-B.
 
 ### Pipeline triggered at `StartFGBBaselinePipeline`: `${PipelineNameFGB}`
 - **Implementation state:** Implemented.
 - **Implemented pipeline function:** `build_fg_b_baseline_pipeline`.
 - **Pipeline code location:** `src/ndr/pipeline/sagemaker_pipeline_definitions_unified_with_fgc.py`.
 - **Purpose:** compute FG-B host/segment/pair baselines over configured windows/horizons.
-- **Publication contract:** FG-B pipeline now acts as the canonical monthly publisher for FG-C consumers by writing deterministic overwrite snapshots directly under canonical prefixes (`/host`, `/segment`, `/ip_metadata`, `/pair/host`, `/pair/segment`) partitioned by `feature_spec_version` + `baseline_horizon`.
+- **Publication contract:** FG-B pipeline now acts as the canonical monthly publisher for FG-C consumers by writing deterministic overwrite snapshots directly under canonical prefixes (`/host`, `/segment`, `/ip_metadata`, `/pair/host`, `/pair/segment`) partitioned by `feature_spec_version` + `baseline_horizon` + `baseline_month` (without altering `baseline_horizon` semantics used by FG-C and existing consumers).
 
 #### Pipeline steps and run chain
 1. `FGBaselineBuilderStep`

@@ -58,7 +58,7 @@ The system is orchestrated through Step Functions and SageMaker Pipelines. Pipel
 - Entrypoint: `ndr.scripts.run_fg_b_builder`
 - Job: `src/ndr/processing/fg_b_builder_job.py`
 - Purpose: computes baseline outputs (host/segment/pair-oriented baseline datasets) for configured horizons.
-- Publication semantics: publishes canonical FG-B artifacts directly under `fg_b_output.s3_prefix` (`/host`, `/segment`, `/ip_metadata`, `/pair/host`, `/pair/segment`) with deterministic overwrite by (`feature_spec_version`, `baseline_horizon`).
+- Publication semantics: publishes canonical FG-B artifacts directly under `fg_b_output.s3_prefix` (`/host`, `/segment`, `/ip_metadata`, `/pair/host`, `/pair/segment`) with deterministic overwrite by (`feature_spec_version`, `baseline_horizon`, `baseline_month`), where `baseline_month` is derived from `reference_time_iso` as `YYYY-MM` and validated as required.
 - Publication observability: emits `publication_metadata` records with baseline bounds plus deterministic `created_at`/`created_date` derived from the monthly reference time.
 - Runtime args include:
   - `--project-name`
@@ -73,6 +73,8 @@ The system is orchestrated through Step Functions and SageMaker Pipelines. Pipel
   - Runtime now requires `--reference-month` (`YYYY/MM`).
   - Execution is UNLOAD-only (no query-result fallback path).
   - Redshift rows are unloaded to a staging S3 prefix, downloaded to local FS within the processing container, then written to the canonical `snapshot_month=YYYY-MM` partition for deterministic publish semantics.
+  - Each snapshot now emits canonical schema fields (`ip_address`, `machine_name`, `snapshot_month`, `mapping_contract_version`) plus `_snapshot_manifest.json` and `_SUCCESS` markers.
+  - After snapshot validation, the producer atomically updates DPP `project_parameters.ip_machine_mapping_s3_prefix` to the validated monthly snapshot root and records `ip_machine_mapping_previous_s3_prefix` for deterministic rollback.
 
 ## Model-scoring and post-processing path
 

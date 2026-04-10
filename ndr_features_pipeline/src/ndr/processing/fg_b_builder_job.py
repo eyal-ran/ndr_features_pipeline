@@ -18,6 +18,7 @@ from __future__ import annotations
 import sys
 import traceback
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 
 from pyspark.sql import SparkSession, DataFrame
@@ -873,19 +874,36 @@ class FGBaselineBuilderJob(BaseRunner):
         """Execute the load ip machine mapping stage of the workflow."""
         mapping_cfg = self.job_spec.get("ip_machine_mapping", {})
         prefix_key = mapping_cfg.get("s3_prefix_key", "ip_machine_mapping_s3_prefix")
-        mapping_prefix = self.project_parameters.get(prefix_key)
+        mapping_prefix = str(self.project_parameters.get(prefix_key, "")).strip()
         if not mapping_prefix:
             raise ValueError(
-                f"Missing IP-to-machine-name mapping prefix in project parameters under key '{prefix_key}'."
+                f"FG_B_MAPPING_POINTER_MISSING: Missing IP-to-machine-name mapping prefix in project parameters under key '{prefix_key}'."
+            )
+        if "snapshot_month=" not in mapping_prefix:
+            raise ValueError(
+                "FG_B_MAPPING_POINTER_INVALID: "
+                f"Expected canonical monthly snapshot pointer containing 'snapshot_month=' but received '{mapping_prefix}'."
             )
         ip_column = mapping_cfg.get("ip_column", "ip_address")
         machine_column = mapping_cfg.get("machine_name_column", "machine_name")
+        expected_contract_version = mapping_cfg.get("contract_version", "machine_inventory_mapping.v1")
         mapping_df = (
             self.spark.read.parquet(mapping_prefix)
-            .select(F.col(ip_column).alias("host_ip"), F.col(machine_column).alias(machine_column))
+            .select(
+                F.col(ip_column).alias("host_ip"),
+                F.col(machine_column).alias(machine_column),
+                F.col("snapshot_month").alias("snapshot_month"),
+                F.col("mapping_contract_version").alias("mapping_contract_version"),
+            )
             .dropna(subset=["host_ip"])
             .dropDuplicates(["host_ip"])
         )
+        contract_versions = [row.mapping_contract_version for row in mapping_df.select("mapping_contract_version").distinct().collect()]
+        if contract_versions != [expected_contract_version]:
+            raise ValueError(
+                "FG_B_MAPPING_SCHEMA_VERSION_MISMATCH: "
+                f"Expected mapping_contract_version='{expected_contract_version}' but found {contract_versions}."
+            )
         return mapping_df, machine_column
 
     # ------------------------------------------------------------------ #
@@ -909,6 +927,7 @@ class FGBaselineBuilderJob(BaseRunner):
         base_prefix = s3_prefix.rstrip("/")
 
         feature_spec_version = self.runtime_config.feature_spec_version
+        baseline_month = self._derive_baseline_month()
 
         LOGGER.info(
             "Writing FG-B host-level baselines.",
@@ -921,12 +940,16 @@ class FGBaselineBuilderJob(BaseRunner):
 
         metrics = self._extract_baseline_metrics(host_baselines)
         host_manifest = build_fg_b_host_manifest(metrics)
-        host_out = host_baselines.withColumn("feature_spec_version", F.lit(feature_spec_version))
+        host_out = (
+            host_baselines
+            .withColumn("feature_spec_version", F.lit(feature_spec_version))
+            .withColumn("baseline_month", F.lit(baseline_month))
+        )
         host_out = enforce_schema(host_out, host_manifest, "fg_b_host", LOGGER)
         self.s3_writer.write_parquet(
             df=host_out,
             base_path=f"{base_prefix}/host/",
-            partition_cols=["feature_spec_version", "baseline_horizon"],
+            partition_cols=["feature_spec_version", "baseline_horizon", "baseline_month"],
             mode="overwrite",
         )
 
@@ -940,12 +963,16 @@ class FGBaselineBuilderJob(BaseRunner):
         )
 
         segment_manifest = build_fg_b_segment_manifest(metrics)
-        segment_out = segment_baselines.withColumn("feature_spec_version", F.lit(feature_spec_version))
+        segment_out = (
+            segment_baselines
+            .withColumn("feature_spec_version", F.lit(feature_spec_version))
+            .withColumn("baseline_month", F.lit(baseline_month))
+        )
         segment_out = enforce_schema(segment_out, segment_manifest, "fg_b_segment", LOGGER)
         self.s3_writer.write_parquet(
             df=segment_out,
             base_path=f"{base_prefix}/segment/",
-            partition_cols=["feature_spec_version", "baseline_horizon"],
+            partition_cols=["feature_spec_version", "baseline_horizon", "baseline_month"],
             mode="overwrite",
         )
 
@@ -959,12 +986,16 @@ class FGBaselineBuilderJob(BaseRunner):
         )
 
         ip_manifest = build_fg_b_ip_metadata_manifest()
-        ip_metadata_out = ip_metadata.withColumn("feature_spec_version", F.lit(feature_spec_version))
+        ip_metadata_out = (
+            ip_metadata
+            .withColumn("feature_spec_version", F.lit(feature_spec_version))
+            .withColumn("baseline_month", F.lit(baseline_month))
+        )
         ip_metadata_out = enforce_schema(ip_metadata_out, ip_manifest, "fg_b_ip_metadata", LOGGER)
         self.s3_writer.write_parquet(
             df=ip_metadata_out,
             base_path=f"{base_prefix}/ip_metadata/",
-            partition_cols=["feature_spec_version", "baseline_horizon"],
+            partition_cols=["feature_spec_version", "baseline_horizon", "baseline_month"],
             mode="overwrite",
         )
 
@@ -974,12 +1005,16 @@ class FGBaselineBuilderJob(BaseRunner):
                 extra={"prefix": base_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
             )
             pair_manifest = build_pair_rarity_manifest(["host_ip", "dst_ip", "dst_port"])
-            pair_out = pair_host_baselines.withColumn("feature_spec_version", F.lit(feature_spec_version))
+            pair_out = (
+                pair_host_baselines
+                .withColumn("feature_spec_version", F.lit(feature_spec_version))
+                .withColumn("baseline_month", F.lit(baseline_month))
+            )
             pair_out = enforce_schema(pair_out, pair_manifest, "fg_b_pair_host", LOGGER)
             self.s3_writer.write_parquet(
                 df=pair_out,
                 base_path=f"{base_prefix}/pair/host/",
-                partition_cols=["feature_spec_version", "baseline_horizon"],
+                partition_cols=["feature_spec_version", "baseline_horizon", "baseline_month"],
                 mode="overwrite",
             )
 
@@ -989,12 +1024,16 @@ class FGBaselineBuilderJob(BaseRunner):
                 extra={"prefix": base_prefix, "horizon": horizon, "feature_spec_version": feature_spec_version},
             )
             pair_manifest = build_pair_rarity_manifest(["segment_id", "dst_ip", "dst_port"])
-            pair_out = pair_segment_baselines.withColumn("feature_spec_version", F.lit(feature_spec_version))
+            pair_out = (
+                pair_segment_baselines
+                .withColumn("feature_spec_version", F.lit(feature_spec_version))
+                .withColumn("baseline_month", F.lit(baseline_month))
+            )
             pair_out = enforce_schema(pair_out, pair_manifest, "fg_b_pair_segment", LOGGER)
             self.s3_writer.write_parquet(
                 df=pair_out,
                 base_path=f"{base_prefix}/pair/segment/",
-                partition_cols=["feature_spec_version", "baseline_horizon"],
+                partition_cols=["feature_spec_version", "baseline_horizon", "baseline_month"],
                 mode="overwrite",
             )
 
@@ -1010,13 +1049,27 @@ class FGBaselineBuilderJob(BaseRunner):
                     baseline_end_ts=bounds["baseline_end_ts"],
                 )
             ]
-        )
+        ).withColumn("baseline_month", F.lit(baseline_month))
         self.s3_writer.write_parquet(
             df=publish_metadata,
             base_path=f"{base_prefix}/publication_metadata/",
-            partition_cols=["feature_spec_version", "baseline_horizon"],
+            partition_cols=["feature_spec_version", "baseline_horizon", "baseline_month"],
             mode="overwrite",
         )
+
+    def _derive_baseline_month(self) -> str:
+        """Derive canonical baseline_month partition from runtime reference time."""
+        try:
+            parsed = datetime.fromisoformat(self.runtime_config.reference_time_iso.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(
+                "FG_B_BASELINE_MONTH_INVALID: "
+                f"reference_time_iso must be ISO8601 (received '{self.runtime_config.reference_time_iso}')."
+            ) from exc
+        baseline_month = parsed.strftime("%Y-%m")
+        if len(baseline_month) != 7 or baseline_month[4] != "-":
+            raise ValueError(f"FG_B_BASELINE_MONTH_INVALID: Derived malformed baseline_month='{baseline_month}'.")
+        return baseline_month
 
     @staticmethod
     def _extract_baseline_metrics(df: DataFrame) -> List[str]:

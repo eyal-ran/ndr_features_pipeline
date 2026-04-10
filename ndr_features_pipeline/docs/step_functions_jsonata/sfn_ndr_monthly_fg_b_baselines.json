@@ -93,7 +93,7 @@
       "Choices": [
         {
           "Condition": "{% $inventory_pipeline_status = 'Succeeded' %}",
-          "Next": "BuildBaselineDependencyCheckManifest"
+          "Next": "ComputeBaselineDependencyReadiness"
         },
         {
           "Condition": "{% ($inventory_pipeline_status = 'Executing' or $inventory_pipeline_status = 'Stopping') and $inventory_poll_attempt < 120 %}",
@@ -117,8 +117,8 @@
     "BuildBaselineDependencyCheckManifest": {
       "Type": "Pass",
       "Assign": {
-        "baseline_dependency_manifest": "{% {'contract_version': 'monthly_fg_b_readiness.v1', 'required_families': ['fg_a'], 'missing_ranges': ($exists($states.input.baseline_dependency_manifest.missing_ranges) ? $states.input.baseline_dependency_manifest.missing_ranges : []), 'check_status': ($count($exists($states.input.baseline_dependency_manifest.missing_ranges) ? $states.input.baseline_dependency_manifest.missing_ranges : []) > 0 ? 'missing' : 'ready'), 'check_reason': ($count($exists($states.input.baseline_dependency_manifest.missing_ranges) ? $states.input.baseline_dependency_manifest.missing_ranges : []) > 0 ? 'dependency_missing:fg_a_history' : 'ready')} %}",
-        "baseline_gate_cycle": 0
+        "baseline_dependency_manifest": "{% $exists($states.input.monthly_fg_b_readiness) ? {'contract_version':'monthly_fg_b_readiness.v2','ready':($states.input.monthly_fg_b_readiness.ready = true),'required_families':$states.input.monthly_fg_b_readiness.required_families,'missing_ranges':$states.input.monthly_fg_b_readiness.missing_ranges,'decision_code':$states.input.monthly_fg_b_readiness.decision_code,'as_of_ts':$states.input.monthly_fg_b_readiness.as_of_ts} : $error('MONTHLY_READINESS_MANIFEST_MISSING','Computed monthly readiness manifest is required') %}",
+        "baseline_gate_cycle": "{% $exists($baseline_gate_cycle) ? $baseline_gate_cycle : 0 %}"
       },
       "Next": "CheckBaselineDependencies"
     },
@@ -126,11 +126,11 @@
       "Type": "Choice",
       "Choices": [
         {
-          "Condition": "{% $count($baseline_dependency_manifest.missing_ranges) = 0 %}",
+          "Condition": "{% $baseline_dependency_manifest.ready = true %}",
           "Next": "StartFGBBaselinePipeline"
         },
         {
-          "Condition": "{% $baseline_gate_cycle = 0 %}",
+          "Condition": "{% $baseline_dependency_manifest.ready = false and $baseline_gate_cycle = 0 %}",
           "Next": "BuildBaselineRemediationRequest"
         }
       ],
@@ -139,7 +139,7 @@
     "BuildBaselineRemediationRequest": {
       "Type": "Pass",
       "Assign": {
-        "baseline_remediation_request": "{% {'contract_version':'NdrBaselineRemediationRequest.v1','consumer':'monthly_baseline','project_name':$project_name,'feature_spec_version':$feature_spec_version,'reference_month':$reference_month,'required_families':['delta','fg_a'],'missing_ranges':$baseline_dependency_manifest.missing_ranges,'provenance':{'producer_flow':'monthly_fg_b_baselines','source_mode':'batch_index','request_id':$states.context.Execution.Id},'idempotency_key':($exists($states.input.baseline_dependency_manifest.idempotency_key) ? $states.input.baseline_dependency_manifest.idempotency_key : '0000000000000000000000000000000000000000000000000000000000000000')} %}",
+        "baseline_remediation_request": "{% {'contract_version':'NdrBaselineRemediationRequest.v1','consumer':'monthly_baseline','project_name':$project_name,'feature_spec_version':$feature_spec_version,'reference_month':$reference_month,'required_families':['delta','fg_a'],'missing_ranges':$baseline_dependency_manifest.missing_ranges,'provenance':{'producer_flow':'monthly_fg_b_baselines','source_mode':'batch_index','request_id':$states.context.Execution.Id},'idempotency_key':$append([$states.context.Execution.Id,$project_name,$feature_spec_version,$reference_month],':')} %}",
         "baseline_remediation_window": "{% {'start_ts': $min($baseline_dependency_manifest.missing_ranges.start_ts_iso), 'end_ts': $max($baseline_dependency_manifest.missing_ranges.end_ts_iso)} %}"
       },
       "Next": "InvokeBaselineDependencyRemediation"
@@ -174,20 +174,53 @@
           "BackoffRate": 2.0
         }
       ],
-      "Next": "RecheckBaselineDependencies"
+      "Next": "IncrementBaselineGateCycle"
     },
     "RecheckBaselineDependencies": {
-      "Type": "Pass",
-      "Assign": {
-        "baseline_dependency_manifest": "{% $exists($states.input.recheck_baseline_dependency_manifest.missing_ranges) ? {'contract_version':'monthly_fg_b_readiness.v1','required_families':['fg_a'],'missing_ranges':$states.input.recheck_baseline_dependency_manifest.missing_ranges,'check_status':($count($states.input.recheck_baseline_dependency_manifest.missing_ranges) > 0 ? 'missing' : 'ready'),'check_reason':($count($states.input.recheck_baseline_dependency_manifest.missing_ranges) > 0 ? 'dependency_missing:fg_a_history_after_remediation' : 'ready')} : {'contract_version':'monthly_fg_b_readiness.v1','required_families':['fg_a'],'missing_ranges':[],'check_status':'ready','check_reason':'ready'} %}",
-        "baseline_gate_cycle": 1
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
+      "Arguments": {
+        "PipelineName": "${PipelineNameMonthlyReadiness}",
+        "PipelineParameters": [
+          {
+            "Name": "ProjectName",
+            "Value": "{% $project_name %}"
+          },
+          {
+            "Name": "FeatureSpecVersion",
+            "Value": "{% $feature_spec_version %}"
+          },
+          {
+            "Name": "ReferenceMonth",
+            "Value": "{% $reference_month %}"
+          },
+          {
+            "Name": "ReadinessCycle",
+            "Value": "{% $string($baseline_gate_cycle) %}"
+          }
+        ]
       },
-      "Next": "CheckBaselineDependencies"
+      "Assign": {
+        "monthly_recheck_readiness_execution_arn": "{% $states.result.PipelineExecutionArn %}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "SageMaker.AmazonSageMakerException",
+            "ThrottlingException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 4,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "BuildBaselineDependencyCheckManifest"
     },
     "FailBaselineDependenciesUnresolved": {
       "Type": "Fail",
       "Error": "BaselineDependencyGateFailed",
-      "Cause": "Unresolved FG-A dependency after remediation; dependency_missing:fg_a_history"
+      "Cause": "MONTHLY_READINESS_UNRESOLVED_AFTER_REMEDIATION: Computed monthly readiness remained missing after remediation recheck"
     },
     "StartFGBBaselinePipeline": {
       "Type": "Task",
@@ -348,6 +381,54 @@
         "project_defaults": "{% $exists($states.result.Item.spec.M.defaults.M) ? $states.result.Item.spec.M.defaults.M : {} %}"
       },
       "Next": "ResolvePipelineRuntimeParams"
+    },
+    "ComputeBaselineDependencyReadiness": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
+      "Arguments": {
+        "PipelineName": "${PipelineNameMonthlyReadiness}",
+        "PipelineParameters": [
+          {
+            "Name": "ProjectName",
+            "Value": "{% $project_name %}"
+          },
+          {
+            "Name": "FeatureSpecVersion",
+            "Value": "{% $feature_spec_version %}"
+          },
+          {
+            "Name": "ReferenceMonth",
+            "Value": "{% $reference_month %}"
+          },
+          {
+            "Name": "ReadinessCycle",
+            "Value": "{% $string($baseline_gate_cycle) %}"
+          }
+        ]
+      },
+      "Assign": {
+        "monthly_readiness_execution_arn": "{% $states.result.PipelineExecutionArn %}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "SageMaker.AmazonSageMakerException",
+            "ThrottlingException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 4,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "BuildBaselineDependencyCheckManifest"
+    },
+    "IncrementBaselineGateCycle": {
+      "Type": "Pass",
+      "Assign": {
+        "baseline_gate_cycle": "{% $baseline_gate_cycle + 1 %}"
+      },
+      "Next": "RecheckBaselineDependencies"
     }
   }
 }

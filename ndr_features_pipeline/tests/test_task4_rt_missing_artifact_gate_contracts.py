@@ -23,13 +23,17 @@ def test_rt_missing_and_no_missing_branches_route_deterministically():
         for choice in states["FeaturesPipelineStatusChoice"]["Choices"]
         if choice["Condition"] == "{% $features_pipeline_status = 'Succeeded' %}"
     )
-    assert success["Next"] == "BuildRtArtifactReadinessManifest"
+    assert success["Next"] == "ComputeRtArtifactReadiness"
 
     gate = states["CheckRtArtifactReadiness"]
-    no_missing = next(choice for choice in gate["Choices"] if choice["Condition"] == "{% $count($rt_artifact_readiness_manifest.missing_ranges) = 0 %}")
+    no_missing = next(choice for choice in gate["Choices"] if choice["Condition"] == "{% $rt_artifact_readiness_manifest.ready = true %}")
     assert no_missing["Next"] == "Start15mDependentFeaturesPipeline"
 
-    missing_first_cycle = next(choice for choice in gate["Choices"] if choice["Condition"] == "{% $rt_readiness_cycle = 0 %}")
+    missing_first_cycle = next(
+        choice
+        for choice in gate["Choices"]
+        if choice["Condition"] == "{% $rt_artifact_readiness_manifest.ready = false and $rt_readiness_cycle = 0 %}"
+    )
     assert missing_first_cycle["Next"] == "BuildRtBackfillRemediationRequest"
     assert gate["Default"] == "FailRtArtifactsUnresolvedAfterRemediation"
 
@@ -40,7 +44,7 @@ def test_rt_remediation_invocation_uses_backfill_contract_payload_and_revalidate
     request_expr = states["BuildRtBackfillRemediationRequest"]["Assign"]["rt_backfill_remediation_request"]
     assert "NdrBackfillRequest.v1" in request_expr
     assert "'consumer':'realtime'" in request_expr
-    assert "'requested_families':$distinct($rt_artifact_readiness_manifest.missing_ranges.family)" in request_expr
+    assert "'requested_families':$rt_artifact_readiness_manifest.required_families" in request_expr
     assert "'idempotency_key':$rt_artifact_readiness_manifest.idempotency_key" in request_expr
 
     invoke = states["InvokeRtBackfillRemediation"]
@@ -49,8 +53,9 @@ def test_rt_remediation_invocation_uses_backfill_contract_payload_and_revalidate
     assert invoke["Arguments"]["Input"] == "{% $rt_backfill_remediation_request %}"
     assert invoke["Next"] == "UpdateBatchIndexRemediationSucceeded"
 
-    assert states["UpdateBatchIndexRemediationSucceeded"]["Next"] == "RecheckRtArtifactReadiness"
-    assert states["RecheckRtArtifactReadiness"]["Next"] == "CheckRtArtifactReadiness"
+    assert states["UpdateBatchIndexRemediationSucceeded"]["Next"] == "IncrementRtReadinessCycle"
+    assert states["IncrementRtReadinessCycle"]["Next"] == "RecheckRtArtifactReadiness"
+    assert states["RecheckRtArtifactReadiness"]["Next"] == "BuildRtArtifactReadinessManifest"
 
 
 def test_rt_dependent_phase_pipeline_runs_after_readiness_gate():
@@ -92,10 +97,12 @@ def test_rt_retry_and_idempotency_key_reuse_are_deterministic():
     assert invoke_retry["ErrorEquals"] == ["StepFunctions.ExecutionLimitExceeded", "ThrottlingException", "States.TaskFailed"]
     assert invoke_retry["MaxAttempts"] == 3
 
+    compute_state = states["ComputeRtArtifactReadiness"]
+    assert compute_state["Arguments"]["PipelineName"] == "${PipelineNameRtReadiness}"
+
     initial_manifest_expr = states["BuildRtArtifactReadinessManifest"]["Assign"]["rt_artifact_readiness_manifest"]
-    recheck_manifest_expr = states["RecheckRtArtifactReadiness"]["Assign"]["rt_artifact_readiness_manifest"]
-    assert "'idempotency_key':($exists($states.input.rt_artifact_readiness_manifest.idempotency_key)" in initial_manifest_expr
-    assert "'idempotency_key':($exists($states.input.recheck_rt_artifact_readiness_manifest.idempotency_key)" in recheck_manifest_expr
+    assert "rt_artifact_readiness.v2" in initial_manifest_expr
+    assert "RT_READINESS_MANIFEST_MISSING" in initial_manifest_expr
 
 
 def test_backfill_consumer_derives_window_from_contract_missing_ranges_when_start_end_not_provided():

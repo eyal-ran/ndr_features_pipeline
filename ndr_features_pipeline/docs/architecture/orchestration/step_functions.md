@@ -202,3 +202,34 @@ Per map worker reconstructed batch:
 4. On split success/failure across dual writes, execute reconciliation by rerunning idempotent dual-item upsert, then set `backfill_status=failed` for deterministic recovery signaling.
 
 Idempotent reruns are mandatory and rely on conditional-write safe `PutItem` + existing-item update behavior.
+
+## 9) Task 1 deterministic readiness-gate contract (monthly + RT)
+
+Both monthly and RT gates now use computed readiness only (no payload-default readiness).
+
+Canonical readiness output contract (`*.v2`):
+- `ready` (boolean)
+- `missing_ranges` (array)
+- `decision_code` (`READY` or `MISSING_DEPENDENCIES`)
+- `as_of_ts` (ISO-8601 UTC)
+
+Required orchestration sequence:
+1. compute readiness via dedicated SageMaker Processing/Pipeline step,
+2. branch on computed `ready`,
+3. if missing: invoke remediation,
+4. recompute readiness,
+5. continue on `ready=true`, otherwise fail with explicit gate code.
+
+Monthly contract notes:
+- checker contract: `monthly_fg_b_readiness.v2`.
+- unresolved post-remediation terminal code: `MONTHLY_READINESS_UNRESOLVED_AFTER_REMEDIATION`.
+
+RT contract notes:
+- checker contract: `rt_artifact_readiness.v2`.
+- remediation request consumes checker `missing_ranges` directly with no ad-hoc transformation.
+- unresolved post-remediation terminal code: `RT_READINESS_UNRESOLVED_AFTER_REMEDIATION`.
+
+Determinism/idempotency constraints:
+- stale external manifests are not trusted; the gate always branches from newly computed readiness output.
+- remediation idempotency key is stable for a given computed readiness artifact.
+- retries are bounded and only applied to compute/remediation task failures.

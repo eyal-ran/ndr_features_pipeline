@@ -13,10 +13,10 @@ def _load_states() -> dict:
 def test_task13_cold_start_path_runs_core_then_readiness_then_dependent_phase():
     states = _load_states()
 
-    assert states["FeaturesPipelineStatusChoice"]["Choices"][0]["Next"] == "BuildRtArtifactReadinessManifest"
+    assert states["FeaturesPipelineStatusChoice"]["Choices"][0]["Next"] == "ComputeRtArtifactReadiness"
     assert states["CheckRtArtifactReadiness"]["Choices"][1]["Next"] == "BuildRtBackfillRemediationRequest"
-    assert states["UpdateBatchIndexRemediationSucceeded"]["Next"] == "RecheckRtArtifactReadiness"
-    assert states["RecheckRtArtifactReadiness"]["Next"] == "CheckRtArtifactReadiness"
+    assert states["UpdateBatchIndexRemediationSucceeded"]["Next"] == "IncrementRtReadinessCycle"
+    assert states["RecheckRtArtifactReadiness"]["Next"] == "BuildRtArtifactReadinessManifest"
     assert states["CheckRtArtifactReadiness"]["Choices"][0]["Next"] == "Start15mDependentFeaturesPipeline"
 
 
@@ -26,7 +26,7 @@ def test_task13_steady_state_bypasses_remediation_and_starts_dependent_phase_dir
     no_missing = next(
         choice
         for choice in states["CheckRtArtifactReadiness"]["Choices"]
-        if choice["Condition"] == "{% $count($rt_artifact_readiness_manifest.missing_ranges) = 0 %}"
+        if choice["Condition"] == "{% $rt_artifact_readiness_manifest.ready = true %}"
     )
     assert no_missing["Next"] == "Start15mDependentFeaturesPipeline"
     assert states["Start15mDependentFeaturesPipeline"]["Next"] == "Describe15mDependentFeaturesPipeline"

@@ -99,6 +99,7 @@ DEPLOY = {
     # Step Functions names
     "sfn_15m_name": "sfn_ndr_15m_features_inference",
     "sfn_prediction_publication_name": "sfn_ndr_prediction_publication",
+    "sfn_bootstrap_name": "sfn_ndr_initial_deployment_bootstrap",
     "sfn_monthly_fgb_name": "sfn_ndr_monthly_fg_b_baselines",
     "sfn_training_name": "sfn_ndr_training_orchestrator",
     "sfn_backfill_name": "sfn_ndr_backfill_reprocessing",
@@ -519,6 +520,31 @@ for p in pipelines:
 You deploy JSONs from `docs/step_functions_jsonata/` and substitute placeholders for pipeline names, table names, lock tables, bus, nested SF ARN, etc.
 
 (Implementation can be `states.create_state_machine` / `states.update_state_machine` with rendered JSON string.)
+
+### Task 5 deployment wiring guardrails (bootstrap -> monthly SFN)
+When rendering `sfn_ndr_initial_deployment_bootstrap.json`, ensure:
+1. `MonthlyStateMachineArn` placeholder is resolved to the deployed ARN for `sfn_ndr_monthly_fg_b_baselines`.
+2. Bootstrap role policy includes:
+   - `states:StartExecution` on monthly state machine ARN,
+   - `states:DescribeExecution` and `states:StopExecution` on monthly execution ARN pattern.
+3. Remove legacy direct monthly pipeline invoke permission from bootstrap role:
+   - disallow `sagemaker:StartPipelineExecution` for `${PipelineNameMonthlyFgBBaselines}` in bootstrap role policy.
+
+Example IAM statement fragment:
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "states:StartExecution",
+    "states:DescribeExecution",
+    "states:StopExecution"
+  ],
+  "Resource": [
+    "arn:aws:states:<region>:<account-id>:stateMachine:sfn_ndr_monthly_fg_b_baselines",
+    "arn:aws:states:<region>:<account-id>:execution:sfn_ndr_monthly_fg_b_baselines:*"
+  ]
+}
+```
 
 ---
 

@@ -21,7 +21,7 @@ def test_bootstrap_state_machine_runs_deterministic_day0_sequence_with_checkpoin
     assert "SeedMachineInventoryPipeline" in states
     assert states["SeedMachineInventoryPipeline"]["Next"] == "PersistCheckpointBackfill"
     assert states["InvokeBackfillReconstruction"]["Next"] == "PersistCheckpointBaseline"
-    assert states["StartMonthlyBaselinePipeline"]["Next"] == "PersistCheckpointReadiness"
+    assert states["StartMonthlyBaselineOrchestration"]["Next"] == "PersistCheckpointReadiness"
     assert states["PersistBootstrapReady"]["Next"] == "BootstrapSucceeded"
 
     update_expr = states["PersistBootstrapReady"]["Arguments"]["UpdateExpression"]

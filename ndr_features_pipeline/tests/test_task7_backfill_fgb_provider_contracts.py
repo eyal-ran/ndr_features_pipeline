@@ -45,6 +45,7 @@ def test_planner_executes_fgb_without_15m_dependencies_for_fgb_only_scenario():
 
 def test_executor_completion_payload_includes_fgb_results_for_mixed_and_non_fgb(monkeypatch, capsys):
     import ndr.scripts.run_backfill_reprocessing_executor as module
+    import ndr.orchestration.backfill_family_dispatcher as dispatcher_module
 
     class _SageMaker:
         def __init__(self):
@@ -55,8 +56,20 @@ def test_executor_completion_payload_includes_fgb_results_for_mixed_and_non_fgb(
             return {"PipelineExecutionArn": "arn:aws:sagemaker:us-east-1:123:pipeline-execution/fgb"}
 
     fake_sm = _SageMaker()
-    monkeypatch.setattr(module, "load_project_parameters", lambda **_kwargs: {"orchestration_targets": {"fg_b_baseline": "pipeline-fgb"}})
-    monkeypatch.setattr(module.boto3, "client", lambda name, **_kwargs: fake_sm if name == "sagemaker" else None)
+    monkeypatch.setattr(
+        module,
+        "load_project_parameters",
+        lambda **_kwargs: {
+            "orchestration_targets": {
+                "delta": "pipeline-delta",
+                "fg_a": "pipeline-fga",
+                "pair_counts": "pipeline-pc",
+                "fg_b_baseline": "pipeline-fgb",
+                "fg_c": "pipeline-fgc",
+            }
+        },
+    )
+    monkeypatch.setattr(dispatcher_module.boto3, "client", lambda name, **_kwargs: fake_sm if name == "sagemaker" else None)
 
     rc = main(
         [
@@ -75,8 +88,9 @@ def test_executor_completion_payload_includes_fgb_results_for_mixed_and_non_fgb(
     assert rc == 0
     mixed_payload = json.loads(capsys.readouterr().out.strip())
     assert mixed_payload["fg_b_baseline_results"][0]["status"] == "Started"
-    assert any(item["family"] == "fg_a" and item["status"] == "HandledByBackfill15mPipeline" for item in mixed_payload["family_results"])
-    assert len(fake_sm.calls) == 1
+    assert any(item["family"] == "fg_a" and item["status"] == "Started" for item in mixed_payload["family_results"])
+    assert mixed_payload["completion"]["all_succeeded"] is True
+    assert len(fake_sm.calls) == 3
 
     rc = main(
         [
@@ -95,4 +109,5 @@ def test_executor_completion_payload_includes_fgb_results_for_mixed_and_non_fgb(
     assert rc == 0
     no_fgb_payload = json.loads(capsys.readouterr().out.strip())
     assert no_fgb_payload["fg_b_baseline_results"] == []
-    assert len(fake_sm.calls) == 1
+    assert no_fgb_payload["family_results"][0]["status"] == "Started"
+    assert len(fake_sm.calls) == 4

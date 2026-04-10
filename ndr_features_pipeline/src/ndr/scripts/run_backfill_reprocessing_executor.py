@@ -6,11 +6,14 @@ import argparse
 import json
 import sys
 
-import boto3
-
 from ndr.config.project_parameters_loader import load_project_parameters
 from ndr.logging.logger import get_logger
 from ndr.orchestration.backfill_execution_contract import build_execution_request
+from ndr.orchestration.backfill_family_dispatcher import (
+    COMPLETION_ERROR_CODE,
+    DISPATCHER_ERROR_CODE,
+    BackfillFamilyDispatcher,
+)
 
 LOGGER = get_logger(__name__)
 
@@ -24,101 +27,31 @@ def parse_args(argv=None):
     parser.add_argument("--range-end-ts-iso", required=True)
     parser.add_argument("--idempotency-key", required=False, default="")
     parser.add_argument("--dpp-config-table-name", required=False, default="")
+    parser.add_argument("--retry-attempt", required=False, default="0")
+    parser.add_argument("--missing-entries-json", required=False, default="")
     return parser.parse_args(argv)
 
 
-def _resolve_fgb_pipeline_name(
-    *,
-    project_name: str,
-    feature_spec_version: str,
-    dpp_config_table_name: str | None,
-) -> str:
-    spec = load_project_parameters(
-        project_name=project_name,
-        feature_spec_version=feature_spec_version,
-        dpp_table_name=dpp_config_table_name,
-    )
-    orchestration_targets = spec.get("orchestration_targets") or {}
-    pipeline_name = str(orchestration_targets.get("fg_b_baseline") or "").strip()
-    if not pipeline_name:
-        raise ValueError(
-            "BACKFILL_FGB_TARGET_MISSING: missing required DDB target "
-            "spec.orchestration_targets.fg_b_baseline"
-        )
-    return pipeline_name
+def _build_missing_entries_payload(*, request, raw_json: str) -> list[dict]:
+    if raw_json:
+        parsed = json.loads(raw_json)
+        if not isinstance(parsed, list):
+            raise ValueError(f"{DISPATCHER_ERROR_CODE}: --missing-entries-json must decode to a list")
+        return parsed
 
-
-def _dispatch_fgb_baseline(
-    *,
-    project_name: str,
-    feature_spec_version: str,
-    range_start_ts_iso: str,
-    range_end_ts_iso: str,
-    idempotency_key: str,
-    dpp_config_table_name: str | None,
-) -> dict:
-    pipeline_name = _resolve_fgb_pipeline_name(
-        project_name=project_name,
-        feature_spec_version=feature_spec_version,
-        dpp_config_table_name=dpp_config_table_name,
-    )
-    sagemaker = boto3.client("sagemaker")
-    try:
-        response = sagemaker.start_pipeline_execution(
-            PipelineName=pipeline_name,
-            PipelineExecutionDescription=(
-                f"backfill_reprocessing family=fg_b_baseline "
-                f"idempotency_key={idempotency_key} "
-                f"range={range_start_ts_iso}..{range_end_ts_iso}"
-            ),
-            PipelineParameters=[
-                {"Name": "ProjectName", "Value": project_name},
-                {"Name": "FeatureSpecVersion", "Value": feature_spec_version},
-                {"Name": "ReferenceTimeIso", "Value": range_start_ts_iso},
-                {"Name": "Mode", "Value": "baseline"},
-            ],
-            ClientRequestToken=idempotency_key,
-        )
-        return {
-            "family": "fg_b_baseline",
-            "status": "Started",
-            "pipeline_name": pipeline_name,
-            "pipeline_execution_arn": response["PipelineExecutionArn"],
-            "reference_time_iso": range_start_ts_iso,
-            "range_end_ts_iso": range_end_ts_iso,
-        }
-    except Exception as exc:  # pragma: no cover - exercised via unit tests with mocked client errors
-        if "ConflictException" in str(exc) or "already exists" in str(exc).lower():
-            return {
-                "family": "fg_b_baseline",
-                "status": "Skipped",
-                "pipeline_name": pipeline_name,
-                "failure_reason": "ExecutionAlreadyExists",
-                "reference_time_iso": range_start_ts_iso,
-                "range_end_ts_iso": range_end_ts_iso,
+    entries: list[dict] = []
+    for family in request.artifact_families:
+        entries.append(
+            {
+                "family": family,
+                "window_start_ts": request.range_start_ts_iso,
+                "window_end_ts": request.range_end_ts_iso,
+                "batch_ids": [],
+                "required_inputs": [],
+                "reason_code": "RANGE_REQUEST",
             }
-        raise
-
-
-def _dispatch_family(
-    *,
-    family: str,
-    request,
-    dpp_config_table_name: str | None,
-) -> dict:
-    if family == "fg_b_baseline":
-        return _dispatch_fgb_baseline(
-            project_name=request.project_name,
-            feature_spec_version=request.feature_spec_version,
-            range_start_ts_iso=request.range_start_ts_iso,
-            range_end_ts_iso=request.range_end_ts_iso,
-            idempotency_key=request.idempotency_key,
-            dpp_config_table_name=dpp_config_table_name,
         )
-    return {
-        "family": family,
-        "status": "HandledByBackfill15mPipeline",
-    }
+    return entries
 
 
 def main(argv=None) -> int:
@@ -131,17 +64,31 @@ def main(argv=None) -> int:
         range_end_ts_iso=args.range_end_ts_iso,
         idempotency_key=args.idempotency_key or None,
     )
-    family_results = [
-        _dispatch_family(
-            family=family,
-            request=request,
-            dpp_config_table_name=args.dpp_config_table_name or None,
+    retry_attempt = int(args.retry_attempt)
+    dpp_spec = load_project_parameters(
+        project_name=request.project_name,
+        feature_spec_version=request.feature_spec_version,
+        dpp_table_name=args.dpp_config_table_name or None,
+    )
+    missing_entries = _build_missing_entries_payload(request=request, raw_json=args.missing_entries_json or "")
+
+    dispatcher = BackfillFamilyDispatcher(
+        project_name=request.project_name,
+        feature_spec_version=request.feature_spec_version,
+        requested_families=request.artifact_families,
+        correlation_id=request.idempotency_key,
+        retry_attempt=retry_attempt,
+        dpp_spec=dpp_spec,
+    )
+    dispatch_response = dispatcher.dispatch(missing_entries=missing_entries)
+
+    completion = dispatch_response["completion"]
+    overall_status = "Succeeded" if completion["all_succeeded"] else "Failed"
+    if not completion["all_succeeded"]:
+        raise ValueError(
+            f"{COMPLETION_ERROR_CODE}: failed_families={completion['failed_families']} "
+            f"unresolved_families={completion['unresolved_families']}"
         )
-        for family in request.artifact_families
-    ]
-    overall_status = "Succeeded"
-    if any(result.get("status") == "Failed" for result in family_results):
-        overall_status = "Failed"
 
     LOGGER.info(
         "Resolved backfill execution request.",
@@ -153,8 +100,10 @@ def main(argv=None) -> int:
             "range_start_ts_iso": request.range_start_ts_iso,
             "range_end_ts_iso": request.range_end_ts_iso,
             "idempotency_key": request.idempotency_key,
+            "retry_attempt": retry_attempt,
             "status": overall_status,
-            "family_results": family_results,
+            "family_results": dispatch_response["family_results"],
+            "completion": completion,
         },
     )
 
@@ -168,9 +117,15 @@ def main(argv=None) -> int:
                 "range_start_ts_iso": request.range_start_ts_iso,
                 "range_end_ts_iso": request.range_end_ts_iso,
                 "idempotency_key": request.idempotency_key,
+                "retry_attempt": retry_attempt,
                 "status": overall_status,
-                "family_results": family_results,
-                "fg_b_baseline_results": [item for item in family_results if item.get("family") == "fg_b_baseline"],
+                "family_results": dispatch_response["family_results"],
+                "completion": completion,
+                "fg_b_baseline_results": [
+                    item
+                    for item in dispatch_response["family_results"]
+                    if item.get("family") == "fg_b_baseline"
+                ],
             },
             sort_keys=True,
         )

@@ -46,15 +46,29 @@ def test_execution_request_fails_fast_with_explicit_error_code_for_contract_viol
         )
 
 
-def test_executor_cli_emits_completion_payload_with_deterministic_idempotency_key(capsys):
+def test_executor_cli_emits_completion_payload_with_deterministic_idempotency_key(monkeypatch, capsys):
     import ndr.scripts.run_backfill_reprocessing_executor as module
+    import ndr.orchestration.backfill_family_dispatcher as dispatcher_module
 
     class _SageMaker:
+        def __init__(self):
+            self.calls = []
+
         def start_pipeline_execution(self, **_kwargs):
+            self.calls.append(_kwargs)
             return {"PipelineExecutionArn": "arn:aws:sagemaker:us-east-1:123456789012:pipeline-execution/fgb-1"}
 
-    module.load_project_parameters = lambda **_kwargs: {"orchestration_targets": {"fg_b_baseline": "pipeline-fgb"}}  # type: ignore[assignment]
-    module.boto3.client = lambda name, **_kwargs: _SageMaker() if name == "sagemaker" else None  # type: ignore[assignment]
+    fake_sm = _SageMaker()
+    monkeypatch.setattr(module, "load_project_parameters", lambda **_kwargs: {
+        "orchestration_targets": {
+            "delta": "pipeline-delta",
+            "fg_a": "pipeline-fga",
+            "pair_counts": "pipeline-pair-counts",
+            "fg_b_baseline": "pipeline-fgb",
+            "fg_c": "pipeline-fgc",
+        }
+    })
+    monkeypatch.setattr(dispatcher_module.boto3, "client", lambda name, **_kwargs: fake_sm if name == "sagemaker" else None)
 
     rc = main(
         [
@@ -76,4 +90,6 @@ def test_executor_cli_emits_completion_payload_with_deterministic_idempotency_ke
     assert payload["status"] == "Succeeded"
     assert payload["artifact_families"] == ["delta", "fg_a", "pair_counts", "fg_b_baseline", "fg_c"]
     assert payload["fg_b_baseline_results"][0]["status"] == "Started"
+    assert payload["completion"]["all_succeeded"] is True
     assert payload["idempotency_key"].startswith("bkf-")
+    assert len(fake_sm.calls) == 5

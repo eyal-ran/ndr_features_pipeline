@@ -821,7 +821,7 @@
             "Choices": [
               {
                 "Condition": "{% $features_pipeline_status = 'Succeeded' %}",
-                "Next": "BuildRtArtifactReadinessManifest"
+                "Next": "ComputeRtArtifactReadiness"
               },
               {
                 "Condition": "{% ($features_pipeline_status = 'Executing' or $features_pipeline_status = 'Stopping') and $features_poll_attempt < 120 %}",
@@ -833,8 +833,8 @@
           "BuildRtArtifactReadinessManifest": {
             "Type": "Pass",
             "Assign": {
-              "rt_artifact_readiness_manifest": "{% {'contract_version':'rt_artifact_readiness.v1','required_families':['fg_c'],'missing_ranges':($exists($states.input.rt_artifact_readiness_manifest.missing_ranges) ? $states.input.rt_artifact_readiness_manifest.missing_ranges : []),'check_status':($count($exists($states.input.rt_artifact_readiness_manifest.missing_ranges) ? $states.input.rt_artifact_readiness_manifest.missing_ranges : []) > 0 ? 'missing' : 'ready'),'check_reason':($count($exists($states.input.rt_artifact_readiness_manifest.missing_ranges) ? $states.input.rt_artifact_readiness_manifest.missing_ranges : []) > 0 ? 'dependency_missing:fg_c_dependencies' : 'ready'),'idempotency_key':($exists($states.input.rt_artifact_readiness_manifest.idempotency_key) ? $states.input.rt_artifact_readiness_manifest.idempotency_key : '0000000000000000000000000000000000000000000000000000000000000000')} %}",
-              "rt_readiness_cycle": 0
+              "rt_artifact_readiness_manifest": "{% $exists($states.input.rt_artifact_readiness) ? {'contract_version':'rt_artifact_readiness.v2','ready':($states.input.rt_artifact_readiness.ready = true),'required_families':$states.input.rt_artifact_readiness.required_families,'missing_ranges':$states.input.rt_artifact_readiness.missing_ranges,'decision_code':$states.input.rt_artifact_readiness.decision_code,'as_of_ts':$states.input.rt_artifact_readiness.as_of_ts,'idempotency_key':$states.input.rt_artifact_readiness.idempotency_key} : $error('RT_READINESS_MANIFEST_MISSING','Computed RT readiness manifest is required') %}",
+              "rt_readiness_cycle": "{% $exists($rt_readiness_cycle) ? $rt_readiness_cycle : 0 %}"
             },
             "Next": "CheckRtArtifactReadiness"
           },
@@ -842,11 +842,11 @@
             "Type": "Choice",
             "Choices": [
               {
-                "Condition": "{% $count($rt_artifact_readiness_manifest.missing_ranges) = 0 %}",
+                "Condition": "{% $rt_artifact_readiness_manifest.ready = true %}",
                 "Next": "Start15mDependentFeaturesPipeline"
               },
               {
-                "Condition": "{% $rt_readiness_cycle = 0 %}",
+                "Condition": "{% $rt_artifact_readiness_manifest.ready = false and $rt_readiness_cycle = 0 %}",
                 "Next": "BuildRtBackfillRemediationRequest"
               }
             ],
@@ -855,7 +855,7 @@
           "BuildRtBackfillRemediationRequest": {
             "Type": "Pass",
             "Assign": {
-              "rt_backfill_remediation_request": "{% {'contract_version':'NdrBackfillRequest.v1','consumer':'realtime','project_name':$states.input.project_name,'feature_spec_version':$states.input.feature_spec_version,'ml_project_name':$states.input.ml_project_name,'batch_id':$states.input.mini_batch_id,'requested_families':$distinct($rt_artifact_readiness_manifest.missing_ranges.family),'missing_ranges':$rt_artifact_readiness_manifest.missing_ranges,'source_hint':{'raw_parsed_logs_s3_prefix':$states.input.raw_parsed_logs_s3_prefix},'provenance':{'producer_flow':'rt_15m_features_inference','source_mode':'batch_index','request_id':$states.context.Execution.Id},'idempotency_key':$rt_artifact_readiness_manifest.idempotency_key} %}"
+              "rt_backfill_remediation_request": "{% {'contract_version':'NdrBackfillRequest.v1','consumer':'realtime','project_name':$states.input.project_name,'feature_spec_version':$states.input.feature_spec_version,'ml_project_name':$states.input.ml_project_name,'batch_id':$states.input.mini_batch_id,'requested_families':$rt_artifact_readiness_manifest.required_families,'missing_ranges':$rt_artifact_readiness_manifest.missing_ranges,'source_hint':{'raw_parsed_logs_s3_prefix':$states.input.raw_parsed_logs_s3_prefix},'provenance':{'producer_flow':'rt_15m_features_inference','source_mode':'batch_index','request_id':$states.context.Execution.Id},'idempotency_key':$rt_artifact_readiness_manifest.idempotency_key} %}"
             },
             "Next": "UpdateBatchIndexRemediationRequested"
           },
@@ -963,7 +963,7 @@
                 "Next": "BranchFailed"
               }
             ],
-            "Next": "RecheckRtArtifactReadiness"
+            "Next": "IncrementRtReadinessCycle"
           },
           "UpdateBatchIndexRemediationFailed": {
             "Type": "Task",
@@ -1003,17 +1003,62 @@
             "Next": "BranchFailed"
           },
           "RecheckRtArtifactReadiness": {
-            "Type": "Pass",
-            "Assign": {
-              "rt_artifact_readiness_manifest": "{% $exists($states.input.recheck_rt_artifact_readiness_manifest.missing_ranges) ? {'contract_version':'rt_artifact_readiness.v1','required_families':['fg_c'],'missing_ranges':$states.input.recheck_rt_artifact_readiness_manifest.missing_ranges,'check_status':($count($states.input.recheck_rt_artifact_readiness_manifest.missing_ranges) > 0 ? 'missing' : 'ready'),'check_reason':($count($states.input.recheck_rt_artifact_readiness_manifest.missing_ranges) > 0 ? 'dependency_missing:fg_c_dependencies_after_remediation' : 'ready'),'idempotency_key':($exists($states.input.recheck_rt_artifact_readiness_manifest.idempotency_key) ? $states.input.recheck_rt_artifact_readiness_manifest.idempotency_key : $rt_artifact_readiness_manifest.idempotency_key)} : {'contract_version':'rt_artifact_readiness.v1','required_families':['fg_c'],'missing_ranges':[],'check_status':'ready','check_reason':'ready','idempotency_key':$rt_artifact_readiness_manifest.idempotency_key} %}",
-              "rt_readiness_cycle": 1
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
+            "Arguments": {
+              "PipelineName": "${PipelineNameRtReadiness}",
+              "PipelineParameters": [
+                {
+                  "Name": "ProjectName",
+                  "Value": "{% $states.input.project_name %}"
+                },
+                {
+                  "Name": "FeatureSpecVersion",
+                  "Value": "{% $states.input.feature_spec_version %}"
+                },
+                {
+                  "Name": "MlProjectName",
+                  "Value": "{% $states.input.ml_project_name %}"
+                },
+                {
+                  "Name": "MiniBatchId",
+                  "Value": "{% $states.input.mini_batch_id %}"
+                },
+                {
+                  "Name": "BatchStartTsIso",
+                  "Value": "{% $states.input.batch_start_ts_iso %}"
+                },
+                {
+                  "Name": "BatchEndTsIso",
+                  "Value": "{% $states.input.batch_end_ts_iso %}"
+                },
+                {
+                  "Name": "ReadinessCycle",
+                  "Value": "{% $string($rt_readiness_cycle) %}"
+                }
+              ]
             },
-            "Next": "CheckRtArtifactReadiness"
+            "Assign": {
+              "rt_recheck_readiness_execution_arn": "{% $states.result.PipelineExecutionArn %}"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "SageMaker.AmazonSageMakerException",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 4,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Next": "BuildRtArtifactReadinessManifest"
           },
           "FailRtArtifactsUnresolvedAfterRemediation": {
             "Type": "Fail",
             "Error": "RealtimeArtifactReadinessGateFailed",
-            "Cause": "Unresolved RT dependencies after remediation; dependency_missing:fg_c_dependencies"
+            "Cause": "RT_READINESS_UNRESOLVED_AFTER_REMEDIATION: Computed RT readiness remained missing after remediation recheck"
           },
           "WaitBeforeDescribe15mFeatures": {
             "Type": "Wait",
@@ -1296,6 +1341,66 @@
             "Type": "Fail",
             "Error": "MlProjectBranchFailed",
             "Cause": "Per-ml_project_name branch execution failed"
+          },
+          "ComputeRtArtifactReadiness": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
+            "Arguments": {
+              "PipelineName": "${PipelineNameRtReadiness}",
+              "PipelineParameters": [
+                {
+                  "Name": "ProjectName",
+                  "Value": "{% $states.input.project_name %}"
+                },
+                {
+                  "Name": "FeatureSpecVersion",
+                  "Value": "{% $states.input.feature_spec_version %}"
+                },
+                {
+                  "Name": "MlProjectName",
+                  "Value": "{% $states.input.ml_project_name %}"
+                },
+                {
+                  "Name": "MiniBatchId",
+                  "Value": "{% $states.input.mini_batch_id %}"
+                },
+                {
+                  "Name": "BatchStartTsIso",
+                  "Value": "{% $states.input.batch_start_ts_iso %}"
+                },
+                {
+                  "Name": "BatchEndTsIso",
+                  "Value": "{% $states.input.batch_end_ts_iso %}"
+                },
+                {
+                  "Name": "ReadinessCycle",
+                  "Value": "{% $string($rt_readiness_cycle) %}"
+                }
+              ]
+            },
+            "Assign": {
+              "rt_readiness_execution_arn": "{% $states.result.PipelineExecutionArn %}"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "SageMaker.AmazonSageMakerException",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 4,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Next": "BuildRtArtifactReadinessManifest"
+          },
+          "IncrementRtReadinessCycle": {
+            "Type": "Pass",
+            "Assign": {
+              "rt_readiness_cycle": "{% $rt_readiness_cycle + 1 %}"
+            },
+            "Next": "RecheckRtArtifactReadiness"
           }
         }
       },

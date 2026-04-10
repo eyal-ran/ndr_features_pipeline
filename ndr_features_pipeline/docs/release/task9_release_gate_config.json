@@ -1,0 +1,34 @@
+{
+  "contract_version": "task9_release_hardening_gate.v1",
+  "gate_id": "task9_end_to_end_release_gate",
+  "block_release_on_critical_failure": true,
+  "critical_pass_threshold": 1.0,
+  "required_scenarios": [
+    "normal",
+    "missing_dependency",
+    "fallback",
+    "duplicate_replay",
+    "partial_failure_retry"
+  ],
+  "required_flows": [
+    "monthly",
+    "rt",
+    "backfill",
+    "training",
+    "control_plane"
+  ],
+  "required_contract_edge_checks": [
+    "producer_contract_valid",
+    "consumer_contract_valid",
+    "integration_validated"
+  ],
+  "required_rollback_checks": [
+    "drill_executed",
+    "restore_successful",
+    "post_rollback_validation_passed"
+  ],
+  "error_codes": {
+    "contract": "TASK9_CONTRACT_VIOLATION",
+    "gate": "TASK9_RELEASE_GATE_RED"
+  }
+}

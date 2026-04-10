@@ -108,7 +108,9 @@
             "dpp_config.project_name",
             "dpp_config.job_name_version"
           ],
-          "optional": []
+          "optional": [
+            "dpp_config.spec.project_parameters.backfill_redshift_fallback"
+          ]
         }
       }
     },

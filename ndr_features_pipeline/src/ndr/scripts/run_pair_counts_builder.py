@@ -62,6 +62,11 @@ def parse_args(argv=None):
         default="",
         help="Optional Batch Index table override used to resolve canonical raw/pair-counts prefixes.",
     )
+    parser.add_argument(
+        "--dpp-config-table-name",
+        default="",
+        help="Optional DPP config table override used for fallback policy/query resolution.",
+    )
 
     return parser.parse_args(argv)
 
@@ -70,20 +75,17 @@ def main(argv=None) -> int:
     """Command-line entry point."""
     args = parse_args(argv)
 
-    raw_parsed_logs_s3_prefix = args.raw_parsed_logs_s3_prefix
-    if not raw_parsed_logs_s3_prefix:
-        raise ValueError("raw_parsed_logs_s3_prefix is required")
-
     LOGGER.info(
         "Starting Pair-Counts builder via CLI/runtime entrypoint.",
         extra={
             "project_name": args.project_name,
             "feature_spec_version": args.feature_spec_version,
             "mini_batch_id": args.mini_batch_id,
-            "raw_parsed_logs_s3_prefix": raw_parsed_logs_s3_prefix,
+            "raw_parsed_logs_s3_prefix": args.raw_parsed_logs_s3_prefix,
             "batch_start_ts_iso": args.batch_start_ts_iso,
             "batch_end_ts_iso": args.batch_end_ts_iso,
             "batch_index_table_name": args.batch_index_table_name,
+            "dpp_config_table_name": args.dpp_config_table_name,
         },
     )
 
@@ -91,10 +93,11 @@ def main(argv=None) -> int:
         project_name=args.project_name,
         feature_spec_version=args.feature_spec_version,
         mini_batch_id=args.mini_batch_id,
-        raw_parsed_logs_s3_prefix=raw_parsed_logs_s3_prefix,
+        raw_parsed_logs_s3_prefix=args.raw_parsed_logs_s3_prefix,
         batch_start_ts_iso=args.batch_start_ts_iso,
         batch_end_ts_iso=args.batch_end_ts_iso,
         batch_index_table_name=args.batch_index_table_name or None,
+        dpp_config_table_name=args.dpp_config_table_name or None,
     )
 
     run_pair_counts_builder_from_runtime_config(runtime_config)

@@ -151,7 +151,25 @@ def test_pair_counts_runtime_prefers_batch_index_prefixes(monkeypatch):
         "load_pair_counts_job_spec",
         lambda **_kwargs: SimpleNamespace(pair_counts_output=SimpleNamespace(s3_prefix="s3://job-spec/pair")),
     )
+    monkeypatch.setattr(
+        module,
+        "load_project_parameters",
+        lambda *_a, **_k: {"backfill_redshift_fallback": {"enabled": True}},
+    )
+    monkeypatch.setattr(
+        module,
+        "RawInputResolver",
+        lambda: SimpleNamespace(
+            resolve=lambda **_kwargs: SimpleNamespace(
+                source_mode="ingestion",
+                raw_input_s3_prefix="s3://batch-index/raw/mb-1/",
+                resolution_reason="ingestion_rows_present",
+                provenance={"source_mode": "ingestion", "resolution_reason": "ingestion_rows_present"},
+            )
+        ),
+    )
     monkeypatch.setattr(module, "PairCountsBuilderJob", _Job)
+    monkeypatch.setattr(module, "_write_pair_counts_run_metadata", lambda **_kwargs: None)
 
     run_pair_counts_builder_from_runtime_config(
         PairCountsJobRuntimeConfig(

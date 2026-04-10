@@ -36,6 +36,8 @@ DEFAULT_REMEDIATION_CHUNK_SIZE = 25
 TARGET_CONTRACT_ERROR_CODE = "IFTrainingOrchestrationTargetContractError"
 TASK8_INTEGRATION_GATE_VERSION = "task8_integration_gate.v1"
 MODE_CONTRACT_ERROR_CODE = "IFTrainingModeContractError"
+TRAINING_RECOMPUTE_CONTRACT_ERROR_CODE = "IFTrainingReadinessRecomputeContractError"
+PRETRAIN_GATE_BLOCKED_ERROR_CODE = "IFTrainingPreTrainGateBlocked"
 ALLOWED_TRAINING_MODES = {"training", "evaluation", "production"}
 
 
@@ -464,7 +466,8 @@ class IFTrainingJob(BaseProcessingJobRunner):
         b_end = u_end - timedelta(days=min_head)
         w_required_start = min(w_15m_start, b_start)
 
-        readiness = self._derive_batch_index_readiness(
+        readiness = self._recompute_training_readiness_snapshot(
+            gate_stage="plan",
             required_start=w_required_start,
             required_end=u_end,
             baseline_start=u_start,
@@ -492,6 +495,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
             },
             "batch_index_readiness": readiness["training_readiness_manifest"],
             "missing_windows_manifest": missing_windows_manifest,
+            "readiness_recompute": readiness["recompute_metadata"],
         }
 
     def _derive_missing_15m_windows(self, start: datetime, end: datetime) -> List[Dict[str, str]]:
@@ -602,7 +606,23 @@ class IFTrainingJob(BaseProcessingJobRunner):
             return
         history_plan = self._load_required_history_plan()
         self._run_task8_integration_gate(stage="remediate", verification=verification, history_plan=history_plan)
-        missing_windows_manifest = ensure_manifest(history_plan.get("missing_windows_manifest"))
+        train_start, train_end = self._resolve_training_window()
+        evaluation_windows = self._resolve_evaluation_windows()
+        baseline_start = min([train_start, *[self._parse_iso_ts(window["start_ts"]) for window in evaluation_windows]]) if evaluation_windows else train_start
+        baseline_end = max([train_end, *[self._parse_iso_ts(window["end_ts"]) for window in evaluation_windows]]) if evaluation_windows else train_end
+        recomputed = self._recompute_training_readiness_snapshot(
+            gate_stage="remediate",
+            required_start=train_start,
+            required_end=train_end,
+            baseline_start=baseline_start,
+            baseline_end=baseline_end,
+            preflight=None,
+            prior_manifest=history_plan.get("missing_windows_manifest"),
+        )
+        self._write_stage_status("training_readiness_manifest.v2", recomputed["training_readiness_manifest"])
+        self._write_stage_status("missing_windows_manifest.v2", recomputed["missing_windows_manifest"])
+        self._write_stage_status("manifest_drift.remediate", recomputed["drift"])
+        missing_windows_manifest = ensure_manifest(recomputed["missing_windows_manifest"])
         missing_windows = missing_windows_manifest["entries"]
         missing_15m_manifest_all = next((entry["ranges"] for entry in missing_windows if entry["artifact_family"] == "fg_a_15m"), [])
         missing_fgb_manifest_all = next((entry["ranges"] for entry in missing_windows if entry["artifact_family"] == "fg_b_daily"), [])
@@ -683,6 +703,8 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 "chunk_count": len(chunks),
                 "max_attempts_per_chunk": max_attempts,
                 "missing_windows_manifest": missing_windows_manifest,
+                "recompute_metadata": recomputed["recompute_metadata"],
+                "manifest_drift": recomputed["drift"],
                 "missing_15m_manifest_count": len(missing_15m_manifest_all),
                 "missing_fgb_manifest_count": len(missing_fgb_manifest_all),
                 "processed_chunks": chunks,
@@ -795,6 +817,9 @@ class IFTrainingJob(BaseProcessingJobRunner):
         }
         self._write_stage_status("training_readiness_manifest", history_plan.get("batch_index_readiness", {}))
         self._write_stage_status("missing_windows_manifest", planned_manifest)
+        self._write_stage_status("training_readiness_manifest.v2", history_plan.get("batch_index_readiness", {}))
+        self._write_stage_status("missing_windows_manifest.v2", planned_manifest)
+        self._write_stage_status("manifest_drift.plan", (history_plan.get("readiness_recompute") or {}).get("drift", {}))
         self._write_stage_status("remediation_plan", remediation_plan)
         self._write_stage_status(
             "planning",
@@ -805,6 +830,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
                 "verification_needs_remediation": bool(verification.get("needs_remediation")),
                 "missing_windows_count": len(ensure_manifest(verification.get("missing_windows_manifest"))["entries"]),
                 "planned_missing_windows_count": len(planned_manifest["entries"]),
+                "recompute_manifest_as_of": planned_manifest.get("as_of_ts"),
             },
         )
 
@@ -830,24 +856,43 @@ class IFTrainingJob(BaseProcessingJobRunner):
         """Hard gate training on successful reverify with no unresolved windows."""
         verification = self._load_required_latest_verification_status()
         stage_name = str(verification.get("stage") or "")
-        unresolved = ensure_manifest(verification.get("missing_windows_manifest"))["entries"]
+        history_plan = self._load_required_history_plan()
+        train_start, train_end = self._resolve_training_window()
+        evaluation_windows = self._resolve_evaluation_windows()
+        baseline_start = min([train_start, *[self._parse_iso_ts(window["start_ts"]) for window in evaluation_windows]]) if evaluation_windows else train_start
+        baseline_end = max([train_end, *[self._parse_iso_ts(window["end_ts"]) for window in evaluation_windows]]) if evaluation_windows else train_end
+        recomputed = self._recompute_training_readiness_snapshot(
+            gate_stage="pre_train",
+            required_start=train_start,
+            required_end=train_end,
+            baseline_start=baseline_start,
+            baseline_end=baseline_end,
+            preflight=None,
+            prior_manifest=history_plan.get("missing_windows_manifest"),
+        )
+        self._write_stage_status("training_readiness_manifest.v2", recomputed["training_readiness_manifest"])
+        self._write_stage_status("missing_windows_manifest.v2", recomputed["missing_windows_manifest"])
+        self._write_stage_status("manifest_drift.pre_train", recomputed["drift"])
+        unresolved = ensure_manifest(recomputed["missing_windows_manifest"])["entries"]
         needs_remediation = bool(verification.get("needs_remediation"))
         gate_payload = {
             "status": "passed",
             "source_stage": stage_name,
             "needs_remediation": needs_remediation,
             "unresolved_windows": unresolved,
+            "manifest_as_of_ts": recomputed["missing_windows_manifest"].get("as_of_ts"),
+            "manifest_drift": recomputed["drift"],
         }
         if stage_name != "reverify":
             gate_payload["status"] = "failed"
-            gate_payload["reason"] = "reverify stage artifact is required before train"
+            gate_payload["reason"] = f"{TRAINING_RECOMPUTE_CONTRACT_ERROR_CODE}: reverify stage artifact is required before train"
             self._write_stage_status("train_gate", gate_payload)
-            raise ValueError("Train stage requires completed reverify artifact before execution")
+            raise ValueError(f"{TRAINING_RECOMPUTE_CONTRACT_ERROR_CODE}: Train stage requires completed reverify artifact before execution")
         if needs_remediation or unresolved:
             gate_payload["status"] = "failed"
-            gate_payload["reason"] = "unresolved required windows remain after reverify"
+            gate_payload["reason"] = f"{PRETRAIN_GATE_BLOCKED_ERROR_CODE}: unresolved required windows remain after recompute"
             self._write_stage_status("train_gate", gate_payload)
-            raise ValueError("Train stage blocked: unresolved required windows after reverify")
+            raise ValueError(f"{PRETRAIN_GATE_BLOCKED_ERROR_CODE}: Train stage blocked; unresolved required windows remain after recompute")
         self._write_stage_status("train_gate", gate_payload)
         return verification
 
@@ -1151,6 +1196,7 @@ class IFTrainingJob(BaseProcessingJobRunner):
         """Derive expected/observed/unresolved ranges from Batch Index evidence."""
         from ndr.config.batch_index_loader import BatchIndexLoader
 
+        as_of_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         required_start_iso = required_start.isoformat().replace("+00:00", "Z")
         required_end_iso = required_end.isoformat().replace("+00:00", "Z")
         loader = BatchIndexLoader(table_name=self.runtime_config.batch_index_table_name)
@@ -1203,13 +1249,15 @@ class IFTrainingJob(BaseProcessingJobRunner):
             feature_spec_version=self.runtime_config.feature_spec_version,
             ml_project_name=self.runtime_config.ml_project_name,
             run_id=self.runtime_config.run_id,
+            as_of_ts=as_of_ts,
         )
         readiness_manifest = {
-            "contract_version": "training_readiness_manifest.v1",
+            "contract_version": "training_readiness_manifest.v2",
             "run_id": self.runtime_config.run_id,
             "project_name": self.runtime_config.project_name,
             "ml_project_name": self.runtime_config.ml_project_name,
             "feature_spec_version": self.runtime_config.feature_spec_version,
+            "as_of_ts": as_of_ts,
             "batch_index_evidence": {
                 "table_name": self.runtime_config.batch_index_table_name,
                 "selectors": {
@@ -1238,6 +1286,79 @@ class IFTrainingJob(BaseProcessingJobRunner):
         return {
             "training_readiness_manifest": readiness_manifest,
             "missing_windows_manifest": missing_windows_manifest,
+        }
+
+    def _recompute_training_readiness_snapshot(
+        self,
+        *,
+        gate_stage: str,
+        required_start: datetime,
+        required_end: datetime,
+        baseline_start: datetime,
+        baseline_end: datetime,
+        preflight: Dict[str, Any] | None,
+        prior_manifest: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """Recompute authoritative readiness at gate points and emit deterministic drift metrics."""
+        recomputed = self._derive_batch_index_readiness(
+            required_start=required_start,
+            required_end=required_end,
+            baseline_start=baseline_start,
+            baseline_end=baseline_end,
+            preflight=preflight,
+        )
+        current_manifest = ensure_manifest(recomputed["missing_windows_manifest"])
+        prior_entries: List[Dict[str, Any]] = []
+        prior_as_of_ts = None
+        if prior_manifest is not None:
+            prior_normalized = ensure_manifest(prior_manifest)
+            prior_entries = prior_normalized["entries"]
+            prior_as_of_ts = prior_normalized.get("as_of_ts")
+        drift = self._compute_missing_manifest_drift(prior_entries=prior_entries, current_entries=current_manifest["entries"])
+        current_manifest["previous_as_of_ts"] = prior_as_of_ts
+        recomputed["missing_windows_manifest"] = current_manifest
+        recomputed["drift"] = {
+            "gate_stage": gate_stage,
+            "prior_missing_count": drift["prior_missing_count"],
+            "current_missing_count": drift["current_missing_count"],
+            "newly_missing_count": drift["newly_missing_count"],
+            "resolved_since_prior_count": drift["resolved_since_prior_count"],
+            "changed": drift["changed"],
+        }
+        recomputed["recompute_metadata"] = {
+            "gate_stage": gate_stage,
+            "required_window": {
+                "start_ts_iso": required_start.isoformat().replace("+00:00", "Z"),
+                "end_ts_iso": required_end.isoformat().replace("+00:00", "Z"),
+            },
+            "as_of_ts": current_manifest.get("as_of_ts"),
+            "drift": recomputed["drift"],
+        }
+        return recomputed
+
+    @staticmethod
+    def _compute_missing_manifest_drift(
+        *,
+        prior_entries: List[Dict[str, Any]],
+        current_entries: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Compute deterministic delta metrics between two canonical missing-window manifests."""
+        def _flatten(entries: List[Dict[str, Any]]) -> set[tuple[str, str, str]]:
+            flattened: set[tuple[str, str, str]] = set()
+            for entry in entries:
+                family = str(entry.get("artifact_family"))
+                for window in entry.get("ranges", []):
+                    flattened.add((family, str(window.get("start_ts_iso")), str(window.get("end_ts_iso"))))
+            return flattened
+
+        prior_set = _flatten(prior_entries)
+        current_set = _flatten(current_entries)
+        return {
+            "prior_missing_count": len(prior_set),
+            "current_missing_count": len(current_set),
+            "newly_missing_count": len(current_set - prior_set),
+            "resolved_since_prior_count": len(prior_set - current_set),
+            "changed": prior_set != current_set,
         }
 
     def _load_latest_verification_status(self) -> Dict[str, Any]:

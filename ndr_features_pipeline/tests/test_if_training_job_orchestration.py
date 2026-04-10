@@ -1,6 +1,7 @@
 import sys
 import types
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -1284,6 +1285,22 @@ def test_train_stage_hard_fails_when_reverify_has_unresolved_windows(monkeypatch
         job,
         "_load_required_latest_verification_status",
         lambda: {"stage": "reverify", "needs_remediation": True, "missing_windows_manifest": _missing_manifest(job.runtime_config, include_15m=True)},
+    )
+    monkeypatch.setattr(
+        job,
+        "_load_required_history_plan",
+        lambda: {"missing_windows_manifest": _missing_manifest(job.runtime_config)},
+    )
+    monkeypatch.setattr(job, "_resolve_training_window", lambda: (datetime(2024, 1, 1, tzinfo=timezone.utc), datetime(2024, 4, 1, tzinfo=timezone.utc)))
+    monkeypatch.setattr(job, "_resolve_evaluation_windows", lambda: [])
+    monkeypatch.setattr(
+        job,
+        "_recompute_training_readiness_snapshot",
+        lambda **_kwargs: {
+            "missing_windows_manifest": _missing_manifest(job.runtime_config, include_15m=True),
+            "training_readiness_manifest": {"contract_version": "training_readiness_manifest.v2"},
+            "drift": {"changed": True},
+        },
     )
     observed = {}
     monkeypatch.setattr(job, "_write_stage_status", lambda stage, payload: observed.update({"stage": stage, "payload": payload}))

@@ -62,6 +62,8 @@ from botocore.exceptions import ClientError
 DPP_CONFIG_TABLE_ENV_VAR = "DPP_CONFIG_TABLE_NAME"
 DEFAULT_TABLE_NAME = "dpp_config"
 DEFAULT_ROUTING_TABLE_NAME = "ml_projects_routing"
+DEFAULT_PROCESSING_LOCK_TABLE_NAME = "processing_lock"
+DEFAULT_PUBLICATION_LOCK_TABLE_NAME = "publication_lock"
 JOB_SPEC_SORT_KEY_DELIMITER = "#"
 
 TABLE_SPEC_JSON: dict[str, Any] = {
@@ -329,6 +331,38 @@ def create_routing_table_if_missing(
     return ddb_client.describe_table(TableName=table_name)["Table"]
 
 
+def create_processing_lock_table_if_missing(
+    table_name: str = DEFAULT_PROCESSING_LOCK_TABLE_NAME,
+    region_name: str | None = None,
+) -> dict[str, Any]:
+    """Create processing-lock table if absent and wait until it exists."""
+    ddb_client = boto3.client("dynamodb", region_name=region_name)
+    try:
+        return ddb_client.describe_table(TableName=table_name)["Table"]
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+            raise
+    ddb_client.create_table(**_build_processing_lock_table_payload(table_name))
+    ddb_client.get_waiter("table_exists").wait(TableName=table_name)
+    return ddb_client.describe_table(TableName=table_name)["Table"]
+
+
+def create_publication_lock_table_if_missing(
+    table_name: str = DEFAULT_PUBLICATION_LOCK_TABLE_NAME,
+    region_name: str | None = None,
+) -> dict[str, Any]:
+    """Create publication-lock table if absent and wait until it exists."""
+    ddb_client = boto3.client("dynamodb", region_name=region_name)
+    try:
+        return ddb_client.describe_table(TableName=table_name)["Table"]
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+            raise
+    ddb_client.create_table(**_build_publication_lock_table_payload(table_name))
+    ddb_client.get_waiter("table_exists").wait(TableName=table_name)
+    return ddb_client.describe_table(TableName=table_name)["Table"]
+
+
 def upsert_routing_items(
     table_name: str,
     items: list[dict[str, Any]],
@@ -450,6 +484,9 @@ def build_split_table_contracts() -> dict[str, dict[str, Any]]:
             ],
             "BillingMode": "PAY_PER_REQUEST",
         },
+        "ml_projects_routing": _build_routing_table_payload(DEFAULT_ROUTING_TABLE_NAME),
+        "processing_lock": _build_processing_lock_table_payload(DEFAULT_PROCESSING_LOCK_TABLE_NAME),
+        "publication_lock": _build_publication_lock_table_payload(DEFAULT_PUBLICATION_LOCK_TABLE_NAME),
     }
 
 
@@ -1100,6 +1137,38 @@ def _load_custom_seed_items(custom_seed_json: str) -> list[dict[str, Any]]:
             raise ValueError(f"Custom seed item at index {idx} must be a dictionary")
 
     return payload
+
+
+def _build_processing_lock_table_payload(table_name: str) -> dict[str, Any]:
+    """Build payload for processing-lock table creation (pk+sk)."""
+    return {
+        "TableName": table_name,
+        "AttributeDefinitions": [
+            {"AttributeName": "pk", "AttributeType": "S"},
+            {"AttributeName": "sk", "AttributeType": "S"},
+        ],
+        "KeySchema": [
+            {"AttributeName": "pk", "KeyType": "HASH"},
+            {"AttributeName": "sk", "KeyType": "RANGE"},
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+    }
+
+
+def _build_publication_lock_table_payload(table_name: str) -> dict[str, Any]:
+    """Build payload for publication-lock table creation (pk+sk)."""
+    return {
+        "TableName": table_name,
+        "AttributeDefinitions": [
+            {"AttributeName": "pk", "AttributeType": "S"},
+            {"AttributeName": "sk", "AttributeType": "S"},
+        ],
+        "KeySchema": [
+            {"AttributeName": "pk", "KeyType": "HASH"},
+            {"AttributeName": "sk", "KeyType": "RANGE"},
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+    }
 
 
 def _resolve_seed_items(

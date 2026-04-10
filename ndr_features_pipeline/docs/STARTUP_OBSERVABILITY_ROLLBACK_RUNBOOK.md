@@ -61,3 +61,15 @@ Use `docs/archive/debug_records/task15_startup_dashboard.json` dashboard definit
 - Primary owner team: `NDR Platform`
 - Escalation policy: `NDR-Startup-PagerDuty`
 - Consumer comms: update startup readiness status and failure class every 15 minutes until recovery.
+
+## Exception-table contracts (Task 8)
+- Run exception-table preflight before RT/monthly/backfill/training startup:
+  - `PYTHONPATH=src python -m ndr.scripts.run_exception_table_preflight --flow <rt|monthly|backfill|training>`.
+- Non-retriable failures: `EXC_TABLE_SCHEMA_DRIFT`, `EXC_TABLE_MISSING`, `EXC_TABLE_ACCESS_DENIED`.
+  - Stop startup and correct schema/provisioning/IAM before retry.
+- Retriable failure: `EXC_TABLE_DDB_TRANSIENT`.
+  - Retry with backoff; escalate if sustained.
+- Lock cleanup safety:
+  - inspect `processing_lock`/`publication_lock` by `pk/sk`,
+  - only remove expired rows (`ttl_epoch` in the past),
+  - record manual deletes in incident notes to preserve rollback/audit traceability.

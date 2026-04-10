@@ -7,6 +7,9 @@ This spec freezes foundational contracts for:
 1. `dpp_config` (DPP ownership)
 2. `mlp_config` (MLP ownership)
 3. `batch_index` (dual-item batch/run index)
+4. exception control-plane tables (`ml_projects_routing`, `processing_lock`, `publication_lock`) via Task 8 contract registry
+
+Exception-table contract details (keys, operations, startup preflight checks, and error semantics) are maintained in `docs/EXCEPTION_TABLE_CONTRACTS.md` and implemented by `src/ndr/config/exception_table_contracts.py`.
 
 ## 1) `dpp_config`
 
@@ -100,4 +103,3 @@ No GSI is part of the frozen greenfield contract. Reverse/date scans are done by
 - `artifact_mode`
 - `artifact_build_id`
 - `artifact_sha256`
-

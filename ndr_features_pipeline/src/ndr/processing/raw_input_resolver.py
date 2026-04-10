@@ -14,6 +14,8 @@ from ndr.processing.backfill_redshift_fallback import (
 
 
 ERROR_CODE_FALLBACK_DISABLED = "RAW_INPUT_FALLBACK_DISABLED"
+ERROR_CODE_FALLBACK_QUERY_CONTRACT_MISSING = "RAW_INPUT_FALLBACK_QUERY_CONTRACT_MISSING"
+ERROR_CODE_FALLBACK_EMPTY_RESULT = "RAW_INPUT_FALLBACK_EMPTY_RESULT"
 
 
 @dataclass(frozen=True)
@@ -60,17 +62,24 @@ class RawInputResolver:
                 f"{ERROR_CODE_FALLBACK_DISABLED}: No ingestion rows resolved and Redshift fallback is disabled"
             )
 
-        redshift_config, query_spec = load_backfill_fallback_contract(
-            dpp_spec=dpp_spec,
-            artifact_family=artifact_family,
-        )
+        try:
+            redshift_config, query_spec = load_backfill_fallback_contract(
+                dpp_spec=dpp_spec,
+                artifact_family=artifact_family,
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{ERROR_CODE_FALLBACK_QUERY_CONTRACT_MISSING}: {exc}"
+            ) from exc
         fallback_results = execute_backfill_redshift_fallback(
             config=redshift_config,
             query_spec=query_spec,
             ranges=[BackfillRange(start_ts=range_start_ts, end_ts=range_end_ts)],
         )
         if not fallback_results:
-            raise RuntimeError("RAW_INPUT_FALLBACK_EMPTY_RESULT: fallback execution returned no ranges")
+            raise RuntimeError(
+                f"{ERROR_CODE_FALLBACK_EMPTY_RESULT}: fallback execution returned no ranges"
+            )
 
         fallback_prefix = fallback_results[0].unload_s3_prefix
         return RawInputResolution(

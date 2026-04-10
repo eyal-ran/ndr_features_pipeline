@@ -69,6 +69,18 @@
       "domain": "backfill"
     },
     {
+      "error_code": "RAW_INPUT_FALLBACK_QUERY_CONTRACT_MISSING",
+      "message": "Raw input fallback contract missing required flow-specific query metadata.",
+      "retriable": false,
+      "domain": "backfill"
+    },
+    {
+      "error_code": "RAW_INPUT_FALLBACK_EMPTY_RESULT",
+      "message": "Raw input fallback query executed but returned no unload ranges.",
+      "retriable": true,
+      "domain": "backfill"
+    },
+    {
       "error_code": "DDB_LOOKUP_NOT_FOUND",
       "message": "Required DDB config key/item is missing.",
       "retriable": false,

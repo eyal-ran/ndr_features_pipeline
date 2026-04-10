@@ -9,7 +9,12 @@ conditions_module = types.ModuleType("boto3.dynamodb.conditions")
 conditions_module.Key = object
 sys.modules.setdefault("boto3.dynamodb.conditions", conditions_module)
 
-from ndr.processing.raw_input_resolver import ERROR_CODE_FALLBACK_DISABLED, RawInputResolver
+from ndr.processing.raw_input_resolver import (
+    ERROR_CODE_FALLBACK_DISABLED,
+    ERROR_CODE_FALLBACK_EMPTY_RESULT,
+    ERROR_CODE_FALLBACK_QUERY_CONTRACT_MISSING,
+    RawInputResolver,
+)
 
 
 def test_complete_ingestion_resolves_to_ingestion_mode():
@@ -68,5 +73,55 @@ def test_missing_ingestion_with_fallback_disabled_fails_explicitly():
         )
     except RuntimeError as exc:
         assert ERROR_CODE_FALLBACK_DISABLED in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+
+def test_missing_ingestion_with_missing_query_contract_fails_explicitly(monkeypatch):
+    import ndr.processing.raw_input_resolver as module
+
+    def _raise(**_kwargs):
+        raise ValueError("Missing flow-specific fallback query for artifact family 'pair_counts'")
+
+    monkeypatch.setattr(module, "load_backfill_fallback_contract", _raise)
+
+    try:
+        RawInputResolver().resolve(
+            ingestion_rows=[],
+            allow_redshift_fallback=True,
+            dpp_spec={"backfill_redshift_fallback": {"enabled": True}},
+            artifact_family="pair_counts",
+            range_start_ts="2025-01-01T00:00:00Z",
+            range_end_ts="2025-01-01T00:15:00Z",
+            producer_flow="pair_counts_builder",
+        )
+    except RuntimeError as exc:
+        assert ERROR_CODE_FALLBACK_QUERY_CONTRACT_MISSING in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+
+def test_missing_ingestion_with_empty_fallback_result_fails_explicitly(monkeypatch):
+    import ndr.processing.raw_input_resolver as module
+
+    monkeypatch.setattr(
+        module,
+        "load_backfill_fallback_contract",
+        lambda **_k: (types.SimpleNamespace(), types.SimpleNamespace()),
+    )
+    monkeypatch.setattr(module, "execute_backfill_redshift_fallback", lambda **_k: [])
+
+    try:
+        RawInputResolver().resolve(
+            ingestion_rows=[],
+            allow_redshift_fallback=True,
+            dpp_spec={"backfill_redshift_fallback": {"enabled": True}},
+            artifact_family="pair_counts",
+            range_start_ts="2025-01-01T00:00:00Z",
+            range_end_ts="2025-01-01T00:15:00Z",
+            producer_flow="pair_counts_builder",
+        )
+    except RuntimeError as exc:
+        assert ERROR_CODE_FALLBACK_EMPTY_RESULT in str(exc)
     else:
         raise AssertionError("Expected RuntimeError")

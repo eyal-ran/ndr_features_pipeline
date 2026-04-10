@@ -14,14 +14,17 @@ from __future__ import annotations
 import sys
 import traceback
 from dataclasses import dataclass
+import json
 from typing import Optional
 
+import boto3
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
 from ndr.logging.logger import get_logger
 from ndr.config.batch_index_loader import BatchIndexLoader
+from ndr.config.project_parameters_loader import load_project_parameters
 from ndr.config.job_spec_loader import load_pair_counts_job_spec
 from ndr.config.job_spec_models import PairCountsJobSpec
 from ndr.processing.base_runner import BaseRunner
@@ -34,6 +37,7 @@ from ndr.processing.raw_traffic_fields import (
     normalize_raw_traffic_fields,
     REQUIRED_CANONICAL_TRAFFIC_FIELDS,
 )
+from ndr.processing.raw_input_resolver import RawInputResolver
 
 
 LOGGER = get_logger(__name__)
@@ -66,6 +70,9 @@ class PairCountsJobRuntimeConfig:
     batch_start_ts_iso: str = ""
     batch_end_ts_iso: str = ""
     batch_index_table_name: str | None = None
+    dpp_config_table_name: str | None = None
+    raw_input_resolution: dict[str, str] | None = None
+    pair_counts_output_s3_prefix: str = ""
 
 
 class PairCountsBuilderJob(BaseRunner):
@@ -286,6 +293,10 @@ def run_pair_counts_builder_from_runtime_config(
     runtime_config: PairCountsJobRuntimeConfig,
 ) -> None:
     """Helper to run PairCountsBuilderJob from a typed runtime config."""
+    ingestion_rows: list[dict[str, str]] = []
+    if runtime_config.raw_parsed_logs_s3_prefix:
+        ingestion_rows.append({"raw_parsed_logs_s3_prefix": runtime_config.raw_parsed_logs_s3_prefix})
+
     record = BatchIndexLoader(table_name=runtime_config.batch_index_table_name).get_batch(
         project_name=runtime_config.project_name,
         batch_id=runtime_config.mini_batch_id,
@@ -293,6 +304,29 @@ def run_pair_counts_builder_from_runtime_config(
     if record is not None:
         if not runtime_config.raw_parsed_logs_s3_prefix and record.raw_parsed_logs_s3_prefix:
             runtime_config.raw_parsed_logs_s3_prefix = str(record.raw_parsed_logs_s3_prefix)
+        if str(getattr(record, "raw_parsed_logs_s3_prefix", "")).strip():
+            ingestion_rows.append({"raw_parsed_logs_s3_prefix": str(record.raw_parsed_logs_s3_prefix)})
+
+    project_parameters = load_project_parameters(
+        runtime_config.project_name,
+        runtime_config.feature_spec_version,
+        dpp_table_name=runtime_config.dpp_config_table_name,
+    )
+    fallback = project_parameters.get("backfill_redshift_fallback") or {}
+    allow_redshift_fallback = bool(fallback) and bool(fallback.get("enabled", True))
+    source_resolution = RawInputResolver().resolve(
+        ingestion_rows=ingestion_rows,
+        allow_redshift_fallback=allow_redshift_fallback,
+        dpp_spec=project_parameters,
+        artifact_family="pair_counts",
+        range_start_ts=runtime_config.batch_start_ts_iso,
+        range_end_ts=runtime_config.batch_end_ts_iso,
+        producer_flow="pair_counts_builder",
+        request_id=runtime_config.mini_batch_id,
+    )
+    runtime_config.raw_parsed_logs_s3_prefix = source_resolution.raw_input_s3_prefix
+    runtime_config.raw_input_resolution = source_resolution.provenance
+
     job = PairCountsBuilderJob(runtime_config=runtime_config)
     if record is not None:
         dpp_prefixes = record.s3_prefixes.get("dpp", {})
@@ -304,4 +338,65 @@ def run_pair_counts_builder_from_runtime_config(
                     feature_spec_version=runtime_config.feature_spec_version,
                 )
             job.job_spec.pair_counts_output.s3_prefix = str(pair_counts_prefix)
+            runtime_config.pair_counts_output_s3_prefix = str(pair_counts_prefix)
+    if not runtime_config.pair_counts_output_s3_prefix:
+        if getattr(job, "job_spec", None) is None:
+            job.job_spec = load_pair_counts_job_spec(
+                project_name=runtime_config.project_name,
+                feature_spec_version=runtime_config.feature_spec_version,
+            )
+        runtime_config.pair_counts_output_s3_prefix = str(job.job_spec.pair_counts_output.s3_prefix)
     job.run()
+    _write_pair_counts_run_metadata(runtime_config=runtime_config)
+
+
+def _write_pair_counts_run_metadata(*, runtime_config: PairCountsJobRuntimeConfig) -> None:
+    """Persist deterministic raw-input provenance for downstream audit consumers."""
+    resolution = dict(runtime_config.raw_input_resolution or {})
+    source_mode = str(resolution.get("source_mode", "")).strip()
+    rationale = str(resolution.get("resolution_reason", "")).strip()
+    if not source_mode or not rationale:
+        raise RuntimeError(
+            "PAIR_COUNTS_METADATA_CONTRACT_VIOLATION: raw_input_resolution must include source_mode and resolution_reason"
+        )
+
+    if not runtime_config.pair_counts_output_s3_prefix:
+        raise RuntimeError(
+            "PAIR_COUNTS_METADATA_CONTRACT_VIOLATION: pair_counts_output_s3_prefix must be resolved before metadata write"
+        )
+    base_prefix = build_batch_output_prefix(
+        base_prefix=runtime_config.pair_counts_output_s3_prefix,
+        dataset="pair_counts",
+        batch_start_ts_iso=runtime_config.batch_start_ts_iso,
+        batch_id=runtime_config.mini_batch_id,
+    )
+    body = {
+        "contract_version": "pair_counts.raw_input_resolution.v1",
+        "project_name": runtime_config.project_name,
+        "feature_spec_version": runtime_config.feature_spec_version,
+        "mini_batch_id": runtime_config.mini_batch_id,
+        "batch_start_ts_iso": runtime_config.batch_start_ts_iso,
+        "batch_end_ts_iso": runtime_config.batch_end_ts_iso,
+        "source_mode": source_mode,
+        "resolution_reason": rationale,
+        "raw_input_s3_prefix": runtime_config.raw_parsed_logs_s3_prefix,
+        "provenance": resolution,
+    }
+    metadata_uri = f"{base_prefix.rstrip('/')}/_metadata/raw_input_resolution.json"
+    bucket, key = _split_s3_uri(metadata_uri)
+    boto3.client("s3").put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=json.dumps(body, indent=2, sort_keys=True).encode("utf-8"),
+        ContentType="application/json",
+    )
+
+
+def _split_s3_uri(uri: str) -> tuple[str, str]:
+    if not uri.startswith("s3://"):
+        raise ValueError(f"Expected s3:// URI, got: {uri}")
+    rest = uri[5:]
+    if "/" not in rest:
+        return rest, ""
+    bucket, key = rest.split("/", 1)
+    return bucket, key

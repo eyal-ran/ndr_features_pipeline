@@ -73,6 +73,9 @@ It includes:
    - Second-hand processing entrypoint: `run_pair_counts_builder_from_runtime_config`
    - Processing module: `src/ndr/processing/pair_counts_builder_job.py`
    - Processing purpose: build pair-count datasets for `(src_ip, dst_ip, dst_port)` over 15-minute slices.
+   - Raw-input source contract: resolves `ingestion` vs `redshift_unload_fallback` using shared `RawInputResolver` and DDB-owned `project_parameters.backfill_redshift_fallback`.
+   - Fail-fast contract errors: `RAW_INPUT_FALLBACK_DISABLED`, `RAW_INPUT_FALLBACK_QUERY_CONTRACT_MISSING`, `RAW_INPUT_FALLBACK_EMPTY_RESULT`.
+   - Provenance persistence: writes `<pair_counts_batch_output_prefix>/_metadata/raw_input_resolution.json` including `source_mode`, `resolution_reason`, and full resolver provenance.
 ### Pipeline triggered at `Start15mDependentFeaturesPipeline`: `${PipelineName15mDependent}` (dependent)
 
 - **Implemented pipeline function:** `build_15m_dependent_pipeline`.

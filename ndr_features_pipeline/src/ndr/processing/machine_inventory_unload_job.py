@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import time
 import tempfile
+import json
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +17,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
 from ndr.config.job_spec_loader import load_job_spec
+from ndr.config.project_parameters_loader import resolve_dpp_config_table_name
 from ndr.logging.logger import get_logger
 from ndr.processing.base_runner import BaseRunner
 
@@ -61,6 +64,7 @@ class MachineInventoryOutputSpec:
     partitioning: List[str]
     ip_output_column: str = "ip_address"
     name_output_column: str = "machine_name"
+    mapping_contract_version: str = "machine_inventory_mapping.v1"
 
 
 class MachineInventoryUnloadJob(BaseRunner):
@@ -110,6 +114,12 @@ class MachineInventoryUnloadJob(BaseRunner):
             output_spec=output_spec,
             snapshot_month=snapshot_month,
         )
+        self._write_snapshot_manifest(
+            partition_prefix=partition_prefix,
+            snapshot_month=snapshot_month,
+            output_spec=output_spec,
+        )
+        self._update_canonical_mapping_pointer(partition_prefix=partition_prefix, snapshot_month=snapshot_month)
         self._delete_prefix(*parse_s3_uri(unload_prefix))
         self.logger.info(
             "Redshift UNLOAD completed for snapshot_month=%s, descriptor_id=%s, source_rows=%s, unloaded_rows=%s.",
@@ -141,13 +151,91 @@ class MachineInventoryUnloadJob(BaseRunner):
                 local_df.dropna(subset=[output_spec.ip_output_column])
                 .dropDuplicates([output_spec.ip_output_column, output_spec.name_output_column])
                 .withColumn("snapshot_month", F.lit(snapshot_month))
+                .withColumn("mapping_contract_version", F.lit(output_spec.mapping_contract_version))
                 .select(
                     output_spec.ip_output_column,
                     output_spec.name_output_column,
                     "snapshot_month",
+                    "mapping_contract_version",
                 )
             )
             write_df.write.mode("overwrite").parquet(partition_prefix)
+
+    def _write_snapshot_manifest(
+        self,
+        *,
+        partition_prefix: str,
+        snapshot_month: str,
+        output_spec: MachineInventoryOutputSpec,
+    ) -> None:
+        """Write success marker + schema/count manifest for canonical snapshot validation."""
+        snapshot_df = self.spark.read.parquet(partition_prefix)
+        row_count = snapshot_df.count()
+        schema_hash = hashlib.sha256(snapshot_df.schema.json().encode("utf-8")).hexdigest()
+        manifest_payload = {
+            "contract_version": output_spec.mapping_contract_version,
+            "snapshot_month": snapshot_month,
+            "row_count": row_count,
+            "schema_hash_sha256": schema_hash,
+            "generated_at_utc": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        }
+        bucket, key_prefix = parse_s3_uri(partition_prefix)
+        s3 = boto3.client("s3")
+        manifest_key = f"{key_prefix.rstrip('/')}/_snapshot_manifest.json"
+        s3.put_object(
+            Bucket=bucket,
+            Key=manifest_key,
+            Body=json.dumps(manifest_payload, sort_keys=True).encode("utf-8"),
+            ContentType="application/json",
+        )
+        s3.put_object(Bucket=bucket, Key=f"{key_prefix.rstrip('/')}/_SUCCESS", Body=b"")
+
+    def _update_canonical_mapping_pointer(self, *, partition_prefix: str, snapshot_month: str) -> None:
+        """Atomically move canonical DDB pointer to validated snapshot for Option-1 contract."""
+        table_name = resolve_dpp_config_table_name(None)
+        table = boto3.resource("dynamodb").Table(table_name)
+        key = {
+            "project_name": self.runtime_config.project_name,
+            "job_name_version": f"project_parameters#{self.runtime_config.feature_spec_version}",
+        }
+        response = table.get_item(Key=key, ConsistentRead=True)
+        item = response.get("Item")
+        if not item:
+            raise RuntimeError(
+                "MACHINE_INVENTORY_POINTER_UPDATE_FAILED: Missing project_parameters record for "
+                f"project_name={self.runtime_config.project_name}, feature_spec_version={self.runtime_config.feature_spec_version}."
+            )
+        payload_key = "spec" if "spec" in item else "parameters" if "parameters" in item else None
+        if payload_key is None:
+            raise RuntimeError(
+                "MACHINE_INVENTORY_POINTER_UPDATE_FAILED: project_parameters item must include 'spec' or 'parameters' map."
+            )
+        payload = dict(item.get(payload_key) or {})
+        current_pointer = str(payload.get("ip_machine_mapping_s3_prefix", "")).strip()
+        if current_pointer == partition_prefix:
+            self.logger.info("Canonical mapping pointer already set to %s; skipping update.", partition_prefix)
+            return
+        if current_pointer:
+            payload["ip_machine_mapping_previous_s3_prefix"] = current_pointer
+        payload["ip_machine_mapping_s3_prefix"] = partition_prefix
+        payload["ip_machine_mapping_pointer_updated_for_month"] = snapshot_month
+        item[payload_key] = payload
+        item["updated_at"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+        retries = 3
+        for attempt in range(1, retries + 1):
+            try:
+                table.put_item(
+                    Item=item,
+                    ConditionExpression="attribute_exists(project_name) AND attribute_exists(job_name_version)",
+                )
+                return
+            except Exception as exc:
+                if attempt == retries:
+                    raise RuntimeError(
+                        "MACHINE_INVENTORY_POINTER_UPDATE_FAILED: Unable to atomically commit pointer update after retries."
+                    ) from exc
+                time.sleep(float(attempt))
 
     def _download_unload_objects(self, *, unload_prefix: str, local_dir: str) -> List[str]:
         """Download UNLOAD parquet objects to local filesystem for deterministic staging."""
@@ -298,6 +386,7 @@ def parse_machine_inventory_spec(
         partitioning=output_payload.get("partitioning", ["snapshot_month"]),
         ip_output_column=output_payload.get("ip_output_column", "ip_address"),
         name_output_column=output_payload.get("name_output_column", "machine_name"),
+        mapping_contract_version=output_payload.get("mapping_contract_version", "machine_inventory_mapping.v1"),
     )
     if not output_spec.s3_prefix:
         raise ValueError("output.s3_prefix is required for machine inventory unload.")
@@ -305,6 +394,8 @@ def parse_machine_inventory_spec(
         raise ValueError("Only PARQUET output_format is supported.")
     if "snapshot_month" not in output_spec.partitioning:
         raise ValueError("output.partitioning must include 'snapshot_month'.")
+    if not str(output_spec.mapping_contract_version).strip():
+        raise ValueError("output.mapping_contract_version is required.")
 
     return redshift_cfg, query_spec, output_spec
 

@@ -12,7 +12,16 @@ dedicated environment with real data.
 """
 
 import unittest
+import sys
+import types
 from unittest.mock import patch, MagicMock
+
+sys.modules.setdefault("boto3", types.ModuleType("boto3"))
+boto3_dynamodb = types.ModuleType("boto3.dynamodb")
+boto3_dynamodb_conditions = types.ModuleType("boto3.dynamodb.conditions")
+boto3_dynamodb_conditions.Key = object
+sys.modules.setdefault("boto3.dynamodb", boto3_dynamodb)
+sys.modules.setdefault("boto3.dynamodb.conditions", boto3_dynamodb_conditions)
 
 from pyspark.sql import SparkSession
 from pyspark.sql import types as T
@@ -243,6 +252,10 @@ class TestFGBaselineBuilderJob(unittest.TestCase):
         assert "s3://dummy/features/fg_b/publication_metadata/" in written_paths
         assert all("ts=" not in path for path in written_paths)
         assert all(kwargs["mode"] == "overwrite" for _, kwargs in write_mock.call_args_list)
+        assert all(
+            kwargs["partition_cols"] == ["feature_spec_version", "baseline_horizon", "baseline_month"]
+            for _, kwargs in write_mock.call_args_list
+        )
         publication_call = next(kwargs for _, kwargs in write_mock.call_args_list if kwargs["base_path"].endswith("/publication_metadata/"))
         publish_df = publication_call["df"]
         publish_row = publish_df.collect()[0].asDict()
@@ -250,6 +263,21 @@ class TestFGBaselineBuilderJob(unittest.TestCase):
         assert publish_row["created_date"] == "2025-12-31"
         assert publish_row["baseline_start_ts"] == "2025-12-22T00:00:00Z"
         assert publish_row["baseline_end_ts"] == "2025-12-29T00:00:00Z"
+        assert publish_row["baseline_month"] == "2025-12"
+
+    def test_mapping_pointer_must_be_canonical_monthly_snapshot_path(self):
+        cfg = FGBaselineJobRuntimeConfig(
+            project_name="ndr_project",
+            feature_spec_version="v1",
+            reference_time_iso="2025-12-31T00:00:00Z",
+        )
+        job = FGBaselineBuilderJob(runtime_config=cfg)
+        job.spark = self.spark
+        job.job_spec = {"ip_machine_mapping": {}}
+        job.project_parameters = {"ip_machine_mapping_s3_prefix": "s3://dummy/config/ip_machine_mapping/"}
+
+        with self.assertRaisesRegex(ValueError, "FG_B_MAPPING_POINTER_INVALID"):
+            job._load_ip_machine_mapping()
 
 
     def test_normalize_fg_a_wide_to_role_long_and_time_band(self):

@@ -2,6 +2,11 @@ import sys
 import types
 
 sys.modules.setdefault("boto3", types.ModuleType("boto3"))
+boto3_dynamodb = types.ModuleType("boto3.dynamodb")
+boto3_dynamodb_conditions = types.ModuleType("boto3.dynamodb.conditions")
+boto3_dynamodb_conditions.Key = object
+sys.modules.setdefault("boto3.dynamodb", boto3_dynamodb)
+sys.modules.setdefault("boto3.dynamodb.conditions", boto3_dynamodb_conditions)
 
 pyspark_module = types.ModuleType("pyspark")
 pyspark_sql_module = types.ModuleType("pyspark.sql")
@@ -142,6 +147,26 @@ def test_parse_machine_inventory_spec_requires_query_sql():
         raise AssertionError("Expected ValueError for missing query.sql")
 
 
+def test_parse_machine_inventory_spec_requires_mapping_contract_version():
+    job_spec = {
+        "redshift": {
+            "cluster_identifier": "cluster",
+            "database": "db",
+            "secret_arn": "arn:secret",
+            "region": "us-east-1",
+            "iam_role": "arn:aws:iam::123456789012:role/RedshiftRole",
+        },
+        "query": {"sql": "select ip_address, machine_name from dim_machine"},
+        "output": {"s3_prefix": "s3://bucket/prefix/", "mapping_contract_version": ""},
+    }
+    try:
+        parse_machine_inventory_spec(job_spec)
+    except ValueError as exc:
+        assert "mapping_contract_version" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for missing mapping_contract_version")
+
+
 class _StubDataApi:
     def __init__(self, count_records=None):
         self._count_records = [[{"longValue": 2}]] if count_records is None else count_records
@@ -228,3 +253,44 @@ def test_get_query_row_count_raises_on_empty_result(monkeypatch):
         assert "MACHINE_INVENTORY_SOURCE_COUNT_FAILED" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError for empty source count result")
+
+
+def test_update_canonical_mapping_pointer_updates_current_and_previous(monkeypatch):
+    class _StubTable:
+        def __init__(self):
+            self.item = {
+                "project_name": "proj",
+                "job_name_version": "project_parameters#v1",
+                "spec": {"ip_machine_mapping_s3_prefix": "s3://bucket/prefix/snapshot_month=2025-11/"},
+            }
+            self.put_item_payload = None
+
+        def get_item(self, **_kwargs):
+            return {"Item": dict(self.item)}
+
+        def put_item(self, **kwargs):
+            self.put_item_payload = kwargs["Item"]
+
+    class _StubDdb:
+        def __init__(self, table):
+            self._table = table
+
+        def Table(self, _name):
+            return self._table
+
+    table = _StubTable()
+    monkeypatch.setattr("ndr.processing.machine_inventory_unload_job.resolve_dpp_config_table_name", lambda _name=None: "dpp_config")
+    monkeypatch.setattr(
+        "ndr.processing.machine_inventory_unload_job.boto3.resource",
+        lambda _service: _StubDdb(table),
+        raising=False,
+    )
+
+    job = _build_job()
+    job._update_canonical_mapping_pointer(
+        partition_prefix="s3://bucket/prefix/snapshot_month=2025-12/",
+        snapshot_month="2025-12",
+    )
+
+    assert table.put_item_payload["spec"]["ip_machine_mapping_s3_prefix"] == "s3://bucket/prefix/snapshot_month=2025-12/"
+    assert table.put_item_payload["spec"]["ip_machine_mapping_previous_s3_prefix"] == "s3://bucket/prefix/snapshot_month=2025-11/"

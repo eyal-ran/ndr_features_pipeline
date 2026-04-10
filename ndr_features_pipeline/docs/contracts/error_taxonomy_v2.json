@@ -1,0 +1,21 @@
+{
+  "taxonomy_version": "error_taxonomy.v2",
+  "frozen_on": "2026-04-10",
+  "errors": [
+    {"error_code": "CONTRACT_UNDECLARED_FIELD", "message": "Observed interface contains field not declared in frozen matrix.", "retriable": false, "domain": "contract"},
+    {"error_code": "CONTRACT_REQUIRED_FIELD_MISSING", "message": "Required frozen contract field missing at runtime/CI check.", "retriable": false, "domain": "contract"},
+    {"error_code": "CONTRACT_EDGE_NOT_FOUND", "message": "Contract edge id missing from frozen matrix.", "retriable": false, "domain": "contract"},
+    {"error_code": "CONTRACT_LAYER_NOT_FOUND", "message": "Layer missing from edge contract declaration.", "retriable": false, "domain": "contract"},
+    {"error_code": "CONTRACT_PRODUCER_ONLY_FIELD", "message": "Field has producer but no mapped consumer/no-op declaration.", "retriable": false, "domain": "contract"},
+    {"error_code": "ERROR_TAXONOMY_MISSING_CODE", "message": "Required contract/gate error code absent from taxonomy.", "retriable": false, "domain": "contract"},
+    {"error_code": "MONTHLY_DEPENDENCY_MISSING", "message": "Monthly readiness checker found unresolved dependency ranges.", "retriable": true, "domain": "monthly"},
+    {"error_code": "RT_ARTIFACT_MISSING", "message": "RT readiness checker found unresolved dependency ranges.", "retriable": true, "domain": "rt"},
+    {"error_code": "BACKFILL_UNSUPPORTED_FAMILY", "message": "Backfill request references unsupported artifact family.", "retriable": false, "domain": "backfill"},
+    {"error_code": "BACKFILL_FALLBACK_DISABLED", "message": "Ingestion missing and Redshift fallback disabled by DDB policy.", "retriable": false, "domain": "backfill"},
+    {"error_code": "BACKFILL_FALLBACK_EMPTY", "message": "Redshift fallback query completed but produced empty result.", "retriable": true, "domain": "backfill"},
+    {"error_code": "DDB_LOOKUP_NOT_FOUND", "message": "Required DDB config key/item is missing.", "retriable": false, "domain": "config"},
+    {"error_code": "DDB_THROTTLED", "message": "DDB request throttled; safe to retry with backoff.", "retriable": true, "domain": "config"},
+    {"error_code": "BATCH_INDEX_RECORD_MISSING", "message": "Batch Index record missing for required batch/window.", "retriable": true, "domain": "index"},
+    {"error_code": "IDEMPOTENCY_CONFLICT", "message": "Duplicate request conflicts with in-flight/completed idempotency key.", "retriable": false, "domain": "orchestration"}
+  ]
+}

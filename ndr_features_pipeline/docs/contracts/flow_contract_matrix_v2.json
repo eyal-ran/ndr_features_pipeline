@@ -1,0 +1,411 @@
+{
+  "contract_version": "flow_contract_matrix.v2",
+  "frozen_on": "2026-04-10",
+  "notes": "Canonical current-state interface matrix from SFN payload -> pipeline params -> CLI args -> runtime fields -> DDB keys.",
+  "edges": [
+    {
+      "edge_id": "monthly_machine_inventory",
+      "flow": "monthly",
+      "layers": {
+        "sfn_payload": {
+          "required": [
+            "project_name",
+            "feature_spec_version",
+            "reference_month"
+          ],
+          "optional": []
+        },
+        "pipeline_params": {
+          "required": [
+            "ProjectName",
+            "FeatureSpecVersion",
+            "ReferenceMonth"
+          ],
+          "optional": []
+        },
+        "cli_args": {
+          "required": [
+            "--project-name",
+            "--feature-spec-version",
+            "--reference-month"
+          ],
+          "optional": []
+        },
+        "runtime_fields": {
+          "required": [
+            "project_name",
+            "feature_spec_version",
+            "reference_month"
+          ],
+          "optional": []
+        },
+        "ddb_keys": {
+          "required": [
+            "dpp_config.project_name",
+            "dpp_config.job_name_version"
+          ],
+          "optional": [
+            "dpp_config.spec.project_parameters.ip_machine_mapping_s3_prefix"
+          ]
+        }
+      }
+    },
+    {
+      "edge_id": "rt_15m_core",
+      "flow": "rt",
+      "layers": {
+        "sfn_payload": {
+          "required": [
+            "project_name",
+            "feature_spec_version",
+            "mini_batch_id",
+            "batch_start_ts_iso",
+            "batch_end_ts_iso",
+            "raw_parsed_logs_s3_prefix"
+          ],
+          "optional": []
+        },
+        "pipeline_params": {
+          "required": [
+            "ProjectName",
+            "FeatureSpecVersion",
+            "MiniBatchId",
+            "BatchStartTsIso",
+            "BatchEndTsIso",
+            "RawParsedLogsS3Prefix"
+          ],
+          "optional": []
+        },
+        "cli_args": {
+          "required": [
+            "--project-name",
+            "--feature-spec-version",
+            "--mini-batch-id",
+            "--batch-start-ts-iso",
+            "--batch-end-ts-iso",
+            "--raw-parsed-logs-s3-prefix"
+          ],
+          "optional": [
+            "--dpp-config-table-name",
+            "--batch-index-table-name"
+          ]
+        },
+        "runtime_fields": {
+          "required": [
+            "project_name",
+            "feature_spec_version",
+            "mini_batch_id",
+            "batch_start_ts_iso",
+            "batch_end_ts_iso",
+            "raw_parsed_logs_s3_prefix"
+          ],
+          "optional": []
+        },
+        "ddb_keys": {
+          "required": [
+            "batch_index.PK",
+            "batch_index.SK",
+            "dpp_config.project_name",
+            "dpp_config.job_name_version"
+          ],
+          "optional": []
+        }
+      }
+    },
+    {
+      "edge_id": "backfill_reprocessing",
+      "flow": "backfill",
+      "layers": {
+        "sfn_payload": {
+          "required": [
+            "project_name",
+            "feature_spec_version",
+            "artifact_family",
+            "range_start_ts_iso",
+            "range_end_ts_iso"
+          ],
+          "optional": [
+            "idempotency_key",
+            "dpp_config_table_name"
+          ]
+        },
+        "pipeline_params": {
+          "required": [
+            "ProjectName",
+            "FeatureSpecVersion",
+            "ArtifactFamily",
+            "RangeStartTsIso",
+            "RangeEndTsIso"
+          ],
+          "optional": []
+        },
+        "cli_args": {
+          "required": [
+            "--project-name",
+            "--feature-spec-version",
+            "--artifact-family",
+            "--range-start-ts-iso",
+            "--range-end-ts-iso"
+          ],
+          "optional": [
+            "--idempotency-key",
+            "--dpp-config-table-name"
+          ]
+        },
+        "runtime_fields": {
+          "required": [
+            "project_name",
+            "feature_spec_version",
+            "artifact_family",
+            "range_start_ts_iso",
+            "range_end_ts_iso"
+          ],
+          "optional": [
+            "idempotency_key"
+          ]
+        },
+        "ddb_keys": {
+          "required": [
+            "dpp_config.project_name",
+            "dpp_config.job_name_version"
+          ],
+          "optional": [
+            "dpp_config.spec.project_parameters.backfill_redshift_fallback"
+          ]
+        }
+      }
+    },
+    {
+      "edge_id": "training_if_pipeline",
+      "flow": "training",
+      "layers": {
+        "sfn_payload": {
+          "required": [
+            "project_name",
+            "feature_spec_version",
+            "ml_project_name",
+            "run_id",
+            "execution_ts_iso",
+            "dpp_config_table_name",
+            "mlp_config_table_name",
+            "batch_index_table_name"
+          ],
+          "optional": [
+            "training_start_ts",
+            "training_end_ts",
+            "eval_start_ts",
+            "eval_end_ts",
+            "mode"
+          ]
+        },
+        "pipeline_params": {
+          "required": [
+            "ProjectName",
+            "FeatureSpecVersion",
+            "MlProjectName",
+            "RunId",
+            "ExecutionTsIso",
+            "DppConfigTableName",
+            "MlpConfigTableName",
+            "BatchIndexTableName"
+          ],
+          "optional": [
+            "TrainingStartTs",
+            "TrainingEndTs",
+            "EvalStartTs",
+            "EvalEndTs",
+            "Mode"
+          ]
+        },
+        "cli_args": {
+          "required": [
+            "--project-name",
+            "--feature-spec-version",
+            "--ml-project-name",
+            "--run-id",
+            "--execution-ts-iso",
+            "--dpp-config-table-name",
+            "--mlp-config-table-name",
+            "--batch-index-table-name"
+          ],
+          "optional": [
+            "--training-start-ts",
+            "--training-end-ts",
+            "--eval-start-ts",
+            "--eval-end-ts",
+            "--mode",
+            "--stage"
+          ]
+        },
+        "runtime_fields": {
+          "required": [
+            "project_name",
+            "feature_spec_version",
+            "ml_project_name",
+            "run_id",
+            "execution_ts_iso",
+            "dpp_config_table_name",
+            "mlp_config_table_name",
+            "batch_index_table_name"
+          ],
+          "optional": [
+            "training_start_ts",
+            "training_end_ts",
+            "eval_start_ts",
+            "eval_end_ts",
+            "mode"
+          ]
+        },
+        "ddb_keys": {
+          "required": [
+            "dpp_config.project_name",
+            "dpp_config.job_name_version",
+            "mlp_config.ml_project_name",
+            "mlp_config.job_name_version",
+            "batch_index.PK",
+            "batch_index.SK"
+          ],
+          "optional": []
+        }
+      }
+    },
+    {
+      "edge_id": "control_plane_bootstrap",
+      "flow": "control_plane",
+      "layers": {
+        "sfn_payload": {
+          "required": [
+            "project_name",
+            "feature_spec_version"
+          ],
+          "optional": [
+            "reference_month",
+            "ml_project_name"
+          ]
+        },
+        "pipeline_params": {
+          "required": [
+            "ProjectName",
+            "FeatureSpecVersion"
+          ],
+          "optional": [
+            "ReferenceMonth",
+            "MlProjectName"
+          ]
+        },
+        "cli_args": {
+          "required": [
+            "--project-name",
+            "--feature-spec-version"
+          ],
+          "optional": [
+            "--reference-month",
+            "--ml-project-name"
+          ]
+        },
+        "runtime_fields": {
+          "required": [
+            "project_name",
+            "feature_spec_version"
+          ],
+          "optional": [
+            "reference_month",
+            "ml_project_name"
+          ]
+        },
+        "ddb_keys": {
+          "required": [
+            "dpp_config.project_name",
+            "dpp_config.job_name_version"
+          ],
+          "optional": [
+            "dpp_config.spec.project_parameters.ml_project_names"
+          ]
+        }
+      }
+    }
+  ],
+  "field_ownership": [
+    {
+      "field_path": "project_name",
+      "producer_owner": "step_functions",
+      "consumer_owner": "all_runtime_consumers",
+      "source": "runtime",
+      "required": true,
+      "validator_owner": "contract_validator"
+    },
+    {
+      "field_path": "feature_spec_version",
+      "producer_owner": "step_functions",
+      "consumer_owner": "all_runtime_consumers",
+      "source": "runtime",
+      "required": true,
+      "validator_owner": "contract_validator"
+    },
+    {
+      "field_path": "mini_batch_id",
+      "producer_owner": "step_functions_rt",
+      "consumer_owner": "rt_builders",
+      "source": "runtime",
+      "required": true,
+      "validator_owner": "rt_contract_validator"
+    },
+    {
+      "field_path": "batch_start_ts_iso",
+      "producer_owner": "step_functions_rt",
+      "consumer_owner": "rt_builders",
+      "source": "runtime",
+      "required": true,
+      "validator_owner": "rt_contract_validator"
+    },
+    {
+      "field_path": "batch_end_ts_iso",
+      "producer_owner": "step_functions_rt",
+      "consumer_owner": "rt_builders",
+      "source": "runtime",
+      "required": true,
+      "validator_owner": "rt_contract_validator"
+    },
+    {
+      "field_path": "reference_month",
+      "producer_owner": "step_functions_monthly",
+      "consumer_owner": "machine_inventory_and_fgb",
+      "source": "runtime",
+      "required": true,
+      "validator_owner": "monthly_contract_validator"
+    },
+    {
+      "field_path": "ml_project_name",
+      "producer_owner": "step_functions_training",
+      "consumer_owner": "if_training_runtime",
+      "source": "runtime",
+      "required": true,
+      "validator_owner": "training_contract_validator"
+    },
+    {
+      "field_path": "idempotency_key",
+      "producer_owner": "backfill_orchestrator",
+      "consumer_owner": "backfill_executor",
+      "source": "runtime",
+      "required": false,
+      "validator_owner": "backfill_contract_validator"
+    },
+    {
+      "field_path": "dpp_config.spec.project_parameters.ip_machine_mapping_s3_prefix",
+      "producer_owner": "machine_inventory_pipeline",
+      "consumer_owner": "fg_b_mapping_loader",
+      "source": "ddb",
+      "required": true,
+      "validator_owner": "monthly_contract_validator"
+    },
+    {
+      "field_path": "dpp_config.spec.project_parameters.backfill_redshift_fallback",
+      "producer_owner": "dpp_seed",
+      "consumer_owner": "raw_input_resolver",
+      "source": "ddb",
+      "required": false,
+      "validator_owner": "backfill_contract_validator",
+      "validated_metadata_noop": true
+    }
+  ]
+}

@@ -15,6 +15,7 @@ This `docs/` tree is organized to separate canonical architecture and operationa
 - `palo_alto_raw_partitioning_strategy.md`: ML-orchestration guidance for consuming Palo Alto 15-minute ingestion batches and managing mini-batch runtime identity.
 - `feature_catalog/` + `FEATURE_CATALOG.md`: generated feature catalog artifacts.
 - `step_functions_jsonata/`: JSONata state machine definitions used for deployment.
+- `contracts/`: frozen v2 producer/consumer interface matrix, machine-readable artifacts, and deterministic error taxonomy used by CI drift checks.
 - `legacy_specs/word/`: historical Word specifications kept for traceability.
 - `archive/`: historical migration notes, debug records, and one-off validation logs.
 

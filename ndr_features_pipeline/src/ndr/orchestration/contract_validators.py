@@ -25,6 +25,9 @@ TASK14_EXTRACTOR_RUNTIME_TO_MANIFEST_CONSUMER_MISMATCH = "TASK14_EXTRACTOR_RUNTI
 TASK15_STARTUP_OBSERVABILITY_VERSION = "task15_initial_deployment_observability.v1"
 TASK15_CONTRACT_ERROR_CODE = "TASK15_CONTRACT_VIOLATION"
 TASK15_GATE_ERROR_CODE = "TASK15_OBSERVABILITY_GATE_RED"
+TASK9_RELEASE_HARDENING_VERSION = "task9_release_hardening_gate.v1"
+TASK9_CONTRACT_ERROR_CODE = "TASK9_CONTRACT_VIOLATION"
+TASK9_GATE_ERROR_CODE = "TASK9_RELEASE_GATE_RED"
 
 _TASK15_REQUIRED_METRICS = (
     "bootstrap_duration_seconds",
@@ -42,6 +45,14 @@ _TASK15_REQUIRED_FAILURE_CLASSES = (
 )
 
 _TASK15_ALLOWED_SEVERITIES = ("sev1", "sev2", "sev3")
+_TASK9_REQUIRED_SCENARIOS = (
+    "normal",
+    "missing_dependency",
+    "fallback",
+    "duplicate_replay",
+    "partial_failure_retry",
+)
+_TASK9_REQUIRED_FLOWS = ("monthly", "rt", "backfill", "training", "control_plane")
 
 _TASK11_REQUIRED_FINDINGS = (
     "F1.1",
@@ -776,5 +787,149 @@ def evaluate_task15_initial_deployment_observability(*, evidence: Mapping[str, A
     if failed_checks:
         raise ValueError(
             f"{TASK15_GATE_ERROR_CODE}: Task 15 startup observability gate failed checks {failed_checks}"
+        )
+    return report
+
+
+def evaluate_task9_release_hardening_gate(*, evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate Task 9 release gate readiness from end-to-end scenario evidence."""
+
+    required_sections = ("scenario_matrix", "release_gate", "producer_consumer", "rollback")
+    missing_sections = [section for section in required_sections if section not in evidence]
+    if missing_sections:
+        raise ValueError(f"{TASK9_CONTRACT_ERROR_CODE}: missing required sections {missing_sections}")
+
+    scenarios = evidence["scenario_matrix"]
+    release_gate = evidence["release_gate"]
+    producer_consumer = evidence["producer_consumer"]
+    rollback = evidence["rollback"]
+
+    if not isinstance(scenarios, Sequence):
+        raise ValueError(f"{TASK9_CONTRACT_ERROR_CODE}: scenario_matrix must be a sequence")
+    if not isinstance(release_gate, Mapping):
+        raise ValueError(f"{TASK9_CONTRACT_ERROR_CODE}: release_gate must be a mapping")
+    if not isinstance(producer_consumer, Mapping):
+        raise ValueError(f"{TASK9_CONTRACT_ERROR_CODE}: producer_consumer must be a mapping")
+    if not isinstance(rollback, Mapping):
+        raise ValueError(f"{TASK9_CONTRACT_ERROR_CODE}: rollback must be a mapping")
+
+    scenario_rows: dict[str, Mapping[str, Any]] = {}
+    for idx, scenario in enumerate(scenarios):
+        if not isinstance(scenario, Mapping):
+            raise ValueError(f"{TASK9_CONTRACT_ERROR_CODE}: scenario_matrix[{idx}] must be a mapping")
+        scenario_id = str(scenario.get("scenario_id") or "").strip()
+        if not scenario_id:
+            raise ValueError(f"{TASK9_CONTRACT_ERROR_CODE}: scenario_matrix[{idx}] missing scenario_id")
+        scenario_rows[scenario_id] = scenario
+
+    checks: list[dict[str, Any]] = []
+
+    def _check(check_id: str, passed: bool, detail: str) -> None:
+        checks.append({"check_id": check_id, "passed": bool(passed), "detail": detail})
+
+    missing_scenarios = sorted(set(_TASK9_REQUIRED_SCENARIOS) - set(scenario_rows))
+    _check(
+        "9.matrix.required_scenarios",
+        not missing_scenarios,
+        f"TASK9_SCENARIO_MATRIX_INCOMPLETE: missing required scenarios={missing_scenarios}",
+    )
+
+    critical_scenarios = []
+    passed_critical = 0
+    for scenario_id, scenario in scenario_rows.items():
+        status = str(scenario.get("status") or "").strip().lower()
+        is_critical = bool(scenario.get("critical"))
+        deterministic = bool(scenario.get("deterministic"))
+        failure_handling = bool(scenario.get("failure_handling_validated"))
+        standalone = bool(scenario.get("standalone_passed"))
+        integration = bool(scenario.get("integration_passed"))
+        flow_coverage = {str(v).strip() for v in (scenario.get("flows_covered") or []) if str(v).strip()}
+
+        _check(
+            f"9.matrix.{scenario_id}.status",
+            status == "passed",
+            f"TASK9_SCENARIO_FAILED: scenario={scenario_id} status={status or '<missing>'}",
+        )
+        _check(
+            f"9.matrix.{scenario_id}.deterministic",
+            deterministic,
+            f"TASK9_NON_DETERMINISTIC_BEHAVIOR: scenario={scenario_id} must be deterministic",
+        )
+        _check(
+            f"9.matrix.{scenario_id}.failure_handling",
+            failure_handling,
+            f"TASK9_FAILURE_HANDLING_GAP: scenario={scenario_id} must validate retries/rollback handling",
+        )
+        _check(
+            f"9.matrix.{scenario_id}.standalone_and_integration",
+            standalone and integration,
+            f"TASK9_EXECUTION_SCOPE_GAP: scenario={scenario_id} must pass standalone and integrated execution",
+        )
+        _check(
+            f"9.matrix.{scenario_id}.flow_coverage",
+            flow_coverage >= set(_TASK9_REQUIRED_FLOWS),
+            f"TASK9_FLOW_COVERAGE_GAP: scenario={scenario_id} missing flows={sorted(set(_TASK9_REQUIRED_FLOWS)-flow_coverage)}",
+        )
+
+        if is_critical:
+            critical_scenarios.append(scenario_id)
+            if status == "passed":
+                passed_critical += 1
+
+    critical_threshold = float(release_gate.get("critical_pass_threshold") or 1.0)
+    critical_rate = 1.0 if not critical_scenarios else passed_critical / len(critical_scenarios)
+    _check(
+        "9.release.critical_threshold",
+        critical_rate >= critical_threshold,
+        f"TASK9_CRITICAL_SCENARIO_THRESHOLD_FAILED: pass_rate={critical_rate:.3f} threshold={critical_threshold:.3f}",
+    )
+    _check(
+        "9.release.block_on_fail",
+        bool(release_gate.get("block_release_on_critical_failure")),
+        "TASK9_RELEASE_POLICY_INVALID: block_release_on_critical_failure must be true",
+    )
+
+    contract_edges = producer_consumer.get("contract_edges") or []
+    if not isinstance(contract_edges, Sequence):
+        raise ValueError(f"{TASK9_CONTRACT_ERROR_CODE}: producer_consumer.contract_edges must be a sequence")
+    unresolved_edges: list[str] = []
+    for idx, edge in enumerate(contract_edges):
+        if not isinstance(edge, Mapping):
+            raise ValueError(f"{TASK9_CONTRACT_ERROR_CODE}: producer_consumer.contract_edges[{idx}] must be a mapping")
+        edge_id = str(edge.get("edge_id") or f"edge[{idx}]").strip()
+        producer_accepts = bool(edge.get("producer_contract_valid"))
+        consumer_accepts = bool(edge.get("consumer_contract_valid"))
+        integration_validated = bool(edge.get("integration_validated"))
+        if not (producer_accepts and consumer_accepts and integration_validated):
+            unresolved_edges.append(edge_id)
+
+    _check(
+        "9.contract_edges.validated",
+        not unresolved_edges,
+        f"TASK9_CONTRACT_EDGE_VIOLATION: unresolved producer/consumer contract edges={unresolved_edges}",
+    )
+
+    _check(
+        "9.rollback.drill_executed",
+        bool(rollback.get("drill_executed")),
+        "TASK9_ROLLBACK_DRILL_MISSING: rollback drill must be executed before release",
+    )
+    _check(
+        "9.rollback.recovered",
+        bool(rollback.get("restore_successful")) and bool(rollback.get("post_rollback_validation_passed")),
+        "TASK9_ROLLBACK_RECOVERY_FAILED: rollback must restore stable state and pass post-validation",
+    )
+
+    failed_checks = [check["check_id"] for check in checks if not check["passed"]]
+    report = {
+        "contract_version": TASK9_RELEASE_HARDENING_VERSION,
+        "status": "go" if not failed_checks else "no-go",
+        "critical_pass_rate": round(critical_rate, 3),
+        "checks": checks,
+        "failed_checks": failed_checks,
+    }
+    if failed_checks:
+        raise ValueError(
+            f"{TASK9_GATE_ERROR_CODE}: Task 9 release hardening gate failed checks {failed_checks}"
         )
     return report

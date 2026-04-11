@@ -205,24 +205,27 @@ Idempotent reruns are mandatory and rely on conditional-write safe `PutItem` + e
 
 ## 9) Task 1 deterministic readiness-gate contract (monthly + RT)
 
-Both monthly and RT gates now use computed readiness only (no payload-default readiness).
+Both monthly and RT gates use computed readiness artifacts only (no authoritative input payload manifest).
 
-Canonical readiness output contract (`*.v2`):
-- `ready` (boolean)
-- `missing_ranges` (array)
-- `decision_code` (`READY` or `MISSING_DEPENDENCIES`)
-- `as_of_ts` (ISO-8601 UTC)
+Canonical monthly readiness contract (`monthly_fg_b_readiness.v3`) includes:
+- `contract_version`, `project_name`, `feature_spec_version`, `reference_month`
+- `ready`, `required_families`, `missing_ranges`, `decision_code`, `as_of_ts`
+- `idempotency_key`
 
-Required orchestration sequence:
-1. compute readiness via dedicated SageMaker Processing/Pipeline step,
-2. branch on computed `ready`,
-3. if missing: invoke remediation,
-4. recompute readiness,
-5. continue on `ready=true`, otherwise fail with explicit gate code.
+Monthly required orchestration sequence:
+1. start monthly readiness SageMaker pipeline execution,
+2. poll `describePipelineExecution` until success,
+3. read artifact from deterministic key: `orchestration/readiness/monthly_fg_b_readiness/v3/<project>/<version>/<reference_month>/cycle=<cycle>/manifest.json`,
+4. validate contract version + required fields + project/version/month identity,
+5. evaluate gate decision from artifact `ready`,
+6. if missing on cycle 0: invoke remediation using artifact-derived `required_families`, `missing_ranges`, and `idempotency_key`,
+7. increment cycle and recompute once,
+8. fail with explicit code when unresolved after recheck.
 
-Monthly contract notes:
-- checker contract: `monthly_fg_b_readiness.v3`.
-- unresolved post-remediation terminal code: `MONTHLY_READINESS_UNRESOLVED_AFTER_REMEDIATION`.
+Monthly terminal/error codes:
+- `MONTHLY_READINESS_ARTIFACT_MISSING`
+- `MONTHLY_READINESS_CONTRACT_INVALID`
+- `MONTHLY_READINESS_UNRESOLVED_AFTER_REMEDIATION`
 
 RT contract notes:
 - checker contract: `rt_artifact_readiness.v3`.
@@ -230,6 +233,6 @@ RT contract notes:
 - unresolved post-remediation terminal code: `RT_READINESS_UNRESOLVED_AFTER_REMEDIATION`.
 
 Determinism/idempotency constraints:
-- stale external manifests are not trusted; the gate always branches from newly computed readiness output.
-- remediation idempotency key is stable for a given computed readiness artifact.
-- retries are bounded and only applied to compute/remediation task failures.
+- stale/external readiness payloads are ignored for gate authority.
+- idempotency key is deterministic by project/version/reference scope and readiness cycle.
+- retries are bounded and only applied to compute/read/remediation task failures.

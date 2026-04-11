@@ -117,10 +117,10 @@
     "BuildBaselineDependencyCheckManifest": {
       "Type": "Pass",
       "Assign": {
-        "baseline_dependency_manifest": "{% $exists($states.input.monthly_fg_b_readiness) ? {'contract_version':'monthly_fg_b_readiness.v2','ready':($states.input.monthly_fg_b_readiness.ready = true),'required_families':$states.input.monthly_fg_b_readiness.required_families,'missing_ranges':$states.input.monthly_fg_b_readiness.missing_ranges,'decision_code':$states.input.monthly_fg_b_readiness.decision_code,'as_of_ts':$states.input.monthly_fg_b_readiness.as_of_ts} : $error('MONTHLY_READINESS_MANIFEST_MISSING','Computed monthly readiness manifest is required') %}",
+        "baseline_dependency_manifest": "{% $exists($states.result.Body) ? $eval($states.result.Body) : $error('MONTHLY_READINESS_ARTIFACT_MISSING','Computed monthly readiness artifact is required') %}",
         "baseline_gate_cycle": "{% $exists($baseline_gate_cycle) ? $baseline_gate_cycle : 0 %}"
       },
-      "Next": "CheckBaselineDependencies"
+      "Next": "ValidateBaselineDependencyManifest"
     },
     "CheckBaselineDependencies": {
       "Type": "Choice",
@@ -139,7 +139,7 @@
     "BuildBaselineRemediationRequest": {
       "Type": "Pass",
       "Assign": {
-        "baseline_remediation_request": "{% {'contract_version':'NdrBaselineRemediationRequest.v1','consumer':'monthly_baseline','project_name':$project_name,'feature_spec_version':$feature_spec_version,'reference_month':$reference_month,'required_families':['delta','fg_a'],'missing_ranges':$baseline_dependency_manifest.missing_ranges,'provenance':{'producer_flow':'monthly_fg_b_baselines','source_mode':'batch_index','request_id':$states.context.Execution.Id},'idempotency_key':$append([$states.context.Execution.Id,$project_name,$feature_spec_version,$reference_month],':')} %}",
+        "baseline_remediation_request": "{% {'contract_version':'NdrBaselineRemediationRequest.v1','consumer':'monthly_baseline','project_name':$project_name,'feature_spec_version':$feature_spec_version,'reference_month':$reference_month,'required_families':$baseline_dependency_manifest.required_families,'missing_ranges':$baseline_dependency_manifest.missing_ranges,'provenance':{'producer_flow':'monthly_fg_b_baselines','source_mode':'batch_index','request_id':$states.context.Execution.Id},'idempotency_key':$baseline_dependency_manifest.idempotency_key} %}",
         "baseline_remediation_window": "{% {'start_ts': $min($baseline_dependency_manifest.missing_ranges.start_ts_iso), 'end_ts': $max($baseline_dependency_manifest.missing_ranges.end_ts_iso)} %}"
       },
       "Next": "InvokeBaselineDependencyRemediation"
@@ -201,7 +201,8 @@
         ]
       },
       "Assign": {
-        "monthly_recheck_readiness_execution_arn": "{% $states.result.PipelineExecutionArn %}"
+        "monthly_recheck_readiness_execution_arn": "{% $states.result.PipelineExecutionArn %}",
+        "monthly_readiness_poll_attempt": 0
       },
       "Retry": [
         {
@@ -215,7 +216,7 @@
           "BackoffRate": 2.0
         }
       ],
-      "Next": "BuildBaselineDependencyCheckManifest"
+      "Next": "DescribeMonthlyReadinessPipeline"
     },
     "FailBaselineDependenciesUnresolved": {
       "Type": "Fail",
@@ -407,7 +408,8 @@
         ]
       },
       "Assign": {
-        "monthly_readiness_execution_arn": "{% $states.result.PipelineExecutionArn %}"
+        "monthly_readiness_execution_arn": "{% $states.result.PipelineExecutionArn %}",
+        "monthly_readiness_poll_attempt": 0
       },
       "Retry": [
         {
@@ -421,7 +423,7 @@
           "BackoffRate": 2.0
         }
       ],
-      "Next": "BuildBaselineDependencyCheckManifest"
+      "Next": "DescribeMonthlyReadinessPipeline"
     },
     "IncrementBaselineGateCycle": {
       "Type": "Pass",
@@ -429,6 +431,108 @@
         "baseline_gate_cycle": "{% $baseline_gate_cycle + 1 %}"
       },
       "Next": "RecheckBaselineDependencies"
+    },
+    "DescribeMonthlyReadinessPipeline": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
+      "Arguments": {
+        "PipelineExecutionArn": "{% $monthly_readiness_execution_arn %}"
+      },
+      "Assign": {
+        "monthly_readiness_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "SageMaker.AmazonSageMakerException",
+            "ThrottlingException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 6,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "MonthlyReadinessPipelineStatusChoice"
+    },
+    "MonthlyReadinessPipelineStatusChoice": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $monthly_readiness_pipeline_status = 'Succeeded' %}",
+          "Next": "ReadMonthlyReadinessArtifact"
+        },
+        {
+          "Condition": "{% ($monthly_readiness_pipeline_status = 'Executing' or $monthly_readiness_pipeline_status = 'Stopping') and $monthly_readiness_poll_attempt < 120 %}",
+          "Next": "WaitBeforeDescribeMonthlyReadinessPipeline"
+        }
+      ],
+      "Default": "WorkflowFailed"
+    },
+    "WaitBeforeDescribeMonthlyReadinessPipeline": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "IncrementMonthlyReadinessPollAttempt"
+    },
+    "IncrementMonthlyReadinessPollAttempt": {
+      "Type": "Pass",
+      "Assign": {
+        "monthly_readiness_poll_attempt": "{% $monthly_readiness_poll_attempt + 1 %}"
+      },
+      "Next": "DescribeMonthlyReadinessPipeline"
+    },
+    "ReadMonthlyReadinessArtifact": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:s3:getObject",
+      "Arguments": {
+        "Bucket": "${ArtifactsBucketName}",
+        "Key": "{% 'orchestration/readiness/monthly_fg_b_readiness/v3/' & $project_name & '/' & $feature_spec_version & '/' & $reference_month & '/cycle=' & $string($baseline_gate_cycle) & '/manifest.json' %}"
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "FailMonthlyReadinessArtifactMissing"
+        }
+      ],
+      "Next": "BuildBaselineDependencyCheckManifest"
+    },
+    "ValidateBaselineDependencyManifest": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% not($exists($baseline_dependency_manifest.contract_version)) or $baseline_dependency_manifest.contract_version != 'monthly_fg_b_readiness.v3' %}",
+          "Next": "FailMonthlyReadinessContractInvalid"
+        },
+        {
+          "Condition": "{% not($exists($baseline_dependency_manifest.project_name)) or not($exists($baseline_dependency_manifest.feature_spec_version)) or not($exists($baseline_dependency_manifest.reference_month)) %}",
+          "Next": "FailMonthlyReadinessContractInvalid"
+        },
+        {
+          "Condition": "{% not($exists($baseline_dependency_manifest.ready)) or not($exists($baseline_dependency_manifest.required_families)) or not($exists($baseline_dependency_manifest.missing_ranges)) %}",
+          "Next": "FailMonthlyReadinessContractInvalid"
+        },
+        {
+          "Condition": "{% not($exists($baseline_dependency_manifest.decision_code)) or not($exists($baseline_dependency_manifest.as_of_ts)) or not($exists($baseline_dependency_manifest.idempotency_key)) %}",
+          "Next": "FailMonthlyReadinessContractInvalid"
+        },
+        {
+          "Condition": "{% $baseline_dependency_manifest.project_name != $project_name or $baseline_dependency_manifest.feature_spec_version != $feature_spec_version or $baseline_dependency_manifest.reference_month != $reference_month %}",
+          "Next": "FailMonthlyReadinessContractInvalid"
+        }
+      ],
+      "Default": "CheckBaselineDependencies"
+    },
+    "FailMonthlyReadinessArtifactMissing": {
+      "Type": "Fail",
+      "Error": "BaselineDependencyGateFailed",
+      "Cause": "MONTHLY_READINESS_ARTIFACT_MISSING: Monthly readiness artifact not found for gate evaluation"
+    },
+    "FailMonthlyReadinessContractInvalid": {
+      "Type": "Fail",
+      "Error": "BaselineDependencyGateFailed",
+      "Cause": "MONTHLY_READINESS_CONTRACT_INVALID: Monthly readiness artifact schema/version/identity validation failed"
     }
   }
 }

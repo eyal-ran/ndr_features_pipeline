@@ -28,6 +28,9 @@ TASK15_GATE_ERROR_CODE = "TASK15_OBSERVABILITY_GATE_RED"
 TASK9_RELEASE_HARDENING_VERSION = "task9_release_hardening_gate.v1"
 TASK9_CONTRACT_ERROR_CODE = "TASK9_CONTRACT_VIOLATION"
 TASK9_GATE_ERROR_CODE = "TASK9_RELEASE_GATE_RED"
+TASK6_CROSS_FLOW_CONFORMANCE_VERSION = "task6_cross_flow_contract_conformance.v1"
+TASK6_CONTRACT_ERROR_CODE = "TASK6_CONTRACT_VIOLATION"
+TASK6_GATE_ERROR_CODE = "TASK6_CROSS_FLOW_CONTRACT_RED"
 
 _TASK15_REQUIRED_METRICS = (
     "bootstrap_duration_seconds",
@@ -53,6 +56,7 @@ _TASK9_REQUIRED_SCENARIOS = (
     "partial_failure_retry",
 )
 _TASK9_REQUIRED_FLOWS = ("monthly", "rt", "backfill", "training", "control_plane")
+_TASK6_REQUIRED_FLOWS = ("monthly", "rt", "backfill", "bootstrap", "training", "deployment")
 
 _TASK11_REQUIRED_FINDINGS = (
     "F1.1",
@@ -96,6 +100,41 @@ _TASK14_REQUIRED_INTERFACES = (
     "training_remediation_to_fgb_pipeline",
     "extractor_runtime_to_manifest",
 )
+
+_TASK6_INTERFACE_ERROR_CODES = {
+    "monthly_readiness_artifact": (
+        "TASK6_MONTHLY_READINESS_PRODUCER_MISMATCH",
+        "TASK6_MONTHLY_READINESS_CONSUMER_MISMATCH",
+    ),
+    "rt_readiness_artifact": (
+        "TASK6_RT_READINESS_PRODUCER_MISMATCH",
+        "TASK6_RT_READINESS_CONSUMER_MISMATCH",
+    ),
+    "rt_raw_input_resolution": (
+        "TASK6_RT_RAW_INPUT_PRODUCER_MISMATCH",
+        "TASK6_RT_RAW_INPUT_CONSUMER_MISMATCH",
+    ),
+    "backfill_request_v2": (
+        "TASK6_BACKFILL_REQUEST_PRODUCER_MISMATCH",
+        "TASK6_BACKFILL_REQUEST_CONSUMER_MISMATCH",
+    ),
+    "backfill_execution_request_v2": (
+        "TASK6_BACKFILL_EXECUTION_PRODUCER_MISMATCH",
+        "TASK6_BACKFILL_EXECUTION_CONSUMER_MISMATCH",
+    ),
+    "bootstrap_jsonata_semantics": (
+        "TASK6_BOOTSTRAP_QUERYLANGUAGE_PRODUCER_MISMATCH",
+        "TASK6_BOOTSTRAP_QUERYLANGUAGE_CONSUMER_MISMATCH",
+    ),
+    "training_remediation_request": (
+        "TASK6_TRAINING_REMEDIATION_PRODUCER_MISMATCH",
+        "TASK6_TRAINING_REMEDIATION_CONSUMER_MISMATCH",
+    ),
+    "step_code_artifact_contract": (
+        "TASK6_STEP_CODE_ARTIFACT_PRODUCER_MISMATCH",
+        "TASK6_STEP_CODE_ARTIFACT_CONSUMER_MISMATCH",
+    ),
+}
 
 _TASK14_INTERFACE_ERROR_CODES = {
     "backfill_sfn_to_backfill_executor": (
@@ -610,6 +649,158 @@ def evaluate_task14_startup_contract_conformance(*, evidence: Mapping[str, Any])
         failed_details = [check["detail"] for check in checks if not check["passed"]]
         raise ValueError(
             f"{TASK14_GATE_ERROR_CODE}: Task 14 startup contract conformance gate failed checks "
+            f"{failed_checks}; diagnostics={failed_details}"
+        )
+    return report
+
+
+def evaluate_task6_cross_flow_contract_conformance(*, evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate Task-6 producer/consumer alignment across touched v3 flows."""
+
+    required_sections = ("flows", "interfaces", "strict_controls", "safeguards")
+    missing_sections = [section for section in required_sections if section not in evidence]
+    if missing_sections:
+        raise ValueError(f"{TASK6_CONTRACT_ERROR_CODE}: missing required sections {missing_sections}")
+
+    flows = {str(v).strip() for v in (evidence.get("flows") or []) if str(v).strip()}
+    interfaces = evidence.get("interfaces") or []
+    strict_controls = evidence.get("strict_controls") or {}
+    safeguards = evidence.get("safeguards") or {}
+
+    if not isinstance(interfaces, Sequence):
+        raise ValueError(f"{TASK6_CONTRACT_ERROR_CODE}: interfaces must be a sequence")
+    if not isinstance(strict_controls, Mapping):
+        raise ValueError(f"{TASK6_CONTRACT_ERROR_CODE}: strict_controls must be a mapping")
+    if not isinstance(safeguards, Mapping):
+        raise ValueError(f"{TASK6_CONTRACT_ERROR_CODE}: safeguards must be a mapping")
+
+    by_interface_id: dict[str, Mapping[str, Any]] = {}
+    for item in interfaces:
+        if not isinstance(item, Mapping):
+            raise ValueError(f"{TASK6_CONTRACT_ERROR_CODE}: each interfaces entry must be a mapping")
+        interface_id = str(item.get("interface_id") or "").strip()
+        if not interface_id:
+            raise ValueError(f"{TASK6_CONTRACT_ERROR_CODE}: interface_id is required for every interface")
+        by_interface_id[interface_id] = item
+
+    required_interface_ids = set(_TASK6_INTERFACE_ERROR_CODES)
+    missing_interfaces = sorted(required_interface_ids - set(by_interface_id))
+    if missing_interfaces:
+        raise ValueError(f"{TASK6_CONTRACT_ERROR_CODE}: missing required interfaces {missing_interfaces}")
+
+    checks: list[dict[str, Any]] = []
+
+    def _check(check_id: str, passed: bool, detail: str) -> None:
+        checks.append({"check_id": check_id, "passed": bool(passed), "detail": detail})
+
+    _check(
+        "6.flows.coverage",
+        set(_TASK6_REQUIRED_FLOWS) <= flows,
+        f"Full-system flow coverage must include {_TASK6_REQUIRED_FLOWS}",
+    )
+
+    def _validate_interface(interface_id: str) -> None:
+        interface = by_interface_id[interface_id]
+        producer_fields = {str(v).strip() for v in (interface.get("producer_fields") or []) if str(v).strip()}
+        consumer_fields = {str(v).strip() for v in (interface.get("consumer_fields") or []) if str(v).strip()}
+        producer_to_consumer = interface.get("producer_to_consumer_map") or {}
+        consumer_to_producer = interface.get("consumer_to_producer_map") or {}
+        metadata_noop_fields = {
+            str(v).strip() for v in (interface.get("metadata_noop_fields") or []) if str(v).strip()
+        }
+
+        if not isinstance(producer_to_consumer, Mapping) or not isinstance(consumer_to_producer, Mapping):
+            raise ValueError(f"{TASK6_CONTRACT_ERROR_CODE}: {interface_id} maps must be mapping values")
+
+        missing_on_consumer = sorted(producer_fields - consumer_fields - metadata_noop_fields)
+        missing_on_producer = sorted(consumer_fields - producer_fields - metadata_noop_fields)
+        producer_code, consumer_code = _TASK6_INTERFACE_ERROR_CODES[interface_id]
+        _check(
+            f"6.contract.{interface_id}.producer_to_consumer",
+            not missing_on_consumer,
+            f"{producer_code}: producer fields not accepted by consumer={missing_on_consumer}",
+        )
+        _check(
+            f"6.contract.{interface_id}.consumer_to_producer",
+            not missing_on_producer,
+            f"{consumer_code}: consumer-required fields missing from producer={missing_on_producer}",
+        )
+
+        producer_map_keys = {str(k).strip() for k in producer_to_consumer}
+        producer_map_targets = {str(v).strip() for v in producer_to_consumer.values()}
+        consumer_map_keys = {str(k).strip() for k in consumer_to_producer}
+        consumer_map_targets = {str(v).strip() for v in consumer_to_producer.values()}
+
+        _check(
+            f"6.mapping.{interface_id}.producer_keys",
+            producer_map_keys == producer_fields,
+            f"{producer_code}: producer map keys must match producer_fields "
+            f"(missing={sorted(producer_fields - producer_map_keys)}, extra={sorted(producer_map_keys - producer_fields)})",
+        )
+        _check(
+            f"6.mapping.{interface_id}.producer_targets",
+            producer_map_targets <= (consumer_fields | metadata_noop_fields),
+            f"{producer_code}: producer map targets must resolve to consumer_fields or metadata_noop_fields "
+            f"(unknown={sorted(producer_map_targets - (consumer_fields | metadata_noop_fields))})",
+        )
+        _check(
+            f"6.mapping.{interface_id}.consumer_keys",
+            consumer_map_keys == consumer_fields,
+            f"{consumer_code}: consumer map keys must match consumer_fields "
+            f"(missing={sorted(consumer_fields - consumer_map_keys)}, extra={sorted(consumer_map_keys - consumer_fields)})",
+        )
+        _check(
+            f"6.mapping.{interface_id}.consumer_targets",
+            consumer_map_targets <= (producer_fields | metadata_noop_fields),
+            f"{consumer_code}: consumer map targets must resolve to producer_fields or metadata_noop_fields "
+            f"(unknown={sorted(consumer_map_targets - (producer_fields | metadata_noop_fields))})",
+        )
+
+    for interface_id in sorted(required_interface_ids):
+        _validate_interface(interface_id)
+
+    _check(
+        "6.strict.unknown_fields",
+        bool(strict_controls.get("reject_unknown_fields")),
+        "TASK6_UNKNOWN_FIELDS_NOT_REJECTED: unknown/undeclared fields must fail fast",
+    )
+    _check(
+        "6.strict.missing_required_fields",
+        bool(strict_controls.get("reject_missing_required_fields")),
+        "TASK6_MISSING_REQUIRED_FIELDS_NOT_REJECTED: missing required fields must fail fast",
+    )
+    _check(
+        "6.strict.version_mismatch",
+        bool(strict_controls.get("reject_contract_version_mismatch")),
+        "TASK6_CONTRACT_VERSION_MISMATCH_NOT_REJECTED: contract version mismatches must fail fast",
+    )
+    _check(
+        "6.safeguards.idempotency",
+        bool(safeguards.get("idempotency_verified")),
+        "TASK6_IDEMPOTENCY_GUARD_MISSING: idempotency checks must be green",
+    )
+    _check(
+        "6.safeguards.retry",
+        bool(safeguards.get("retry_verified")),
+        "TASK6_RETRY_GUARD_MISSING: retry checks must be green",
+    )
+    _check(
+        "6.safeguards.rollback",
+        bool(safeguards.get("rollback_verified")),
+        "TASK6_ROLLBACK_GUARD_MISSING: rollback checks must be green",
+    )
+
+    failed_checks = [check["check_id"] for check in checks if not check["passed"]]
+    report = {
+        "contract_version": TASK6_CROSS_FLOW_CONFORMANCE_VERSION,
+        "status": "go" if not failed_checks else "no-go",
+        "checks": checks,
+        "failed_checks": failed_checks,
+    }
+    if failed_checks:
+        failed_details = [check["detail"] for check in checks if not check["passed"]]
+        raise ValueError(
+            f"{TASK6_GATE_ERROR_CODE}: Task 6 cross-flow contract conformance failed checks "
             f"{failed_checks}; diagnostics={failed_details}"
         )
     return report

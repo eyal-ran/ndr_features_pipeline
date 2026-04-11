@@ -195,6 +195,34 @@ REQUIRED_TABLE_CREATE_KEYS = (
     "KeySchema",
     "BillingMode",
 )
+DEFAULT_ARTIFACT_FORMAT = "tar.gz"
+DEFAULT_DEPLOYMENT_STATUS = "BOOTSTRAP_REQUIRED"
+
+
+def _step_artifact_seed(*, code_prefix_s3: str) -> dict[str, str]:
+    seed_build_id = "<required:ArtifactBuildId>"
+    return {
+        "code_artifact_s3_uri": f"{code_prefix_s3.rstrip('/')}/artifacts/{seed_build_id}/source.{DEFAULT_ARTIFACT_FORMAT}",
+        "artifact_build_id": seed_build_id,
+        "artifact_sha256": "<required:ArtifactSha256>",
+        "artifact_format": DEFAULT_ARTIFACT_FORMAT,
+    }
+
+
+def _apply_step_artifact_contracts(pipeline_spec: dict[str, Any]) -> None:
+    scripts = pipeline_spec.get("scripts")
+    if not isinstance(scripts, dict):
+        return
+    steps = scripts.get("steps")
+    if not isinstance(steps, dict):
+        return
+    for step_spec in steps.values():
+        if not isinstance(step_spec, dict):
+            continue
+        code_prefix = step_spec.get("code_prefix_s3")
+        if not isinstance(code_prefix, str) or not code_prefix.strip():
+            continue
+        step_spec.update(_step_artifact_seed(code_prefix_s3=code_prefix))
 
 
 def resolve_routing_table_name(explicit_table_name: str | None = None) -> str:
@@ -1084,6 +1112,16 @@ def _build_bootstrap_items(
         },
     ]
 
+    for item in pipeline_items:
+        spec = item.get("spec")
+        if isinstance(spec, dict):
+            _apply_step_artifact_contracts(spec)
+            spec.setdefault("deployment_status", DEFAULT_DEPLOYMENT_STATUS)
+            spec.setdefault("deployment_checkpoint", "phase_a_seed_pending")
+            spec.setdefault("deployment_last_build_id", "")
+            spec.setdefault("deployment_last_error", "")
+            spec.setdefault("deployment_updated_at", now)
+
     items = [*pipeline_items, *job_items]
     _validate_seed_item_contracts(items)
     return items
@@ -1118,9 +1156,22 @@ def _validate_seed_item_contracts(items: list[dict[str, Any]]) -> None:
                 raise ValueError(f"Pipeline '{pipeline_job_name}' step '{step_name}' missing code_prefix_s3")
             if not step_spec.get("entry_script"):
                 raise ValueError(f"Pipeline '{pipeline_job_name}' step '{step_name}' missing entry_script")
+            for artifact_key in (
+                "code_artifact_s3_uri",
+                "artifact_build_id",
+                "artifact_sha256",
+                "artifact_format",
+            ):
+                if not step_spec.get(artifact_key):
+                    raise ValueError(
+                        f"Pipeline '{pipeline_job_name}' step '{step_name}' missing {artifact_key}"
+                    )
             data_prefixes = step_spec.get("data_prefixes")
             if not isinstance(data_prefixes, dict) or not data_prefixes:
                 raise ValueError(f"Pipeline '{pipeline_job_name}' step '{step_name}' missing data_prefixes")
+
+        if not spec.get("deployment_status"):
+            raise ValueError(f"Pipeline '{pipeline_job_name}' missing deployment_status")
 
 
 def _load_custom_seed_items(custom_seed_json: str) -> list[dict[str, Any]]:

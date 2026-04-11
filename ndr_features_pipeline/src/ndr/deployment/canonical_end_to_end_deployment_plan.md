@@ -450,6 +450,31 @@ with dpp.batch_writer(overwrite_by_pkeys=["project_name", "job_name_version"]) a
 print("[seeded-bootstrap]", len(bootstrap), "items")
 ```
 
+### Task 8 Phase A artifact bootstrap controls (mandatory before READY)
+
+Cell sequence (deterministic):
+1. Build per-step source bundles from canonical repository state (`git rev-parse HEAD` recorded as source revision).
+2. Compute `artifact_build_id` using `ndr-<project>-<feature_spec_version>-<UTC_YYYYMMDDTHHMMSSZ>`.
+3. Compute SHA-256 for each `source.tar.gz` bundle and store as lowercase hex in `artifact_sha256`.
+4. Upload bundle to `<code_prefix_s3>/artifacts/<artifact_build_id>/source.tar.gz`.
+5. Update each `scripts.steps.<step>` pointer fields:
+   - `code_artifact_s3_uri`
+   - `entry_script`
+   - `artifact_build_id`
+   - `artifact_sha256`
+   - `artifact_format=tar.gz`
+6. Run smoke command per step from artifact context (`python <entry_script> --help`) and persist logs as deployment evidence.
+7. Only after all smoke checks pass, atomically set:
+   - `deployment_status=READY`
+   - `deployment_checkpoint=phase_a_seed_complete`
+   - `deployment_last_build_id=<artifact_build_id>`
+   - `deployment_last_error=""`
+
+Break-glass policy:
+- Manual notebook artifact publish is allowed only for production incident recovery when deployment orchestration is unavailable.
+- Manual publish must set `deployment_checkpoint=break_glass_manual_seed` and emit an audit note with incident ID.
+- Next automated deployment orchestration run must reconcile and supersede break-glass pointers before normal promotion resumes.
+
 ---
 
 ## H. Cell 5 — Deploy SageMaker pipelines

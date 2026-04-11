@@ -8,7 +8,7 @@ from sagemaker.workflow.parameters import ParameterInteger, ParameterString
 from sagemaker.workflow.pipeline import Pipeline
 from sagemaker.workflow.steps import ProcessingStep
 
-from ndr.pipeline.io_contract import resolve_step_code_uri
+from ndr.pipeline.io_contract import build_processing_step_launch_args, resolve_step_execution_contract
 
 PIPELINE_JOB_NAME = "pipeline_backfill_historical_extractor"
 
@@ -50,7 +50,7 @@ def build_backfill_historical_extractor_pipeline(
         sagemaker_session=session,
     )
 
-    resolved_code_uri = resolve_step_code_uri(
+    contract = resolve_step_execution_contract(
         project_name=project_name_for_contracts,
         feature_spec_version=feature_spec_version_for_contracts,
         pipeline_job_name=PIPELINE_JOB_NAME,
@@ -60,11 +60,12 @@ def build_backfill_historical_extractor_pipeline(
     step = ProcessingStep(
         name="HistoricalWindowsExtractorStep",
         processor=processor,
-        code=resolved_code_uri,
-        job_arguments=[
-            "python",
-            "-m",
-            "ndr.scripts.run_historical_windows_extractor",
+        code=contract.script_s3_uri,
+        job_arguments=build_processing_step_launch_args(
+            entry_script=contract.entry_script,
+            module_name="ndr.scripts.run_historical_windows_extractor",
+            artifact_uri=contract.code_artifact_s3_uri,
+            passthrough_args=[
             "--project-name",
             project_name,
             "--input-s3-prefix",
@@ -81,7 +82,8 @@ def build_backfill_historical_extractor_pipeline(
             feature_spec_version,
             "--requested-families",
             requested_families,
-        ],
+            ],
+        ),
     )
 
     return Pipeline(

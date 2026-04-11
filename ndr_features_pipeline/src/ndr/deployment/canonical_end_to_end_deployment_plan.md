@@ -1,911 +1,342 @@
-# Canonical End-to-End Deployment Plan (single source of truth)
+# NDR Deployment Notebook (Markdown Export)
 
-## A. What is being deployed (from scratch)
+Mirror of `canonical_end_to_end_deployment_plan.ipynb` with explicit markdown/code sections.
 
-This plan deploys, in order:
+## Cell 1 (Markdown)
 
-1. S3 layout (DPP vs MLP separation),
-2. all required code artifacts (`src/ndr` package + entry scripts),
-3. DynamoDB tables (`dpp_config`, `mlp_config`, `batch_index`, `ml_projects_routing`, `processing_lock`, `publication_lock`),
-4. DDB seed records (reciprocal linkage + full pipeline/job bootstrap),
-5. all SageMaker pipelines,
-6. all NDR Step Functions JSONata definitions,
-7. trigger paths (including ETL→SNS→SQS→Pipe→15m SF),
-8. manual-operation scripts (training and backfill),
-9. verification checks.
+# Canonical End-to-End Deployment Notebook (Repaired)
 
-System docs explicitly define architecture, inventory, and source-of-truth boundaries.
+This notebook is rebuilt from code/config sources in `src/ndr` and `tests` only, and provides an executable deployment workflow.
 
----
+## Cell 2 (Markdown)
 
-## B. Core facts you must hold constant (to avoid confusion)
+## 0) Deployment order and forms
 
-1. **No env vars required in this runbook**
-   Everything is explicitly passed via a single `DEPLOY` object (table names, pipeline names, SF names, etc.).
+1. Code-only dependency analysis (not docs).
+2. Variables/placeholders.
+3. DDB contracts + seed dictionaries.
+4. S3 schema.
+5. Artifact preparation + contract promotion.
+6. SageMaker pipeline upsert.
+7. Initial materialization runs.
+8. Step Functions manual deployment in AWS GUI (Build by code).
+9. Readiness checks.
 
-2. **DPP/MLP split is mandatory**
-   - DPP key: `project_name`
-   - MLP key: `ml_project_name`
-   and separate table schemas.
-
-3. **15m trigger topology**
-   Operationally: external ETL emits ingestion event payload → SNS → SQS → EventBridge Pipe → `sfn_ndr_15m_features_inference`.
-
-4. **Pipeline inventory is fixed**
-   15m, inference, prediction join, IF training, FG-B baseline, machine inventory, backfill extractor (+ optional delta-only).
-
----
-
-## C. Operator sequence (exact order)
-
-Run notebook cells in this order with no skips:
-
-1. **Cell 1**: Global deployment config (`DEPLOY`)
-2. **Cell 2**: Build S3 prefix map + upload scripts/dependencies via API
-3. **Cell 3**: Create DynamoDB tables
-4. **Cell 4**: Seed DDB linkage + full DPP bootstrap records
-5. **Cell 5**: Register/upsert SageMaker pipelines
-6. **Cell 6**: Deploy Step Functions definitions with placeholder substitution
-7. **Cell 7**: Configure/validate trigger paths (Pipe + manual operations)
-8. **Cell 8–12**: Verification suite
-
----
-
-## D. Cell 1 — Single configuration block (NO environment variables)
+## Cell 3 (Code)
 
 ```python
-"""
-CELL 1 — GLOBAL CONFIG (ONLY PLACE YOU EDIT VARIABLES)
-
-Why this exists
----------------
-Prevents drift across scripts. All downstream cells use DEPLOY values.
-No env vars are required.
-
-Fill every placeholder before continuing.
-"""
-
-DEPLOY = {
-    # AWS
-    "region": "<aws-region>",
-    "account_id": "<12-digit-account-id>",
-    "execution_role_arn": "arn:aws:iam::<account-id>:role/<deployment-role>",
-    "artifact_bucket": "<artifact-bucket>",
-
-    # Project identities
-    "project_name": "<dpp-data-source-name>",      # e.g., fw_paloalto
-    "ml_project_name": "<ml-project-name>",        # e.g., network_anomalies_detection
-    "feature_spec_version": "<feature-spec-version>",  # e.g., v1
-    "owner": "<owner>",
-
-    # DDB names (explicit, no env fallback)
-    "dpp_table_name": "dpp_config",
-    "mlp_table_name": "mlp_config",
-    "batch_index_table_name": "batch_index",
-    "project_routing_table_name": "ml_projects_routing",
-    "processing_lock_table_name": "<processing-lock-table>",
-    "publication_lock_table_name": "<publication-lock-table>",
-
-    # SageMaker Pipeline names
-    "pipeline_15m_name": "<pipeline-15m>",
-    "pipeline_inference_name": "<pipeline-inference>",
-    "pipeline_prediction_join_name": "<pipeline-prediction-join>",
-    "pipeline_if_training_name": "<pipeline-if-training>",
-    "pipeline_fgb_name": "<pipeline-fgb>",
-    "pipeline_machine_inventory_name": "<pipeline-machine-inventory>",
-    "pipeline_backfill_extractor_name": "<pipeline-backfill-extractor>",
-    "pipeline_backfill_15m_name": "<pipeline-backfill-15m>",
-
-    # Step Functions names
-    "sfn_15m_name": "sfn_ndr_15m_features_inference",
-    "sfn_prediction_publication_name": "sfn_ndr_prediction_publication",
-    "sfn_bootstrap_name": "sfn_ndr_initial_deployment_bootstrap",
-    "sfn_monthly_fgb_name": "sfn_ndr_monthly_fg_b_baselines",
-    "sfn_training_name": "sfn_ndr_training_orchestrator",
-    "sfn_backfill_name": "sfn_ndr_backfill_reprocessing",
-
-    # External ingress integration (ETL-side)
-    "etl_ingestion_sns_topic_arn": "<sns-topic-arn>",
-    "etl_ingestion_sqs_queue_arn": "<sqs-queue-arn>",
-    "eventbridge_pipe_name": "<pipe-name>",
-    "eventbridge_pipe_role_arn": "arn:aws:iam::<account-id>:role/<pipe-role>",
-    "event_bus_name": "<event-bus-name>"
-}
-
-print("Loaded DEPLOY for:", DEPLOY["project_name"], "->", DEPLOY["ml_project_name"])
-```
-
----
-
-## E. Cell 2 — S3 placement script (code + dependencies, fully explicit)
-
-> This is the correct Step 2.
-> It includes functions + dictionaries + mapping + manifest generation.
-
-```python
-"""
-CELL 2 — PLACE ALL RUNTIME CODE IN S3 VIA API
-
-Purpose
--------
-Uploads all step entry scripts and required ndr package modules to per-step S3 code locations.
-
-What gets uploaded
-------------------
-- Entry script for each step (run_*.py).
-- Full src/ndr/** tree under each step root as dependency payload.
-- Manifest JSON listing exact uploaded URIs.
-
-DPP vs MLP split
-----------------
-- DPP-owned steps are uploaded under projects/<project_name>/...
-- MLP-owned steps are uploaded under projects/<ml_project_name>/...
-"""
-
-from pathlib import Path
 import json
-import mimetypes
-import boto3
-
-# ---- local repo path (edit to your notebook workspace) ----
-REPO_ROOT = Path("/home/sagemaker-user/ndr_features_pipeline")
-SRC_NDR = REPO_ROOT / "src" / "ndr"
-SRC_SCRIPTS = SRC_NDR / "scripts"
-
-assert SRC_NDR.exists(), f"Missing local dependency path: {SRC_NDR}"
-assert SRC_SCRIPTS.exists(), f"Missing local scripts path: {SRC_SCRIPTS}"
-
-# ---- deployment values ----
-bucket = DEPLOY["artifact_bucket"]
-region = DEPLOY["region"]
-project_name = DEPLOY["project_name"]
-ml_project_name = DEPLOY["ml_project_name"]
-v = DEPLOY["feature_spec_version"]
-
-s3 = boto3.client("s3", region_name=region)
-
-def upload_file(local_path: Path, key: str) -> None:
-    """Upload one file to S3 with best-effort content type."""
-    ct = mimetypes.guess_type(str(local_path))[0] or "application/octet-stream"
-    s3.upload_file(
-        Filename=str(local_path),
-        Bucket=bucket,
-        Key=key,
-        ExtraArgs={"ContentType": ct},
-    )
-
-def upload_full_ndr_tree(step_root_key: str) -> int:
-    """
-    Upload src/ndr/** under <step_root_key>/ndr/**.
-
-    Rationale:
-    Step containers run `python -m ndr.scripts.<entrypoint>`,
-    so the importable package must exist in that code payload.
-    """
-    count = 0
-    for p in SRC_NDR.rglob("*"):
-        if p.is_file():
-            rel = p.relative_to(SRC_NDR).as_posix()
-            key = f"{step_root_key}/ndr/{rel}"
-            upload_file(p, key)
-            count += 1
-    return count
-
-# Step -> entry script mapping
-ENTRY_SCRIPT = {
-    "DeltaBuilderStep": "run_delta_builder.py",
-    "FGABuilderStep": "run_fg_a_builder.py",
-    "PairCountsBuilderStep": "run_pair_counts_builder.py",
-    "FGCCorrBuilderStep": "run_fg_c_builder.py",
-    "FGBaselineBuilderStep": "run_fg_b_builder.py",
-    "MachineInventoryUnloadStep": "run_machine_inventory_unload.py",
-    "HistoricalWindowsExtractorStep": "run_historical_windows_extractor.py",
-    "InferencePredictionsStep": "run_inference_predictions.py",
-    "PredictionFeatureJoinStep": "run_prediction_feature_join.py",
-    "TrainingDataVerifierStep": "run_if_training.py",
-    "MissingFeatureCreationStep": "run_if_training.py",
-    "PostRemediationVerificationStep": "run_if_training.py",
-    "IFTrainingStep": "run_if_training.py",
-    "ModelPublishStep": "run_if_training.py",
-    "ModelAttributesStep": "run_if_training.py",
-    "ModelDeployStep": "run_if_training.py",
-}
-
-# DPP-owned code prefixes
-DPP_PREFIX = {
-    "DeltaBuilderStep": f"projects/{project_name}/versions/{v}/code/pipelines/15m_streaming/DeltaBuilderStep",
-    "FGABuilderStep": f"projects/{project_name}/versions/{v}/code/pipelines/15m_streaming/FGABuilderStep",
-    "PairCountsBuilderStep": f"projects/{project_name}/versions/{v}/code/pipelines/15m_streaming/PairCountsBuilderStep",
-    "FGCCorrBuilderStep": f"projects/{project_name}/versions/{v}/code/pipelines/15m_streaming/FGCCorrBuilderStep",
-    "FGBaselineBuilderStep": f"projects/{project_name}/versions/{v}/code/pipelines/fg_b_baseline/FGBaselineBuilderStep",
-    "MachineInventoryUnloadStep": f"projects/{project_name}/versions/{v}/code/pipelines/machine_inventory_unload/MachineInventoryUnloadStep",
-    "HistoricalWindowsExtractorStep": f"projects/{project_name}/versions/{v}/code/pipelines/backfill_historical_extractor/HistoricalWindowsExtractorStep",
-}
-
-# MLP-owned code prefixes
-MLP_PREFIX = {
-    "InferencePredictionsStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/inference_predictions/InferencePredictionsStep",
-    "PredictionFeatureJoinStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/prediction_feature_join/PredictionFeatureJoinStep",
-    "TrainingDataVerifierStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/if_training/TrainingDataVerifierStep",
-    "MissingFeatureCreationStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/if_training/MissingFeatureCreationStep",
-    "PostRemediationVerificationStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/if_training/PostRemediationVerificationStep",
-    "IFTrainingStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/if_training/IFTrainingStep",
-    "ModelPublishStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/if_training/ModelPublishStep",
-    "ModelAttributesStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/if_training/ModelAttributesStep",
-    "ModelDeployStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/if_training/ModelDeployStep",
-}
-
-all_steps = {**DPP_PREFIX, **MLP_PREFIX}
-manifest = []
-
-for step, root in all_steps.items():
-    entry = ENTRY_SCRIPT[step]
-    local_entry = SRC_SCRIPTS / entry
-    assert local_entry.exists(), f"Missing local script: {local_entry}"
-
-    dep_files = upload_full_ndr_tree(root)
-    upload_file(local_entry, f"{root}/{entry}")
-
-    uri = f"s3://{bucket}/{root}/{entry}"
-    print("[uploaded]", step, "=>", uri)
-    manifest.append({
-        "step_name": step,
-        "entry_script": entry,
-        "code_uri": uri,
-        "dependency_files_uploaded": dep_files
-    })
-
-manifest_key = f"projects/{project_name}/versions/{v}/manifests/code_upload_manifest.json"
-s3.put_object(
-    Bucket=bucket,
-    Key=manifest_key,
-    Body=json.dumps(manifest, indent=2).encode("utf-8"),
-    ContentType="application/json",
-)
-print("[manifest]", f"s3://{bucket}/{manifest_key}")
-```
-
----
-
-## F. Cell 3 — Create DynamoDB tables (schema only)
-
-```python
-"""
-CELL 3 — CREATE CONTROL-PLANE TABLES
-
-Purpose
--------
-Creates table schemas only.
-No seed data in this cell.
-
-Required order
---------------
-Run before Cell 4.
-"""
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Mapping
 
 import boto3
 
-region = DEPLOY["region"]
-ddb = boto3.client("dynamodb", region_name=region)
-
-TABLES = {
-    DEPLOY["dpp_table_name"]: {
-        "TableName": DEPLOY["dpp_table_name"],
-        "AttributeDefinitions": [
-            {"AttributeName": "project_name", "AttributeType": "S"},
-            {"AttributeName": "job_name_version", "AttributeType": "S"},
-        ],
-        "KeySchema": [
-            {"AttributeName": "project_name", "KeyType": "HASH"},
-            {"AttributeName": "job_name_version", "KeyType": "RANGE"},
-        ],
-        "BillingMode": "PAY_PER_REQUEST",
-    },
-    DEPLOY["mlp_table_name"]: {
-        "TableName": DEPLOY["mlp_table_name"],
-        "AttributeDefinitions": [
-            {"AttributeName": "ml_project_name", "AttributeType": "S"},
-            {"AttributeName": "job_name_version", "AttributeType": "S"},
-        ],
-        "KeySchema": [
-            {"AttributeName": "ml_project_name", "KeyType": "HASH"},
-            {"AttributeName": "job_name_version", "KeyType": "RANGE"},
-        ],
-        "BillingMode": "PAY_PER_REQUEST",
-    },
-    DEPLOY["batch_index_table_name"]: {
-        "TableName": DEPLOY["batch_index_table_name"],
-        "AttributeDefinitions": [
-            {"AttributeName": "pk", "AttributeType": "S"},
-            {"AttributeName": "sk", "AttributeType": "S"},
-            {"AttributeName": "GSI1PK", "AttributeType": "S"},
-            {"AttributeName": "GSI1SK", "AttributeType": "S"},
-        ],
-        "KeySchema": [
-            {"AttributeName": "pk", "KeyType": "HASH"},
-            {"AttributeName": "sk", "KeyType": "RANGE"},
-        ],
-        "GlobalSecondaryIndexes": [
-            {
-                "IndexName": "GSI1",
-                "KeySchema": [
-                    {"AttributeName": "GSI1PK", "KeyType": "HASH"},
-                    {"AttributeName": "GSI1SK", "KeyType": "RANGE"},
-                ],
-                "Projection": {"ProjectionType": "ALL"},
-            }
-        ],
-        "BillingMode": "PAY_PER_REQUEST",
-    },
-    DEPLOY["project_routing_table_name"]: {
-        "TableName": DEPLOY["project_routing_table_name"],
-        "AttributeDefinitions": [{"AttributeName": "org_key", "AttributeType": "S"}],
-        "KeySchema": [{"AttributeName": "org_key", "KeyType": "HASH"}],
-        "BillingMode": "PAY_PER_REQUEST",
-    },
-    DEPLOY["processing_lock_table_name"]: {
-        "TableName": DEPLOY["processing_lock_table_name"],
-        "AttributeDefinitions": [
-            {"AttributeName": "pk", "AttributeType": "S"},
-            {"AttributeName": "sk", "AttributeType": "S"},
-        ],
-        "KeySchema": [
-            {"AttributeName": "pk", "KeyType": "HASH"},
-            {"AttributeName": "sk", "KeyType": "RANGE"},
-        ],
-        "BillingMode": "PAY_PER_REQUEST",
-    },
-    DEPLOY["publication_lock_table_name"]: {
-        "TableName": DEPLOY["publication_lock_table_name"],
-        "AttributeDefinitions": [
-            {"AttributeName": "pk", "AttributeType": "S"},
-            {"AttributeName": "sk", "AttributeType": "S"},
-        ],
-        "KeySchema": [
-            {"AttributeName": "pk", "KeyType": "HASH"},
-            {"AttributeName": "sk", "KeyType": "RANGE"},
-        ],
-        "BillingMode": "PAY_PER_REQUEST",
-    },
-}
-
-for name, payload in TABLES.items():
-    try:
-        ddb.describe_table(TableName=name)
-        print("[exists]", name)
-    except ddb.exceptions.ResourceNotFoundException:
-        ddb.create_table(**payload)
-        ddb.get_waiter("table_exists").wait(TableName=name)
-        print("[created]", name)
-```
-
----
-
-## G. Cell 4 — Seed DDB values (linkage + full bootstrap)
-
-```python
-"""
-CELL 4 — SEED DDB RECORDS
-
-Purpose
--------
-A) Seed reciprocal linkage records in DPP and MLP.
-B) Seed full bootstrap records in DPP for pipeline_* and job specs.
-
-Dependencies
-------------
-- Local import path to repo `src`.
-- Cell 3 already completed.
-"""
-
-import sys
-import boto3
-
-# Edit this path to your notebook clone path
-sys.path.insert(0, "/home/sagemaker-user/ndr_features_pipeline/src")
-
-from ndr.scripts.create_ml_projects_parameters_table import (
-    build_split_seed_items,
-    _build_bootstrap_items,
-)
-
-region = DEPLOY["region"]
-ddb = boto3.resource("dynamodb", region_name=region)
-
-project_name = DEPLOY["project_name"]
-ml_project_name = DEPLOY["ml_project_name"]
-v = DEPLOY["feature_spec_version"]
-owner = DEPLOY["owner"]
-
-# A) reciprocal linkage records
-split = build_split_seed_items(
-    project_name=project_name,
-    ml_project_name=ml_project_name,
-    feature_spec_version=v,
-    owner=owner,
-)
-
-table_map = {
-    "dpp_config": DEPLOY["dpp_table_name"],
-    "mlp_config": DEPLOY["mlp_table_name"],
-    "batch_index": DEPLOY["batch_index_table_name"],
-}
-
-for logical_name, items in split.items():
-    if not items:
-        continue
-    t = ddb.Table(table_map[logical_name])
-    with t.batch_writer() as w:
-        for item in items:
-            w.put_item(Item=item)
-    print("[seeded-linkage]", logical_name, len(items))
-
-# B) full bootstrap into DPP
-bootstrap = _build_bootstrap_items(project_name, v, owner)
-dpp = ddb.Table(DEPLOY["dpp_table_name"])
-with dpp.batch_writer(overwrite_by_pkeys=["project_name", "job_name_version"]) as w:
-    for item in bootstrap:
-        w.put_item(Item=item)
-
-print("[seeded-bootstrap]", len(bootstrap), "items")
-```
-
-### Task 8 Phase A artifact bootstrap controls (mandatory before READY)
-
-Cell sequence (deterministic):
-1. Build per-step source bundles from canonical repository state (`git rev-parse HEAD` recorded as source revision).
-2. Compute `artifact_build_id` using `ndr-<project>-<feature_spec_version>-<UTC_YYYYMMDDTHHMMSSZ>`.
-3. Compute SHA-256 for each `source.tar.gz` bundle and store as lowercase hex in `artifact_sha256`.
-4. Upload bundle to `<code_prefix_s3>/artifacts/<artifact_build_id>/source.tar.gz`.
-5. Update each `scripts.steps.<step>` pointer fields:
-   - `code_artifact_s3_uri`
-   - `entry_script`
-   - `artifact_build_id`
-   - `artifact_sha256`
-   - `artifact_format=tar.gz`
-6. Run smoke command per step from artifact context (`python <entry_script> --help`) and persist logs as deployment evidence.
-7. Only after all smoke checks pass, atomically set:
-   - `deployment_status=READY`
-   - `deployment_checkpoint=phase_a_seed_complete`
-   - `deployment_last_build_id=<artifact_build_id>`
-   - `deployment_last_error=""`
-
-Break-glass policy:
-- Manual notebook artifact publish is allowed only for production incident recovery when deployment orchestration is unavailable.
-- Manual publish must set `deployment_checkpoint=break_glass_manual_seed` and emit an audit note with incident ID.
-- Next automated deployment orchestration run must reconcile and supersede break-glass pointers before normal promotion resumes.
-
----
-
-## H. Cell 5 — Deploy SageMaker pipelines
-
-```python
-"""
-CELL 5 — CREATE/UPDATE SAGEMAKER PIPELINES
-"""
-
-import sys
-sys.path.insert(0, "/home/sagemaker-user/ndr_features_pipeline/src")
-
-from ndr.pipeline.sagemaker_pipeline_definitions_unified_with_fgc import (
-    build_15m_streaming_pipeline,
-    build_fg_b_baseline_pipeline,
-    build_machine_inventory_unload_pipeline,
-    build_delta_builder_pipeline,
-)
+from ndr.contracts import DPP_CODE_STEP_KEYS, MLP_CODE_STEP_KEYS
+from ndr.config.project_parameters_loader import DEFAULT_DPP_CONFIG_TABLE_NAME, DEFAULT_MLP_CONFIG_TABLE_NAME, DEFAULT_BATCH_INDEX_TABLE_NAME
+from ndr.config.exception_table_contracts import EXCEPTION_TABLE_CONTRACTS
+from ndr.scripts import create_ml_projects_parameters_table as create_cfg
+from ndr.pipeline.sagemaker_pipeline_definitions_unified_with_fgc import build_15m_streaming_pipeline, build_15m_dependent_pipeline, build_fg_b_baseline_pipeline, build_machine_inventory_unload_pipeline
 from ndr.pipeline.sagemaker_pipeline_definitions_inference import build_inference_predictions_pipeline
 from ndr.pipeline.sagemaker_pipeline_definitions_prediction_feature_join import build_prediction_feature_join_pipeline
 from ndr.pipeline.sagemaker_pipeline_definitions_if_training import build_if_training_pipeline
 from ndr.pipeline.sagemaker_pipeline_definitions_backfill_historical_extractor import build_backfill_historical_extractor_pipeline
 from ndr.pipeline.sagemaker_pipeline_definitions_backfill_15m_reprocessing import build_backfill_15m_reprocessing_pipeline
+from ndr.pipeline.sagemaker_pipeline_definitions_code_bundle_build import build_code_bundle_build_pipeline
+from ndr.pipeline.sagemaker_pipeline_definitions_code_artifact_validate import build_code_artifact_validate_pipeline
+from ndr.pipeline.sagemaker_pipeline_definitions_code_smoke_validate import build_code_smoke_validate_pipeline
 
-region = DEPLOY["region"]
-role_arn = DEPLOY["execution_role_arn"]
-bucket = DEPLOY["artifact_bucket"]
+UTC_NOW = datetime.now(timezone.utc).isoformat()
+print('UTC now:', UTC_NOW)
+```
 
-pipelines = [
-    build_15m_streaming_pipeline(DEPLOY["pipeline_15m_name"], role_arn, bucket, region),
-    build_fg_b_baseline_pipeline(DEPLOY["pipeline_fgb_name"], role_arn, bucket, region),
-    build_machine_inventory_unload_pipeline(DEPLOY["pipeline_machine_inventory_name"], role_arn, bucket, region),
-    build_inference_predictions_pipeline(
-        DEPLOY["pipeline_inference_name"],
-        role_arn,
-        bucket,
-        region,
-        project_name_for_contracts=DEPLOY["project_name"],
-        feature_spec_version_for_contracts=DEPLOY["feature_spec_version"],
-    ),
-    build_prediction_feature_join_pipeline(
-        DEPLOY["pipeline_prediction_join_name"],
-        role_arn,
-        bucket,
-        region,
-        project_name_for_contracts=DEPLOY["project_name"],
-        feature_spec_version_for_contracts=DEPLOY["feature_spec_version"],
-    ),
-    build_if_training_pipeline(
-        DEPLOY["pipeline_if_training_name"],
-        role_arn,
-        bucket,
-        region,
-        project_name_for_contracts=DEPLOY["project_name"],
-        feature_spec_version_for_contracts=DEPLOY["feature_spec_version"],
-    ),
-    build_backfill_historical_extractor_pipeline(
-        DEPLOY["pipeline_backfill_extractor_name"],
-        role_arn,
-        bucket,
-        region,
-        project_name_for_contracts=DEPLOY["project_name"],
-        feature_spec_version_for_contracts=DEPLOY["feature_spec_version"],
-    ),
-    build_backfill_15m_reprocessing_pipeline(
-        DEPLOY["pipeline_backfill_15m_name"],
-        role_arn,
-        bucket,
-        region,
-        project_name_for_contracts=DEPLOY["project_name"],
-        feature_spec_version_for_contracts=DEPLOY["feature_spec_version"],
-    ),
+## Cell 4 (Code)
+
+```python
+PIPELINE_BUILDERS = {
+    'pipeline_15m_streaming': build_15m_streaming_pipeline,
+    'pipeline_15m_dependent': build_15m_dependent_pipeline,
+    'pipeline_fg_b_baseline': build_fg_b_baseline_pipeline,
+    'pipeline_machine_inventory_unload': build_machine_inventory_unload_pipeline,
+    'pipeline_inference_predictions': build_inference_predictions_pipeline,
+    'pipeline_prediction_feature_join': build_prediction_feature_join_pipeline,
+    'pipeline_if_training': build_if_training_pipeline,
+    'pipeline_backfill_historical_extractor': build_backfill_historical_extractor_pipeline,
+    'pipeline_backfill_15m_reprocessing': build_backfill_15m_reprocessing_pipeline,
+    'pipeline_code_bundle_build': build_code_bundle_build_pipeline,
+    'pipeline_code_artifact_validate': build_code_artifact_validate_pipeline,
+    'pipeline_code_smoke_validate': build_code_smoke_validate_pipeline,
+}
+RUNTIME_PARAM_CONTRACTS = create_cfg.PIPELINE_RUNTIME_PARAMS
+print('Pipeline builders:', len(PIPELINE_BUILDERS))
+print('Runtime param contracts:', len(RUNTIME_PARAM_CONTRACTS))
+print('Exception tables:', {k: v.default_table_name for k, v in EXCEPTION_TABLE_CONTRACTS.items()})
+```
+
+## Cell 5 (Code)
+
+```python
+aws_region = 'us-east-1'
+aws_account_id = ''  # e.g., 123456789012
+project_name = 'ndr'
+feature_spec_version = 'v3'
+environment_name = 'dev'
+owner = ''  # e.g., ml-platform-team
+
+ml_project_name = ''  # e.g., ndr-ml-anomaly
+ml_project_names = [ml_project_name] if ml_project_name else []
+
+sagemaker_role_arn = ''  # e.g., arn:aws:iam::...:role/...
+default_bucket = ''  # e.g., ndr-ml-project-dev-us-east-1
+processing_image_uri = ''  # e.g., <acct>.dkr.ecr.<region>.amazonaws.com/ndr-pyspark:latest
+
+org1 = ''  # e.g., tenant-a
+org2 = ''  # e.g., site-01
+ingestion_prefix = ''  # e.g., s3://bucket/input/raw/tenant-a/site-01/
+
+batch_id = ''  # e.g., 2026-04-11T10:15:00Z__run_1
+date_partition = ''  # e.g., 2026/04/11
+hour = ''  # e.g., 10
+within_hour_run_number = ''  # e.g., 1
+etl_ts = ''  # e.g., 2026-04-11T10:15:00Z
+raw_parsed_logs_s3_prefix = ''  # e.g., s3://bucket/raw/traffic/org1/org2/2026/04/11/10/1/
+
+dpp_config_table_name = DEFAULT_DPP_CONFIG_TABLE_NAME
+mlp_config_table_name = DEFAULT_MLP_CONFIG_TABLE_NAME
+batch_index_table_name = DEFAULT_BATCH_INDEX_TABLE_NAME
+routing_table_name = EXCEPTION_TABLE_CONTRACTS['routing'].default_table_name
+processing_lock_table_name = EXCEPTION_TABLE_CONTRACTS['processing_lock'].default_table_name
+publication_lock_table_name = EXCEPTION_TABLE_CONTRACTS['publication_lock'].default_table_name
+
+artifact_build_id = ''  # e.g., build-20260411-01
+artifact_sha256 = ''  # e.g., sha256
+artifact_format = 'tar.gz'
+code_artifact_s3_uri = ''  # e.g., s3://bucket/artifacts/code/build-.../source.tar.gz
+```
+
+## Cell 6 (Code)
+
+```python
+dpp_delta_root = ''
+dpp_pair_counts_root = ''
+dpp_fg_a_root = ''
+dpp_fg_b_root = ''
+dpp_fg_c_root = ''
+dpp_machine_inventory_root = ''
+
+mlp_predictions_root = ''
+mlp_prediction_join_root = ''
+mlp_publication_root = ''
+mlp_training_reports_root = ''
+mlp_training_artifacts_root = ''
+mlp_production_model_root = ''
+```
+
+## Cell 7 (Code)
+
+```python
+ddb_table_contracts = {
+    'dpp_config': {'table_name': dpp_config_table_name, 'billing_mode': 'PAY_PER_REQUEST', 'attribute_definitions': [{'AttributeName': 'project_name', 'AttributeType': 'S'}, {'AttributeName': 'job_name_version', 'AttributeType': 'S'}], 'key_schema': [{'AttributeName': 'project_name', 'KeyType': 'HASH'}, {'AttributeName': 'job_name_version', 'KeyType': 'RANGE'}]},
+    'mlp_config': {'table_name': mlp_config_table_name, 'billing_mode': 'PAY_PER_REQUEST', 'attribute_definitions': [{'AttributeName': 'ml_project_name', 'AttributeType': 'S'}, {'AttributeName': 'job_name_version', 'AttributeType': 'S'}], 'key_schema': [{'AttributeName': 'ml_project_name', 'KeyType': 'HASH'}, {'AttributeName': 'job_name_version', 'KeyType': 'RANGE'}]},
+    'batch_index': {'table_name': batch_index_table_name, 'billing_mode': 'PAY_PER_REQUEST', 'attribute_definitions': [{'AttributeName': 'PK', 'AttributeType': 'S'}, {'AttributeName': 'SK', 'AttributeType': 'S'}], 'key_schema': [{'AttributeName': 'PK', 'KeyType': 'HASH'}, {'AttributeName': 'SK', 'KeyType': 'RANGE'}]},
+    'routing': {'table_name': routing_table_name, 'billing_mode': 'PAY_PER_REQUEST', 'attribute_definitions': [{'AttributeName': 'org_key', 'AttributeType': 'S'}], 'key_schema': [{'AttributeName': 'org_key', 'KeyType': 'HASH'}]},
+    'processing_lock': {'table_name': processing_lock_table_name, 'billing_mode': 'PAY_PER_REQUEST', 'attribute_definitions': [{'AttributeName': 'pk', 'AttributeType': 'S'}, {'AttributeName': 'sk', 'AttributeType': 'S'}], 'key_schema': [{'AttributeName': 'pk', 'KeyType': 'HASH'}, {'AttributeName': 'sk', 'KeyType': 'RANGE'}]},
+    'publication_lock': {'table_name': publication_lock_table_name, 'billing_mode': 'PAY_PER_REQUEST', 'attribute_definitions': [{'AttributeName': 'pk', 'AttributeType': 'S'}, {'AttributeName': 'sk', 'AttributeType': 'S'}], 'key_schema': [{'AttributeName': 'pk', 'KeyType': 'HASH'}, {'AttributeName': 'sk', 'KeyType': 'RANGE'}]},
+}
+print(json.dumps(ddb_table_contracts, indent=2))
+```
+
+## Cell 8 (Code)
+
+```python
+def _replace_placeholders(value, replacements):
+    if isinstance(value, dict):
+        return {k: _replace_placeholders(v, replacements) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_replace_placeholders(v, replacements) for v in value]
+    if isinstance(value, str):
+        out = value
+        for needle, repl in replacements.items():
+            out = out.replace(needle, repl)
+        return out
+    return value
+
+def _promote_pipeline_specs_ready(items):
+    out = []
+    for item in items:
+        patched = dict(item)
+        spec = patched.get('spec')
+        if isinstance(spec, dict):
+            scripts = spec.get('scripts') if isinstance(spec.get('scripts'), dict) else {}
+            steps = scripts.get('steps') if isinstance(scripts.get('steps'), dict) else {}
+            for step_name, step_spec in steps.items():
+                if isinstance(step_spec, dict):
+                    step_spec['code_artifact_s3_uri'] = code_artifact_s3_uri
+                    step_spec['artifact_build_id'] = artifact_build_id
+                    step_spec['artifact_sha256'] = artifact_sha256
+                    step_spec['artifact_format'] = artifact_format
+                    step_spec['code_metadata'] = {'code_artifact_s3_uri': code_artifact_s3_uri, 'artifact_build_id': artifact_build_id, 'artifact_sha256': artifact_sha256, 'artifact_format': artifact_format}
+            if steps:
+                spec['deployment_status'] = 'READY'
+                spec['deployment_checkpoint'] = 'steady_state_ready'
+                spec['deployment_last_build_id'] = artifact_build_id
+                spec['deployment_last_error'] = ''
+                spec['deployment_updated_at'] = UTC_NOW
+        out.append(patched)
+    return out
+
+bootstrap_seed_items = create_cfg._build_bootstrap_items(project_name=project_name, feature_spec_version=feature_spec_version, owner=owner or 'ndr-team')
+replacements = {'<project_name>': project_name, '<feature_spec_version>': feature_spec_version, '<bucket>': default_bucket, 's3://REPLACE_ME': f's3://{default_bucket}' if default_bucket else 's3://'}
+bootstrap_seed_items = [_replace_placeholders(item, replacements) for item in bootstrap_seed_items]
+bootstrap_seed_items = _promote_pipeline_specs_ready(bootstrap_seed_items)
+print('bootstrap items:', len(bootstrap_seed_items))
+```
+
+## Cell 9 (Code)
+
+```python
+job_name_version = f'project_parameters#{feature_spec_version}'
+dpp_s3_roots = {'delta_root': dpp_delta_root, 'pair_counts_root': dpp_pair_counts_root, 'fg_a_root': dpp_fg_a_root, 'fg_b_root': dpp_fg_b_root, 'fg_c_root': dpp_fg_c_root, 'machine_inventory_root': dpp_machine_inventory_root}
+mlp_s3_roots = {'predictions_root': mlp_predictions_root, 'prediction_join_root': mlp_prediction_join_root, 'publication_root': mlp_publication_root, 'training_reports_root': mlp_training_reports_root, 'training_artifacts_root': mlp_training_artifacts_root, 'production_model_root': mlp_production_model_root}
+
+dpp_reciprocal_item = {'project_name': project_name, 'job_name_version': job_name_version, 'ml_project_names': ml_project_names, 'updated_at': UTC_NOW, 'owner': owner, 'spec': {'project_name': project_name, 'ml_project_names': ml_project_names}}
+dpp_s3_roots_item = {'project_name': project_name, 'job_name_version': 'S3_ROOTS', 'roots': dpp_s3_roots, 'updated_at': UTC_NOW, 'owner': owner}
+mlp_reciprocal_item = {'ml_project_name': ml_project_name, 'job_name_version': job_name_version, 'project_name': project_name, 'updated_at': UTC_NOW, 'owner': owner, 'spec': {'project_name': project_name, 'ml_project_name': ml_project_name}}
+mlp_s3_roots_item = {'ml_project_name': ml_project_name, 'job_name_version': 'S3_ROOTS', 'project_name': project_name, 'roots': mlp_s3_roots, 'updated_at': UTC_NOW, 'owner': owner}
+```
+
+## Cell 10 (Code)
+
+```python
+dpp_code_paths = {step_key: code_artifact_s3_uri for step_key in DPP_CODE_STEP_KEYS}
+mlp_code_paths = {step_key: code_artifact_s3_uri for step_key in MLP_CODE_STEP_KEYS}
+dpp_code_metadata = {step_key: {'code_artifact_s3_uri': code_artifact_s3_uri, 'artifact_build_id': artifact_build_id, 'artifact_sha256': artifact_sha256, 'artifact_format': artifact_format} for step_key in DPP_CODE_STEP_KEYS}
+mlp_code_metadata = {step_key: {'code_artifact_s3_uri': code_artifact_s3_uri, 'artifact_build_id': artifact_build_id, 'artifact_sha256': artifact_sha256, 'artifact_format': artifact_format} for step_key in MLP_CODE_STEP_KEYS}
+
+s3_prefixes_dpp = {'delta': '', 'pair_counts': '', 'fg_a': '', 'fg_a_subpaths': {'features': '', 'metadata': ''}, 'fg_c': '', 'machine_inventory': '', 'fg_b': {'machines_manifest': '', 'machines_unload_for_update': '', 'machines_base_stats': '', 'segment_base_stats': ''}, 'code': dpp_code_paths, 'code_metadata': dpp_code_metadata}
+s3_prefixes_mlp_branch = {'predictions': '', 'prediction_join': '', 'publication': '', 'training_events': {'training_reports': '', 'training_artifacts': ''}, 'production_artifacts': {'inference_model': ''}, 'code': mlp_code_paths, 'code_metadata': mlp_code_metadata}
+s3_prefixes_mlp = {ml_project_name: s3_prefixes_mlp_branch} if ml_project_name else {}
+
+batch_index_direct_item = {'PK': project_name, 'SK': batch_id, 'batch_id': batch_id, 'date_partition': date_partition, 'hour': hour, 'within_hour_run_number': within_hour_run_number, 'etl_ts': etl_ts, 'org1': org1, 'org2': org2, 'raw_parsed_logs_s3_prefix': raw_parsed_logs_s3_prefix, 'ml_project_names': ml_project_names, 's3_prefixes': {'dpp': s3_prefixes_dpp, 'mlp': s3_prefixes_mlp}, 'rt_flow_status': 'planned', 'backfill_status': 'planned', 'source_mode': 'batch_index', 'last_updated_at': UTC_NOW}
+reverse_sk = f'{date_partition}#{hour}#{within_hour_run_number}' if date_partition and hour and within_hour_run_number else ''
+batch_index_reverse_item = {'PK': project_name, 'SK': reverse_sk, 'batch_id': batch_id, 'batch_lookup_sk': batch_id, 'date_partition': date_partition, 'hour': hour, 'within_hour_run_number': within_hour_run_number, 'etl_ts': etl_ts, 'org1': org1, 'org2': org2}
+routing_item = {'org_key': f'{org1}#{org2}' if org1 and org2 else '', 'project_name': project_name, 'ml_project_names': ml_project_names, 'ingestion_prefix': ingestion_prefix, 'feature_spec_version': feature_spec_version, 'updated_at': UTC_NOW}
+
+ddb_seed_items_plan = {'dpp_config': [*bootstrap_seed_items, dpp_reciprocal_item, dpp_s3_roots_item], 'mlp_config': [mlp_reciprocal_item, mlp_s3_roots_item], 'batch_index': [batch_index_direct_item, batch_index_reverse_item], 'routing': [routing_item], 'processing_lock': [], 'publication_lock': []}
+print(json.dumps({'seed_counts': {k: len(v) for k, v in ddb_seed_items_plan.items()}}, indent=2))
+```
+
+## Cell 11 (Code)
+
+```python
+s3_schema_plan = {'bucket_name': default_bucket, 'prefixes': ['input/raw', 'input/reference', 'output/processed/delta_15m', 'output/processed/fg_a', 'output/processed/pair_counts', 'output/processed/fg_b', 'output/processed/fg_c', 'output/predictions', 'output/prediction_join', 'output/publication', 'artifacts/code', 'artifacts/pipeline', 'feature-store/offline', 'monitoring', 'logs']}
+print(json.dumps(s3_schema_plan, indent=2))
+```
+
+## Cell 12 (Code)
+
+```python
+def ensure_ddb_table(ddb_client, spec, dry_run=True):
+    if dry_run:
+        print('[DRY RUN] ensure table', spec['table_name']); return
+    existing = set(ddb_client.list_tables()['TableNames'])
+    if spec['table_name'] in existing: return
+    ddb_client.create_table(TableName=spec['table_name'], BillingMode=spec['billing_mode'], KeySchema=spec['key_schema'], AttributeDefinitions=spec['attribute_definitions'])
+    ddb_client.get_waiter('table_exists').wait(TableName=spec['table_name'])
+
+def seed_table_items(ddb_resource, table_name, items, dry_run=True):
+    if dry_run:
+        print(f'[DRY RUN] seed {len(items)} items -> {table_name}'); return
+    table = ddb_resource.Table(table_name)
+    for item in items: table.put_item(Item=item)
+
+def deploy_ddb(table_contracts, seed_plan, region_name, dry_run=True):
+    ddb_client = boto3.client('dynamodb', region_name=region_name)
+    ddb_resource = boto3.resource('dynamodb', region_name=region_name)
+    for logical_name, contract in table_contracts.items():
+        ensure_ddb_table(ddb_client, contract, dry_run=dry_run)
+        seed_table_items(ddb_resource, contract['table_name'], seed_plan.get(logical_name, []), dry_run=dry_run)
+
+def ensure_s3_schema(schema, region_name, dry_run=True):
+    bucket = schema['bucket_name']
+    s3 = boto3.client('s3', region_name=region_name)
+    if dry_run:
+        print('[DRY RUN] ensure bucket/prefixes for', bucket)
+        for p in schema['prefixes']: print(f'[DRY RUN] s3://{bucket}/{p}/')
+        return
+    existing = {b['Name'] for b in s3.list_buckets().get('Buckets', [])}
+    if bucket and bucket not in existing:
+        params = {'Bucket': bucket}
+        if region_name != 'us-east-1': params['CreateBucketConfiguration'] = {'LocationConstraint': region_name}
+        s3.create_bucket(**params)
+    for p in schema['prefixes']: s3.put_object(Bucket=bucket, Key=f"{p.rstrip('/')}/")
+
+def upsert_pipelines(project_name_for_contracts, feature_spec_version_for_contracts, role_arn, bucket, region_name, dry_run=True):
+    for pipeline_job_name, builder in PIPELINE_BUILDERS.items():
+        pipeline_name = f"{project_name_for_contracts}-{feature_spec_version_for_contracts}-{pipeline_job_name}"
+        if dry_run:
+            print('[DRY RUN] upsert pipeline', pipeline_name); continue
+        pipeline = builder(pipeline_name=pipeline_name, role_arn=role_arn, default_bucket=bucket, region_name=region_name, project_name_for_contracts=project_name_for_contracts, feature_spec_version_for_contracts=feature_spec_version_for_contracts)
+        pipeline.upsert(role_arn=role_arn)
+
+def start_initial_materialization_runs(region_name, dry_run=True):
+    if dry_run:
+        print('[DRY RUN] would start initial feature/stats materialization runs')
+        return
+    print('Trigger pipeline starts here with finalized runtime parameters.')
+```
+
+## Cell 13 (Code)
+
+```python
+artifact_commands = [
+    f'python -m ndr.scripts.run_code_bundle_build --project-name {project_name} --feature-spec-version {feature_spec_version} --artifact-build-id {artifact_build_id}',
+    f'python -m ndr.scripts.run_code_artifact_validate --project-name {project_name} --feature-spec-version {feature_spec_version} --artifact-build-id {artifact_build_id}',
+    f'python -m ndr.scripts.run_code_smoke_validate --project-name {project_name} --feature-spec-version {feature_spec_version} --artifact-build-id {artifact_build_id}',
 ]
-
-delta_uri = (
-    f"s3://{bucket}/projects/{DEPLOY['project_name']}/versions/{DEPLOY['feature_spec_version']}"
-    f"/code/pipelines/15m_streaming/DeltaBuilderStep/run_delta_builder.py"
-)
-pipelines.append(
-    build_delta_builder_pipeline(
-        region=region,
-        role_arn=role_arn,
-        pipeline_name=f"{DEPLOY['pipeline_15m_name']}-delta-only",
-        base_job_name="ndr-delta-only",
-        code_s3_uri=delta_uri,
-    )
-)
-
-for p in pipelines:
-    arn = p.upsert(role_arn=role_arn)
-    print("[upserted]", p.name, "->", arn)
+for i, cmd in enumerate(artifact_commands, 1): print(f'{i}. {cmd}')
+print('code_artifact_s3_uri:', code_artifact_s3_uri or '<set me>')
 ```
 
----
+## Cell 14 (Code)
 
-## I. Cell 6 — Deploy Step Functions (all five)
-
-You deploy JSONs from `docs/step_functions_jsonata/` and substitute placeholders for pipeline names, table names, lock tables, bus, nested SF ARN, etc.
-
-(Implementation can be `states.create_state_machine` / `states.update_state_machine` with rendered JSON string.)
-
-### Task 5 deployment wiring guardrails (bootstrap -> monthly SFN)
-When rendering `sfn_ndr_initial_deployment_bootstrap.json`, ensure:
-1. `MonthlyStateMachineArn` placeholder is resolved to the deployed ARN for `sfn_ndr_monthly_fg_b_baselines`.
-2. Bootstrap role policy includes:
-   - `states:StartExecution` on monthly state machine ARN,
-   - `states:DescribeExecution` and `states:StopExecution` on monthly execution ARN pattern.
-3. Remove legacy direct monthly pipeline invoke permission from bootstrap role:
-   - disallow `sagemaker:StartPipelineExecution` for `${PipelineNameMonthlyFgBBaselines}` in bootstrap role policy.
-
-Example IAM statement fragment:
-```json
-{
-  "Effect": "Allow",
-  "Action": [
-    "states:StartExecution",
-    "states:DescribeExecution",
-    "states:StopExecution"
-  ],
-  "Resource": [
-    "arn:aws:states:<region>:<account-id>:stateMachine:sfn_ndr_monthly_fg_b_baselines",
-    "arn:aws:states:<region>:<account-id>:execution:sfn_ndr_monthly_fg_b_baselines:*"
-  ]
-}
-```
-
----
-
-## J. Step 7 — Trigger and operations model (corrected + actionable)
-
-### J1) 15m automatic path
-- external ETL publishes ingestion completion payload to SNS,
-- SNS fanout to SQS,
-- EventBridge Pipe reads SQS and starts `sfn_ndr_15m_features_inference`.
-
-### J2) Training/backfill operations path
-- commonly manual from notebook,
-- backfill also invoked by training remediation/orchestration.
-
-#### Cell 7A — manual training start
 ```python
-import boto3, json, uuid, datetime
-
-sfn = boto3.client("stepfunctions", region_name=DEPLOY["region"])
-arns = {x["name"]: x["stateMachineArn"] for x in sfn.list_state_machines()["stateMachines"]}
-
-payload = {
-    "project_name": DEPLOY["project_name"],
-    "feature_spec_version": DEPLOY["feature_spec_version"],
-    "ml_project_name": DEPLOY["ml_project_name"],
-    "run_id": f"manual-{uuid.uuid4().hex[:8]}",
-    "execution_ts_iso": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-    "training_start_ts": "<YYYY-MM-DDTHH:MM:SSZ>",
-    "training_end_ts": "<YYYY-MM-DDTHH:MM:SSZ>",
-    "eval_start_ts": "<YYYY-MM-DDTHH:MM:SSZ>",
-    "eval_end_ts": "<YYYY-MM-DDTHH:MM:SSZ>"
-}
-
-resp = sfn.start_execution(
-    stateMachineArn=arns[DEPLOY["sfn_training_name"]],
-    name=f"manual-training-{uuid.uuid4().hex[:8]}",
-    input=json.dumps(payload),
-)
-print(resp["executionArn"])
+DRY_RUN = True
+deploy_ddb(ddb_table_contracts, ddb_seed_items_plan, region_name=aws_region, dry_run=DRY_RUN)
+ensure_s3_schema(s3_schema_plan, region_name=aws_region, dry_run=DRY_RUN)
+upsert_pipelines(project_name_for_contracts=project_name, feature_spec_version_for_contracts=feature_spec_version, role_arn=sagemaker_role_arn, bucket=default_bucket, region_name=aws_region, dry_run=DRY_RUN)
+start_initial_materialization_runs(region_name=aws_region, dry_run=DRY_RUN)
+print('Dry-run deployment flow complete.')
 ```
 
-#### Cell 7B — manual backfill start
+## Cell 15 (Markdown)
+
+## Step Functions deployment (manual)
+
+Deploy state machines manually in AWS Step Functions GUI using Build by code and pasted JSON definitions.
+
+## Cell 16 (Code)
+
 ```python
-import boto3, json, uuid
-
-sfn = boto3.client("stepfunctions", region_name=DEPLOY["region"])
-arns = {x["name"]: x["stateMachineArn"] for x in sfn.list_state_machines()["stateMachines"]}
-
-payload = {
-    "project_name": DEPLOY["project_name"],
-    "feature_spec_version": DEPLOY["feature_spec_version"],
-    "start_ts_iso": "<YYYY-MM-DDTHH:MM:SSZ>",
-    "end_ts_iso": "<YYYY-MM-DDTHH:MM:SSZ>",
-    "input_s3_prefix": "s3://<bucket>/<input-range>/",
-    "output_s3_prefix": "s3://<bucket>/<windows-output>/"
-}
-
-resp = sfn.start_execution(
-    stateMachineArn=arns[DEPLOY["sfn_backfill_name"]],
-    name=f"manual-backfill-{uuid.uuid4().hex[:8]}",
-    input=json.dumps(payload),
-)
-print(resp["executionArn"])
+assert all(name in ddb_table_contracts for name in ['dpp_config','mlp_config','batch_index','routing','processing_lock','publication_lock'])
+assert all(name in ddb_seed_items_plan for name in ['dpp_config','mlp_config','batch_index','routing'])
+seeded_job_names = {item['job_name_version'].split('#',1)[0] for item in ddb_seed_items_plan['dpp_config'] if 'job_name_version' in item}
+missing_pipeline_jobs = [name for name in PIPELINE_BUILDERS if name not in seeded_job_names]
+assert not missing_pipeline_jobs, missing_pipeline_jobs
+for item in ddb_seed_items_plan['dpp_config']:
+    spec = item.get('spec')
+    if isinstance(spec, dict) and isinstance((spec.get('scripts') or {}).get('steps'), dict):
+        assert spec.get('deployment_status') == 'READY', item.get('job_name_version')
+assert 's3_prefixes' in batch_index_direct_item and 'dpp' in batch_index_direct_item['s3_prefixes'] and 'mlp' in batch_index_direct_item['s3_prefixes']
+print('Structural readiness checks passed.')
 ```
 
-#### Cell 7C — execution poller
-```python
-import time, boto3
+## Cell 17 (Markdown)
 
-def wait_sfn(execution_arn: str, region: str, poll_s: int = 20):
-    sfn = boto3.client("stepfunctions", region_name=region)
-    while True:
-        d = sfn.describe_execution(executionArn=execution_arn)
-        print("status:", d["status"])
-        if d["status"] in {"SUCCEEDED", "FAILED", "ABORTED", "TIMED_OUT"}:
-            return d
-        time.sleep(poll_s)
-```
+## Operator completion checklist
 
----
-
-## K. Full JSON artifact — how to use it correctly (no ambiguity)
-
-### K1) What this JSON is
-It is a **deployment input contract**, not an executable script.
-
-### K2) Correct usage order
-1. Use `table_definitions` to create tables (Cell 3 logic).
-2. Use `seed_items.dpp_config` and `seed_items.mlp_config` for reciprocal linkage seed.
-3. Then run full bootstrap generation (Cell 4 using `_build_bootstrap_items`).
-4. `batch_index_example` is for contract validation/testing (15m SF writes real runtime rows with idempotent put/update).
-
-### K3) JSON template
-```json
-{
-  "table_definitions": {
-    "dpp_config": {
-      "TableName": "dpp_config",
-      "AttributeDefinitions": [
-        {"AttributeName": "project_name", "AttributeType": "S"},
-        {"AttributeName": "job_name_version", "AttributeType": "S"}
-      ],
-      "KeySchema": [
-        {"AttributeName": "project_name", "KeyType": "HASH"},
-        {"AttributeName": "job_name_version", "KeyType": "RANGE"}
-      ],
-      "BillingMode": "PAY_PER_REQUEST"
-    },
-    "mlp_config": {
-      "TableName": "mlp_config",
-      "AttributeDefinitions": [
-        {"AttributeName": "ml_project_name", "AttributeType": "S"},
-        {"AttributeName": "job_name_version", "AttributeType": "S"}
-      ],
-      "KeySchema": [
-        {"AttributeName": "ml_project_name", "KeyType": "HASH"},
-        {"AttributeName": "job_name_version", "KeyType": "RANGE"}
-      ],
-      "BillingMode": "PAY_PER_REQUEST"
-    },
-    "batch_index": {
-      "TableName": "batch_index",
-      "AttributeDefinitions": [
-        {"AttributeName": "pk", "AttributeType": "S"},
-        {"AttributeName": "sk", "AttributeType": "S"},
-        {"AttributeName": "GSI1PK", "AttributeType": "S"},
-        {"AttributeName": "GSI1SK", "AttributeType": "S"}
-      ],
-      "KeySchema": [
-        {"AttributeName": "pk", "KeyType": "HASH"},
-        {"AttributeName": "sk", "KeyType": "RANGE"}
-      ],
-      "GlobalSecondaryIndexes": [
-        {
-          "IndexName": "GSI1",
-          "KeySchema": [
-            {"AttributeName": "GSI1PK", "KeyType": "HASH"},
-            {"AttributeName": "GSI1SK", "KeyType": "RANGE"}
-          ],
-          "Projection": {"ProjectionType": "ALL"}
-        }
-      ],
-      "BillingMode": "PAY_PER_REQUEST"
-    }
-  },
-  "seed_items": {
-    "dpp_config": [
-      {
-        "project_name": "<project_name>",
-        "job_name_version": "project_parameters#<feature_spec_version>",
-        "data_source_name": "<project_name>",
-        "ml_project_name": "<ml_project_name>",
-        "spec": {"ProjectName": "<project_name>", "MlProjectName": "<ml_project_name>"},
-        "updated_at": "<iso8601z>",
-        "owner": "<owner>"
-      }
-    ],
-    "mlp_config": [
-      {
-        "ml_project_name": "<ml_project_name>",
-        "job_name_version": "project_parameters#<feature_spec_version>",
-        "project_name": "<project_name>",
-        "spec": {"ProjectName": "<project_name>", "MlProjectName": "<ml_project_name>"},
-        "updated_at": "<iso8601z>",
-        "owner": "<owner>"
-      }
-    ],
-    "batch_index_example": {
-      "pk": "<project_name>#<project_name>#<feature_spec_version>#<YYYY-MM-DD>",
-      "sk": "<HH>#<slot15>#<batch_id>",
-      "project_name": "<project_name>",
-      "data_source_name": "<project_name>",
-      "version": "<feature_spec_version>",
-      "date_utc": "<YYYY-MM-DD>",
-      "hour_utc": "<00-23>",
-      "slot15": 1,
-      "batch_id": "<batch_id>",
-      "raw_parsed_logs_s3_prefix": "s3://<ing-bucket>/<project>/<org1>/<org2>/<yyyy>/<mm>/<dd>/<batch_id>/",
-      "event_ts_utc": "<iso8601z>",
-      "org1": "<org1>",
-      "org2": "<org2>",
-      "ml_project_name": "<ml_project_name>",
-      "ml_project_names_json": "[\"<ml_project_name>\"]",
-      "ingested_at_utc": "<iso8601z>",
-      "status": "RECEIVED",
-      "GSI1PK": "<project_name>#<project_name>#<feature_spec_version>#<batch_id>",
-      "GSI1SK": "<iso8601z>"
-    }
-  }
-}
-```
-
----
-
-## L. Verification suite (must-pass before handoff)
-
-### Cell 8 — DDB schema + linkage checks
-```python
-import boto3
-ddb = boto3.client("dynamodb", region_name=DEPLOY["region"])
-res = boto3.resource("dynamodb", region_name=DEPLOY["region"])
-
-for t in [
-    DEPLOY["dpp_table_name"],
-    DEPLOY["mlp_table_name"],
-    DEPLOY["batch_index_table_name"],
-    DEPLOY["project_routing_table_name"],
-    DEPLOY["processing_lock_table_name"],
-    DEPLOY["publication_lock_table_name"],
-]:
-    td = ddb.describe_table(TableName=t)["Table"]
-    print(t, td["TableStatus"])
-    if t == DEPLOY["batch_index_table_name"]:
-        assert any(g["IndexName"] == "GSI1" for g in td.get("GlobalSecondaryIndexes", []))
-
-item = res.Table(DEPLOY["dpp_table_name"]).get_item(Key={
-    "project_name": DEPLOY["project_name"],
-    "job_name_version": f"project_parameters#{DEPLOY['feature_spec_version']}"
-}).get("Item")
-assert item is not None
-print("[ok] dpp project_parameters exists")
-
-# Preflight validator for exception control-plane tables
-import subprocess, shlex
-cmd = (
-    "PYTHONPATH=src python -m ndr.scripts.run_exception_table_preflight "
-    f"--region {DEPLOY['region']} "
-    f"--routing-table-name {DEPLOY['project_routing_table_name']} "
-    f"--processing-lock-table-name {DEPLOY['processing_lock_table_name']} "
-    f"--publication-lock-table-name {DEPLOY['publication_lock_table_name']} "
-    "--flow all"
-)
-print("[run]", cmd)
-subprocess.check_call(shlex.split(cmd))
-print("[ok] exception table preflight passed")
-```
-
-### Cell 9 — pipeline existence check
-```python
-import boto3
-sm = boto3.client("sagemaker", region_name=DEPLOY["region"])
-for p in [
-    DEPLOY["pipeline_15m_name"], DEPLOY["pipeline_inference_name"], DEPLOY["pipeline_prediction_join_name"],
-    DEPLOY["pipeline_if_training_name"], DEPLOY["pipeline_fgb_name"],
-    DEPLOY["pipeline_machine_inventory_name"], DEPLOY["pipeline_backfill_extractor_name"]
-]:
-    print(p, sm.describe_pipeline(PipelineName=p)["PipelineStatus"])
-```
-
-### Cell 10 — state machine existence check
-```python
-import boto3
-sfn = boto3.client("stepfunctions", region_name=DEPLOY["region"])
-names = {x["name"] for x in sfn.list_state_machines()["stateMachines"]}
-for n in [
-    DEPLOY["sfn_15m_name"], DEPLOY["sfn_prediction_publication_name"], DEPLOY["sfn_monthly_fgb_name"],
-    DEPLOY["sfn_training_name"], DEPLOY["sfn_backfill_name"]
-]:
-    assert n in names, f"missing {n}"
-    print("[ok]", n)
-```
-
-### Cell 11 — 15m smoke start
-```python
-import boto3, json, uuid, datetime
-sfn = boto3.client("stepfunctions", region_name=DEPLOY["region"])
-arns = {x["name"]: x["stateMachineArn"] for x in sfn.list_state_machines()["stateMachines"]}
-batch_id = f"smoke-{uuid.uuid4().hex[:8]}"
-
-payload = {
-    "project_name": DEPLOY["project_name"],
-    "data_source_name": DEPLOY["project_name"],
-    "ml_project_name": DEPLOY["ml_project_name"],
-    "batch_id": batch_id,
-    "raw_parsed_logs_s3_prefix": f"s3://<ing-bucket>/{DEPLOY['project_name']}/<org1>/<org2>/2026/03/12/{batch_id}/",
-    "timestamp": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-    "feature_spec_version": DEPLOY["feature_spec_version"]
-}
-
-resp = sfn.start_execution(
-    stateMachineArn=arns[DEPLOY["sfn_15m_name"]],
-    name=f"smoke-15m-{uuid.uuid4().hex[:8]}",
-    input=json.dumps(payload),
-)
-print(resp["executionArn"])
-```
-
----
-
-## M. Why previous Step 2 versions looked different (and which is correct)
-
-- The short snippet with only `DEPLOY` was **configuration-only** (Cell 1).
-- The full Step 2 uploader is the one with functions + mappings + dictionaries (Cell 2 above).
-- In this canonical runbook, they are intentionally separated:
-  - **Cell 1 = config**
-  - **Cell 2 = upload logic**
-
-So: **use the Step 2 script in Section E of this document** as the authoritative one.
-
----
-
-## N. Self-review outcome (mandatory)
-
-This plan is now a single, consistent blueprint with:
-- one complete execution flow,
-- no cross-response dependency,
-- explicit DPP/MLP boundaries,
-- complete notebook scripts for deployment + operations + verification,
-- clear JSON usage instructions.
+1. DDB tables created and seeded.
+2. S3 schema created.
+3. Artifact values set and promoted.
+4. Pipelines upserted.
+5. Initial feature/stats materialization runs executed.
+6. Step Functions manually deployed.

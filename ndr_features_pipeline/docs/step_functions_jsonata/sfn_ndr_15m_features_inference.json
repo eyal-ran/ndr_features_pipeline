@@ -224,15 +224,11 @@
           "Next": "FailUnsupportedInputFields"
         },
         {
-          "Condition": "{% $raw_parsed_logs_s3_prefix = \"\" %}",
-          "Next": "FailMissingRawParsedLogsS3Prefix"
-        },
-        {
-          "Condition": "{% not($startsWith($raw_parsed_logs_s3_prefix,'s3://')) %}",
+          "Condition": "{% $raw_parsed_logs_s3_prefix != \"\" and not($startsWith($raw_parsed_logs_s3_prefix,'s3://')) %}",
           "Next": "FailInvalidRawParsedLogsS3Prefix"
         },
         {
-          "Condition": "{% not($endsWith($raw_parsed_logs_s3_prefix, '/' & $mini_batch_id & '/')) %}",
+          "Condition": "{% $raw_parsed_logs_s3_prefix != \"\" and not($endsWith($raw_parsed_logs_s3_prefix, '/' & $mini_batch_id & '/')) %}",
           "Next": "FailInvalidRawParsedLogsS3Prefix"
         },
         {
@@ -414,6 +410,12 @@
           "rt_flow_status": {
             "S": "RECEIVED"
           },
+          "source_mode": {
+            "S": "unresolved"
+          },
+          "raw_input_resolution_reason": {
+            "S": "pre_delta_resolution_pending"
+          },
           "last_updated_at": {
             "S": "{% $execution_ts_iso %}"
           }
@@ -449,7 +451,7 @@
             "S": "{% $mini_batch_id %}"
           }
         },
-        "UpdateExpression": "SET raw_parsed_logs_s3_prefix = :raw_parsed_logs_s3_prefix, etl_ts = :etl_ts, ml_project_names = :ml_project_names, rt_flow_status = :rt_flow_status, last_updated_at = :last_updated_at",
+        "UpdateExpression": "SET raw_parsed_logs_s3_prefix = :raw_parsed_logs_s3_prefix, etl_ts = :etl_ts, ml_project_names = :ml_project_names, rt_flow_status = :rt_flow_status, source_mode = :source_mode, raw_input_resolution_reason = :resolution_reason, last_updated_at = :last_updated_at",
         "ExpressionAttributeValues": {
           ":raw_parsed_logs_s3_prefix": {
             "S": "{% $raw_parsed_logs_s3_prefix %}"
@@ -462,6 +464,12 @@
           },
           ":rt_flow_status": {
             "S": "RECEIVED"
+          },
+          ":source_mode": {
+            "S": "unresolved"
+          },
+          ":resolution_reason": {
+            "S": "pre_delta_resolution_pending"
           },
           ":last_updated_at": {
             "S": "{% $execution_ts_iso %}"

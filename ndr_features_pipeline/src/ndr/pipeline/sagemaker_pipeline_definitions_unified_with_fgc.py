@@ -250,8 +250,14 @@ def build_15m_streaming_pipeline(
     )
 
     # ------------------------------------------------------------------ #
-    # Step 1: Delta Builder                                             #
+    # Step 1: RT pre-delta raw-input resolver                           #
     # ------------------------------------------------------------------ #
+    resolver_code_uri = resolve_step_code_uri(
+        project_name=project_name_for_contracts,
+        feature_spec_version=feature_spec_version_for_contracts,
+        pipeline_job_name=PIPELINE_15M_STREAMING_JOB_NAME,
+        step_name="RTRawInputResolverStep",
+    )
     delta_code_uri = resolve_step_code_uri(
         project_name=project_name_for_contracts,
         feature_spec_version=feature_spec_version_for_contracts,
@@ -270,14 +276,14 @@ def build_15m_streaming_pipeline(
         pipeline_job_name=PIPELINE_15M_STREAMING_JOB_NAME,
         step_name="PairCountsBuilderStep",
     )
-    delta_step = ProcessingStep(
-        name="DeltaBuilderStep",
+    resolver_step = ProcessingStep(
+        name="RTRawInputResolverStep",
         processor=processor,
-        code=delta_code_uri,
+        code=resolver_code_uri,
         job_arguments=[
             "python",
             "-m",
-            "ndr.scripts.run_delta_builder",
+            "ndr.scripts.run_rt_raw_input_resolver",
             "--project-name",
             project_name,
             "--feature-spec-version",
@@ -296,7 +302,36 @@ def build_15m_streaming_pipeline(
     )
 
     # ------------------------------------------------------------------ #
-    # Step 2: FG-A Builder                                              #
+    # Step 2: Delta Builder                                              #
+    # ------------------------------------------------------------------ #
+    delta_step = ProcessingStep(
+        name="DeltaBuilderStep",
+        processor=processor,
+        code=delta_code_uri,
+        job_arguments=[
+            "python",
+            "-m",
+            "ndr.scripts.run_delta_builder",
+            "--project-name",
+            project_name,
+            "--feature-spec-version",
+            feature_spec_version,
+            "--mini-batch-id",
+            mini_batch_id,
+            "--raw-parsed-logs-s3-prefix",
+            "",
+            "--batch-start-ts-iso",
+            batch_start_ts_iso,
+            "--batch-end-ts-iso",
+            batch_end_ts_iso,
+        ],
+        inputs=[],
+        outputs=[],
+    )
+    delta_step.add_depends_on([resolver_step])
+
+    # ------------------------------------------------------------------ #
+    # Step 3: FG-A Builder                                               #
     # ------------------------------------------------------------------ #
     fg_a_step = ProcessingStep(
         name="FGABuilderStep",
@@ -323,7 +358,7 @@ def build_15m_streaming_pipeline(
     fg_a_step.add_depends_on([delta_step])
 
     # ------------------------------------------------------------------ #
-    # Step 3: Pair-Counts Builder                                       #
+    # Step 4: Pair-Counts Builder                                        #
     # ------------------------------------------------------------------ #
     pair_counts_step = ProcessingStep(
         name="PairCountsBuilderStep",
@@ -361,7 +396,7 @@ def build_15m_streaming_pipeline(
             batch_start_ts_iso,
             batch_end_ts_iso,
         ],
-        steps=[delta_step, fg_a_step, pair_counts_step],
+        steps=[resolver_step, delta_step, fg_a_step, pair_counts_step],
         sagemaker_session=session,
     )
 

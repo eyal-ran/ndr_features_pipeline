@@ -217,7 +217,12 @@ def test_15m_pipelines_are_split_into_core_and_dependent_phases(monkeypatch):
         feature_spec_version_for_contracts="v1",
     )
 
-    assert [step.name for step in core.steps] == ["DeltaBuilderStep", "FGABuilderStep", "PairCountsBuilderStep"]
+    assert [step.name for step in core.steps] == [
+        "RTRawInputResolverStep",
+        "DeltaBuilderStep",
+        "FGABuilderStep",
+        "PairCountsBuilderStep",
+    ]
     assert [step.name for step in dependent.steps] == ["FGCCorrBuilderStep"]
 
 

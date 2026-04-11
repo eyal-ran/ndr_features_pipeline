@@ -90,8 +90,6 @@ def main(argv=None) -> int:
     args = parse_args(argv)
 
     raw_parsed_logs_s3_prefix = args.raw_parsed_logs_s3_prefix
-    if not raw_parsed_logs_s3_prefix:
-        raise ValueError("raw_parsed_logs_s3_prefix is required")
 
     LOGGER.info(
         "Starting Delta Builder via CLI/runtime entrypoint.",

@@ -91,6 +91,8 @@ def test_pipeline_seed_items_have_runtime_and_script_contracts():
     ]
 
     delta_step = pipeline_spec["scripts"]["steps"]["DeltaBuilderStep"]
+    resolver_step = pipeline_spec["scripts"]["steps"]["RTRawInputResolverStep"]
+    assert resolver_step["entry_script"] == "run_rt_raw_input_resolver.py"
     assert delta_step["code_prefix_s3"].startswith("s3://")
     assert delta_step["entry_script"] == "run_delta_builder.py"
     assert delta_step["data_prefixes"]["input_traffic"].startswith("s3://")

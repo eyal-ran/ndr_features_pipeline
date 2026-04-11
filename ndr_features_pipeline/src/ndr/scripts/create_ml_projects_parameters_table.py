@@ -545,6 +545,14 @@ def _build_bootstrap_items(
                 "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_15m_streaming"],
                 "scripts": {
                     "steps": {
+                        "RTRawInputResolverStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/15m_streaming/RTRawInputResolverStep/",
+                            "entry_script": "run_rt_raw_input_resolver.py",
+                            "data_prefixes": {
+                                "input_traffic_candidate": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/raw/traffic/",
+                                "resolved_batch_index": "dynamodb://batch_index",
+                            },
+                        },
                         "DeltaBuilderStep": {
                             "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/15m_streaming/DeltaBuilderStep/",
                             "entry_script": "run_delta_builder.py",

@@ -49,25 +49,32 @@ It includes:
 
 ### Pipeline triggered at `Start15mFeaturesPipeline`: `${PipelineName15m}` (core)
 - **Implementation state:** Implemented.
-- **Implemented pipeline function:** `build_15m_streaming_pipeline` (Delta/FG-A/Pair-Counts).
+- **Implemented pipeline function:** `build_15m_streaming_pipeline` (RT raw-input resolver/Delta/FG-A/Pair-Counts).
 - **Pipeline code location:** `src/ndr/pipeline/sagemaker_pipeline_definitions_unified_with_fgc.py`.
 - **Purpose:** 15-minute feature-generation chain.
 
 #### Pipeline steps and run chain
-1. `DeltaBuilderStep`
+1. `RTRawInputResolverStep`
+   - Pipeline step runs: `python -m ndr.scripts.run_rt_raw_input_resolver`
+   - Script location: `src/ndr/scripts/run_rt_raw_input_resolver.py`
+   - Second-hand invoked processing entrypoint: `run_rt_raw_input_resolver`
+   - Processing module location: `src/ndr/processing/rt_raw_input_resolver_job.py`
+   - Processing purpose: enforce deterministic ingestion/fallback resolution before delta and persist `source_mode` provenance to Batch Index.
+   - Fail-fast contract errors: `RAW_INPUT_FALLBACK_DISABLED`, `RAW_INPUT_FALLBACK_QUERY_CONTRACT_MISSING`, `RAW_INPUT_FALLBACK_EMPTY_RESULT`.
+2. `DeltaBuilderStep` (depends on `RTRawInputResolverStep`)
    - Pipeline step runs: `python -m ndr.scripts.run_delta_builder`
    - Script location: `src/ndr/scripts/run_delta_builder.py`
    - Script purpose: parse runtime params and delegate delta build.
    - Second-hand invoked processing entrypoint: `run_delta_builder_from_runtime_config`
    - Processing module location: `src/ndr/processing/delta_builder_job.py`
    - Processing purpose: build 15-minute delta tables from Palo Alto logs.
-2. `FGABuilderStep` (depends on `DeltaBuilderStep`)
+3. `FGABuilderStep` (depends on `DeltaBuilderStep`)
    - Runs: `python -m ndr.scripts.run_fg_a_builder`
    - Script: `src/ndr/scripts/run_fg_a_builder.py`
    - Second-hand processing entrypoint: `run_fg_a_builder_from_runtime_config`
    - Processing module: `src/ndr/processing/fg_a_builder_job.py`
    - Processing purpose: build FG-A (current-behavior) windowed features on top of deltas.
-3. `PairCountsBuilderStep` (depends on `FGABuilderStep`)
+4. `PairCountsBuilderStep` (depends on `FGABuilderStep`)
    - Runs: `python -m ndr.scripts.run_pair_counts_builder`
    - Script: `src/ndr/scripts/run_pair_counts_builder.py`
    - Second-hand processing entrypoint: `run_pair_counts_builder_from_runtime_config`

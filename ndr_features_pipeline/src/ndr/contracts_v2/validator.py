@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-DEFAULT_CONTRACT_MATRIX_PATH = Path("docs/contracts/flow_contract_matrix_v2.json")
-DEFAULT_ERROR_TAXONOMY_PATH = Path("docs/contracts/error_taxonomy_v2.json")
+DEFAULT_CONTRACT_MATRIX_PATH = Path("docs/contracts/flow_contract_matrix_v3.json")
+DEFAULT_ERROR_TAXONOMY_PATH = Path("docs/contracts/error_taxonomy_v3.json")
 
 
 @dataclass(frozen=True)
@@ -35,7 +35,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 def load_contract_matrix(path: Path = DEFAULT_CONTRACT_MATRIX_PATH) -> dict[str, Any]:
     matrix = _load_json(path)
-    if matrix.get("contract_version") != "flow_contract_matrix.v2":
+    if matrix.get("contract_version") != "flow_contract_matrix.v3":
         raise ContractValidationError(
             code="CONTRACT_MATRIX_VERSION_MISMATCH",
             message=f"Unsupported contract version: {matrix.get('contract_version')}",
@@ -45,7 +45,7 @@ def load_contract_matrix(path: Path = DEFAULT_CONTRACT_MATRIX_PATH) -> dict[str,
 
 def load_error_taxonomy(path: Path = DEFAULT_ERROR_TAXONOMY_PATH) -> dict[str, Any]:
     taxonomy = _load_json(path)
-    if taxonomy.get("taxonomy_version") != "error_taxonomy.v2":
+    if taxonomy.get("taxonomy_version") != "error_taxonomy.v3":
         raise ContractValidationError(
             code="ERROR_TAXONOMY_VERSION_MISMATCH",
             message=f"Unsupported taxonomy version: {taxonomy.get('taxonomy_version')}",
@@ -105,6 +105,22 @@ def assert_no_producer_only_fields(*, matrix: dict[str, Any]) -> None:
         raise ContractValidationError(
             code="CONTRACT_PRODUCER_ONLY_FIELD",
             message=f"Producer-only fields without consumer/no-op declaration: {sorted(violations)}",
+        )
+
+
+def assert_no_consumer_only_fields(*, matrix: dict[str, Any]) -> None:
+    violations: list[str] = []
+    for field in matrix.get("field_ownership", []):
+        producer = str(field.get("producer_owner") or "").strip()
+        consumer = str(field.get("consumer_owner") or "").strip()
+        metadata_noop = bool(field.get("validated_metadata_noop", False))
+        if consumer and not producer and not metadata_noop:
+            violations.append(str(field.get("field_path") or "<unknown>"))
+
+    if violations:
+        raise ContractValidationError(
+            code="CONTRACT_CONSUMER_ONLY_FIELD",
+            message=f"Consumer-only fields without producer/no-op declaration: {sorted(violations)}",
         )
 
 

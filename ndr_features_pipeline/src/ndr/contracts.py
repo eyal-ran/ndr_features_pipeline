@@ -48,9 +48,10 @@ CANONICAL_BATCH_INDEX_REQUIRED_FIELDS: tuple[str, ...] = (
 )
 
 CANONICAL_CODE_METADATA_FIELDS: tuple[str, ...] = (
-    "artifact_mode",
+    "code_artifact_s3_uri",
     "artifact_build_id",
     "artifact_sha256",
+    "artifact_format",
 )
 
 

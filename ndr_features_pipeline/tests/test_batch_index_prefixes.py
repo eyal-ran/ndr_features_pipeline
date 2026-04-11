@@ -3,21 +3,21 @@ from ndr.config.batch_index_prefixes import BatchPrefixPrecomputeRequest, precom
 
 def _dpp_code_metadata():
     return {
-        "delta_step": {"artifact_mode": "single_file", "artifact_build_id": "b1", "artifact_sha256": "a1"},
-        "fg_a_step": {"artifact_mode": "single_file", "artifact_build_id": "b1", "artifact_sha256": "a2"},
-        "pair_counts_step": {"artifact_mode": "single_file", "artifact_build_id": "b1", "artifact_sha256": "a3"},
-        "fg_c_step": {"artifact_mode": "single_file", "artifact_build_id": "b1", "artifact_sha256": "a4"},
-        "fg_b_step": {"artifact_mode": "single_file", "artifact_build_id": "b1", "artifact_sha256": "a5"},
-        "machine_inventory_unload_step": {"artifact_mode": "single_file", "artifact_build_id": "b1", "artifact_sha256": "a6"},
-        "backfill_extractor_step": {"artifact_mode": "single_file", "artifact_build_id": "b1", "artifact_sha256": "a7"},
+        "delta_step": {"code_artifact_s3_uri": "s3://code/dpp/delta.tar.gz", "artifact_build_id": "b1", "artifact_sha256": "a1", "artifact_format": "tar.gz"},
+        "fg_a_step": {"code_artifact_s3_uri": "s3://code/dpp/fga.tar.gz", "artifact_build_id": "b1", "artifact_sha256": "a2", "artifact_format": "tar.gz"},
+        "pair_counts_step": {"code_artifact_s3_uri": "s3://code/dpp/pc.tar.gz", "artifact_build_id": "b1", "artifact_sha256": "a3", "artifact_format": "tar.gz"},
+        "fg_c_step": {"code_artifact_s3_uri": "s3://code/dpp/fgc.tar.gz", "artifact_build_id": "b1", "artifact_sha256": "a4", "artifact_format": "tar.gz"},
+        "fg_b_step": {"code_artifact_s3_uri": "s3://code/dpp/fgb.tar.gz", "artifact_build_id": "b1", "artifact_sha256": "a5", "artifact_format": "tar.gz"},
+        "machine_inventory_unload_step": {"code_artifact_s3_uri": "s3://code/dpp/miu.tar.gz", "artifact_build_id": "b1", "artifact_sha256": "a6", "artifact_format": "tar.gz"},
+        "backfill_extractor_step": {"code_artifact_s3_uri": "s3://code/dpp/bfe.tar.gz", "artifact_build_id": "b1", "artifact_sha256": "a7", "artifact_format": "tar.gz"},
     }
 
 
 def _mlp_code_metadata():
     return {
-        "inference_step": {"artifact_mode": "single_file", "artifact_build_id": "b2", "artifact_sha256": "m1"},
-        "join_step": {"artifact_mode": "single_file", "artifact_build_id": "b2", "artifact_sha256": "m2"},
-        "training_step": {"artifact_mode": "single_file", "artifact_build_id": "b2", "artifact_sha256": "m3"},
+        "inference_step": {"code_artifact_s3_uri": "s3://code/mlp/inf.tar.gz", "artifact_build_id": "b2", "artifact_sha256": "m1", "artifact_format": "tar.gz"},
+        "join_step": {"code_artifact_s3_uri": "s3://code/mlp/join.tar.gz", "artifact_build_id": "b2", "artifact_sha256": "m2", "artifact_format": "tar.gz"},
+        "training_step": {"code_artifact_s3_uri": "s3://code/mlp/train.tar.gz", "artifact_build_id": "b2", "artifact_sha256": "m3", "artifact_format": "tar.gz"},
     }
 
 
@@ -101,7 +101,7 @@ def test_precompute_rejects_missing_code_metadata():
         dpp_code_paths={k: f"s3://code/dpp/{k}.py" for k in _dpp_code_metadata()},
         mlp_code_paths_by_project={"ml-a": {k: f"s3://code/mlp/ml-a/{k}.py" for k in _mlp_code_metadata()}},
         dpp_code_metadata=_dpp_code_metadata(),
-        mlp_code_metadata_by_project={"ml-a": {"inference_step": {"artifact_mode": "single_file"}}},
+        mlp_code_metadata_by_project={"ml-a": {"inference_step": {"code_artifact_s3_uri": "s3://x"}}},
     )
 
     try:

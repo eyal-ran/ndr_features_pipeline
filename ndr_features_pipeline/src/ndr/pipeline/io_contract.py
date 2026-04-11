@@ -14,13 +14,22 @@ class StepScriptContract:
 
     code_prefix_s3: str
     entry_script: str
+    code_artifact_s3_uri: str | None = None
+    artifact_build_id: str | None = None
+    artifact_sha256: str | None = None
+    artifact_format: str | None = None
 
     @property
     def script_s3_uri(self) -> str:
-        return f"{self.code_prefix_s3.rstrip('/')}/{self.entry_script}"
+        return self.code_artifact_s3_uri or f"{self.code_prefix_s3.rstrip('/')}/{self.entry_script}"
 
 
-REQUIRED_CODE_METADATA_FIELDS = ("artifact_mode", "artifact_build_id", "artifact_sha256")
+REQUIRED_CODE_METADATA_FIELDS = (
+    "code_artifact_s3_uri",
+    "artifact_build_id",
+    "artifact_sha256",
+    "artifact_format",
+)
 _FORBIDDEN_IDENTITY_MARKERS = ("<required:", "<placeholder", "${", "env_fallback", "code_default")
 
 
@@ -55,6 +64,10 @@ def resolve_step_script_contract(
 
     code_prefix_s3 = step_spec.get("code_prefix_s3")
     entry_script = step_spec.get("entry_script")
+    code_artifact_s3_uri = step_spec.get("code_artifact_s3_uri")
+    artifact_build_id = step_spec.get("artifact_build_id")
+    artifact_sha256 = step_spec.get("artifact_sha256")
+    artifact_format = step_spec.get("artifact_format")
     if not isinstance(code_prefix_s3, str) or not code_prefix_s3.strip():
         raise ValueError(f"scripts.steps.{step_name}.code_prefix_s3 must be a non-empty string")
     if not isinstance(entry_script, str) or not entry_script.strip():
@@ -63,6 +76,10 @@ def resolve_step_script_contract(
     return StepScriptContract(
         code_prefix_s3=code_prefix_s3,
         entry_script=entry_script,
+        code_artifact_s3_uri=code_artifact_s3_uri if isinstance(code_artifact_s3_uri, str) else None,
+        artifact_build_id=artifact_build_id if isinstance(artifact_build_id, str) else None,
+        artifact_sha256=artifact_sha256 if isinstance(artifact_sha256, str) else None,
+        artifact_format=artifact_format if isinstance(artifact_format, str) else None,
     )
 
 
@@ -77,6 +94,13 @@ def validate_step_code_metadata(
     steps = _ensure_mapping(scripts.get("steps"), field_name="scripts.steps")
     step_spec = _ensure_mapping(steps.get(step_name), field_name=f"scripts.steps.{step_name}")
     code_metadata_raw = step_spec.get("code_metadata")
+    if code_metadata_raw is None:
+        code_metadata_raw = {
+            "code_artifact_s3_uri": step_spec.get("code_artifact_s3_uri"),
+            "artifact_build_id": step_spec.get("artifact_build_id"),
+            "artifact_sha256": step_spec.get("artifact_sha256"),
+            "artifact_format": step_spec.get("artifact_format"),
+        }
     if not isinstance(code_metadata_raw, Mapping):
         raise ValueError(
             f"Packaging metadata decision required: scripts.steps.{step_name}.code_metadata is missing"

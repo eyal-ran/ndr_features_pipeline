@@ -1,0 +1,121 @@
+{
+  "contract_version": "flow_contract_matrix.v3",
+  "frozen_on": "2026-04-11",
+  "notes": "Authoritative v3 matrix for readiness/backfill/code-artifact contracts with explicit ownership.",
+  "edges": [
+    {
+      "edge_id": "monthly_readiness_artifact",
+      "flow": "monthly",
+      "layers": {
+        "artifact": {
+          "required": [
+            "contract_version",
+            "project_name",
+            "feature_spec_version",
+            "reference_month",
+            "ready",
+            "required_families",
+            "missing_ranges",
+            "decision_code",
+            "as_of_ts",
+            "idempotency_key"
+          ],
+          "optional": []
+        }
+      }
+    },
+    {
+      "edge_id": "rt_readiness_artifact",
+      "flow": "rt",
+      "layers": {
+        "artifact": {
+          "required": [
+            "contract_version",
+            "project_name",
+            "feature_spec_version",
+            "ml_project_name",
+            "mini_batch_id",
+            "ready",
+            "required_families",
+            "missing_ranges",
+            "decision_code",
+            "as_of_ts",
+            "idempotency_key"
+          ],
+          "optional": []
+        }
+      }
+    },
+    {
+      "edge_id": "backfill_request_v2",
+      "flow": "backfill",
+      "layers": {
+        "sfn_payload": {
+          "required": [
+            "contract_version",
+            "consumer",
+            "project_name",
+            "feature_spec_version",
+            "requested_families",
+            "missing_ranges",
+            "provenance",
+            "idempotency_key"
+          ],
+          "optional": [
+            "ml_project_name",
+            "batch_id",
+            "source_hint"
+          ]
+        }
+      }
+    },
+    {
+      "edge_id": "step_code_artifact",
+      "flow": "deployment",
+      "layers": {
+        "ddb_step_spec": {
+          "required": [
+            "code_prefix_s3",
+            "code_artifact_s3_uri",
+            "entry_script",
+            "artifact_build_id",
+            "artifact_sha256",
+            "artifact_format"
+          ],
+          "optional": []
+        }
+      }
+    }
+  ],
+  "field_ownership": [
+    {"field_path": "monthly_fg_b_readiness.v3.contract_version", "producer_owner": "monthly_readiness_pipeline", "consumer_owner": "monthly_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "monthly_fg_b_readiness.v3.project_name", "producer_owner": "monthly_readiness_pipeline", "consumer_owner": "monthly_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "monthly_fg_b_readiness.v3.feature_spec_version", "producer_owner": "monthly_readiness_pipeline", "consumer_owner": "monthly_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "monthly_fg_b_readiness.v3.reference_month", "producer_owner": "monthly_readiness_pipeline", "consumer_owner": "monthly_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "monthly_fg_b_readiness.v3.ready", "producer_owner": "monthly_readiness_pipeline", "consumer_owner": "monthly_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "monthly_fg_b_readiness.v3.required_families", "producer_owner": "monthly_readiness_pipeline", "consumer_owner": "monthly_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "monthly_fg_b_readiness.v3.missing_ranges", "producer_owner": "monthly_readiness_pipeline", "consumer_owner": "monthly_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "monthly_fg_b_readiness.v3.decision_code", "producer_owner": "monthly_readiness_pipeline", "consumer_owner": "monthly_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "monthly_fg_b_readiness.v3.as_of_ts", "producer_owner": "monthly_readiness_pipeline", "consumer_owner": "monthly_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "monthly_fg_b_readiness.v3.idempotency_key", "producer_owner": "monthly_readiness_pipeline", "consumer_owner": "monthly_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+
+    {"field_path": "rt_artifact_readiness.v3.contract_version", "producer_owner": "rt_readiness_pipeline", "consumer_owner": "rt_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "rt_artifact_readiness.v3.project_name", "producer_owner": "rt_readiness_pipeline", "consumer_owner": "rt_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "rt_artifact_readiness.v3.feature_spec_version", "producer_owner": "rt_readiness_pipeline", "consumer_owner": "rt_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "rt_artifact_readiness.v3.ml_project_name", "producer_owner": "rt_readiness_pipeline", "consumer_owner": "rt_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "rt_artifact_readiness.v3.mini_batch_id", "producer_owner": "rt_readiness_pipeline", "consumer_owner": "rt_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "rt_artifact_readiness.v3.ready", "producer_owner": "rt_readiness_pipeline", "consumer_owner": "rt_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "rt_artifact_readiness.v3.required_families", "producer_owner": "rt_readiness_pipeline", "consumer_owner": "rt_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "rt_artifact_readiness.v3.missing_ranges", "producer_owner": "rt_readiness_pipeline", "consumer_owner": "rt_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "rt_artifact_readiness.v3.decision_code", "producer_owner": "rt_readiness_pipeline", "consumer_owner": "rt_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "rt_artifact_readiness.v3.as_of_ts", "producer_owner": "rt_readiness_pipeline", "consumer_owner": "rt_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "rt_artifact_readiness.v3.idempotency_key", "producer_owner": "rt_readiness_pipeline", "consumer_owner": "rt_sfn_gate", "source": "artifact", "required": true, "validator_owner": "contract_validator"},
+
+    {"field_path": "NdrBackfillRequest.v2.requested_families", "producer_owner": "monthly_rt_training_sfn", "consumer_owner": "backfill_extractor_dispatcher_verifier", "source": "runtime", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "scripts.steps.<step>.code_artifact_s3_uri", "producer_owner": "deployment_orchestrator", "consumer_owner": "pipeline_definition_builder", "source": "ddb", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "scripts.steps.<step>.entry_script", "producer_owner": "deployment_orchestrator", "consumer_owner": "pipeline_definition_builder", "source": "ddb", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "scripts.steps.<step>.artifact_build_id", "producer_owner": "deployment_orchestrator", "consumer_owner": "pipeline_definition_builder", "source": "ddb", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "scripts.steps.<step>.artifact_sha256", "producer_owner": "deployment_orchestrator", "consumer_owner": "pipeline_definition_builder", "source": "ddb", "required": true, "validator_owner": "contract_validator"},
+    {"field_path": "scripts.steps.<step>.artifact_format", "producer_owner": "deployment_orchestrator", "consumer_owner": "pipeline_definition_builder", "source": "ddb", "required": true, "validator_owner": "contract_validator"}
+  ]
+}

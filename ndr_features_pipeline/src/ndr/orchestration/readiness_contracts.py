@@ -15,26 +15,48 @@ class ReadinessContractError(ValueError):
         super().__init__(f"{code}: {message}")
 
 
-_MONTHLY_VERSION = "monthly_fg_b_readiness.v2"
-_RT_VERSION = "rt_artifact_readiness.v2"
+_MONTHLY_VERSION = "monthly_fg_b_readiness.v3"
+_RT_VERSION = "rt_artifact_readiness.v3"
 
 
-def compute_monthly_fg_b_readiness_v2(
+def compute_monthly_fg_b_readiness_v3(
     *,
+    project_name: str,
+    feature_spec_version: str,
+    reference_month: str,
     required_families: Iterable[str],
     missing_ranges: Iterable[Mapping[str, str]],
+    idempotency_key: str,
     as_of_ts: str | None = None,
 ) -> dict[str, Any]:
-    return _compute_readiness(
+    if not idempotency_key.strip():
+        raise ReadinessContractError(
+            "MONTHLY_READINESS_MISSING_IDEMPOTENCY_KEY",
+            "idempotency_key is required",
+        )
+    payload = _compute_readiness(
         contract_version=_MONTHLY_VERSION,
         required_families=required_families,
         missing_ranges=missing_ranges,
         as_of_ts=as_of_ts,
     )
+    payload.update(
+        {
+            "project_name": project_name,
+            "feature_spec_version": feature_spec_version,
+            "reference_month": reference_month,
+            "idempotency_key": idempotency_key,
+        }
+    )
+    return payload
 
 
-def compute_rt_artifact_readiness_v2(
+def compute_rt_artifact_readiness_v3(
     *,
+    project_name: str,
+    feature_spec_version: str,
+    ml_project_name: str,
+    mini_batch_id: str,
     required_families: Iterable[str],
     missing_ranges: Iterable[Mapping[str, str]],
     idempotency_key: str,
@@ -48,8 +70,52 @@ def compute_rt_artifact_readiness_v2(
         missing_ranges=missing_ranges,
         as_of_ts=as_of_ts,
     )
-    payload["idempotency_key"] = idempotency_key
+    payload.update(
+        {
+            "project_name": project_name,
+            "feature_spec_version": feature_spec_version,
+            "ml_project_name": ml_project_name,
+            "mini_batch_id": mini_batch_id,
+            "idempotency_key": idempotency_key,
+        }
+    )
     return payload
+
+
+def compute_monthly_fg_b_readiness_v2(
+    *,
+    required_families: Iterable[str],
+    missing_ranges: Iterable[Mapping[str, str]],
+    as_of_ts: str | None = None,
+) -> dict[str, Any]:
+    return compute_monthly_fg_b_readiness_v3(
+        project_name="legacy",
+        feature_spec_version="legacy",
+        reference_month="1970/01",
+        required_families=required_families,
+        missing_ranges=missing_ranges,
+        idempotency_key="0" * 64,
+        as_of_ts=as_of_ts,
+    )
+
+
+def compute_rt_artifact_readiness_v2(
+    *,
+    required_families: Iterable[str],
+    missing_ranges: Iterable[Mapping[str, str]],
+    idempotency_key: str,
+    as_of_ts: str | None = None,
+) -> dict[str, Any]:
+    return compute_rt_artifact_readiness_v3(
+        project_name="legacy",
+        feature_spec_version="legacy",
+        ml_project_name="legacy",
+        mini_batch_id="legacy",
+        required_families=required_families,
+        missing_ranges=missing_ranges,
+        idempotency_key=idempotency_key,
+        as_of_ts=as_of_ts,
+    )
 
 
 def _compute_readiness(

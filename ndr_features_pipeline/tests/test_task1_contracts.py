@@ -36,7 +36,12 @@ def test_dpp_mlp_code_keys_and_metadata_fields_are_frozen():
         "backfill_extractor_step",
     )
     assert MLP_CODE_STEP_KEYS == ("inference_step", "join_step", "training_step")
-    assert CANONICAL_CODE_METADATA_FIELDS == ("artifact_mode", "artifact_build_id", "artifact_sha256")
+    assert CANONICAL_CODE_METADATA_FIELDS == (
+        "code_artifact_s3_uri",
+        "artifact_build_id",
+        "artifact_sha256",
+        "artifact_format",
+    )
 
 
 def test_date_lookup_sk_shape_matches_dual_item_contract():

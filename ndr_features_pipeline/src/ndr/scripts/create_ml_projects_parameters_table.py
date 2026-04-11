@@ -698,9 +698,10 @@ def _build_bootstrap_items(
                             "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/TrainingDataVerifierStep/",
                             "entry_script": "run_if_training.py",
                             "code_metadata": {
-                                "artifact_mode": "single_file",
+                                "code_artifact_s3_uri": "<required:CodeArtifactS3Uri>",
                                 "artifact_build_id": "<required:ArtifactBuildId>",
                                 "artifact_sha256": "<required:ArtifactSha256>",
+                                "artifact_format": "tar.gz",
                             },
                             "data_prefixes": {
                                 "input_fg_a": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_a/",
@@ -711,9 +712,10 @@ def _build_bootstrap_items(
                             "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/MissingFeatureCreationStep/",
                             "entry_script": "run_if_training.py",
                             "code_metadata": {
-                                "artifact_mode": "single_file",
+                                "code_artifact_s3_uri": "<required:CodeArtifactS3Uri>",
                                 "artifact_build_id": "<required:ArtifactBuildId>",
                                 "artifact_sha256": "<required:ArtifactSha256>",
+                                "artifact_format": "tar.gz",
                             },
                             "data_prefixes": {
                                 "input_raw": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/raw/traffic/",
@@ -724,9 +726,10 @@ def _build_bootstrap_items(
                             "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/PostRemediationVerificationStep/",
                             "entry_script": "run_if_training.py",
                             "code_metadata": {
-                                "artifact_mode": "single_file",
+                                "code_artifact_s3_uri": "<required:CodeArtifactS3Uri>",
                                 "artifact_build_id": "<required:ArtifactBuildId>",
                                 "artifact_sha256": "<required:ArtifactSha256>",
+                                "artifact_format": "tar.gz",
                             },
                             "data_prefixes": {
                                 "input_fg_a": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_a/",
@@ -737,9 +740,10 @@ def _build_bootstrap_items(
                             "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/IFTrainingStep/",
                             "entry_script": "run_if_training.py",
                             "code_metadata": {
-                                "artifact_mode": "single_file",
+                                "code_artifact_s3_uri": "<required:CodeArtifactS3Uri>",
                                 "artifact_build_id": "<required:ArtifactBuildId>",
                                 "artifact_sha256": "<required:ArtifactSha256>",
+                                "artifact_format": "tar.gz",
                             },
                             "data_prefixes": {
                                 "output_training": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/training/if_training/"
@@ -749,9 +753,10 @@ def _build_bootstrap_items(
                             "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/ModelPublishStep/",
                             "entry_script": "run_if_training.py",
                             "code_metadata": {
-                                "artifact_mode": "single_file",
+                                "code_artifact_s3_uri": "<required:CodeArtifactS3Uri>",
                                 "artifact_build_id": "<required:ArtifactBuildId>",
                                 "artifact_sha256": "<required:ArtifactSha256>",
+                                "artifact_format": "tar.gz",
                             },
                             "data_prefixes": {
                                 "output_registry": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/model_registry/"
@@ -761,9 +766,10 @@ def _build_bootstrap_items(
                             "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/ModelAttributesStep/",
                             "entry_script": "run_if_training.py",
                             "code_metadata": {
-                                "artifact_mode": "single_file",
+                                "code_artifact_s3_uri": "<required:CodeArtifactS3Uri>",
                                 "artifact_build_id": "<required:ArtifactBuildId>",
                                 "artifact_sha256": "<required:ArtifactSha256>",
+                                "artifact_format": "tar.gz",
                             },
                             "data_prefixes": {
                                 "output_attributes": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/model_attributes/"
@@ -773,9 +779,10 @@ def _build_bootstrap_items(
                             "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/ModelDeployStep/",
                             "entry_script": "run_if_training.py",
                             "code_metadata": {
-                                "artifact_mode": "single_file",
+                                "code_artifact_s3_uri": "<required:CodeArtifactS3Uri>",
                                 "artifact_build_id": "<required:ArtifactBuildId>",
                                 "artifact_sha256": "<required:ArtifactSha256>",
+                                "artifact_format": "tar.gz",
                             },
                             "data_prefixes": {
                                 "output_deploy": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/model_deploy/"

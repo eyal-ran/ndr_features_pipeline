@@ -171,13 +171,14 @@ def _validate_code_metadata(
         values = metadata.get(step_key)
         if not values:
             raise KeyError(f"Missing code metadata for {label}.{step_key}")
-        for required in ("artifact_mode", "artifact_build_id", "artifact_sha256"):
+        for required in ("code_artifact_s3_uri", "artifact_build_id", "artifact_sha256", "artifact_format"):
             if required not in values:
                 raise KeyError(f"Missing {required} in {label}.{step_key}")
         out[step_key] = {
-            "artifact_mode": str(values["artifact_mode"]),
+            "code_artifact_s3_uri": str(values["code_artifact_s3_uri"]),
             "artifact_build_id": str(values["artifact_build_id"]),
             "artifact_sha256": str(values["artifact_sha256"]),
+            "artifact_format": str(values["artifact_format"]),
         }
         if "artifact_generated_at_utc" in values:
             out[step_key]["artifact_generated_at_utc"] = str(values["artifact_generated_at_utc"])

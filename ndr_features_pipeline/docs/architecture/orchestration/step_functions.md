@@ -221,11 +221,11 @@ Required orchestration sequence:
 5. continue on `ready=true`, otherwise fail with explicit gate code.
 
 Monthly contract notes:
-- checker contract: `monthly_fg_b_readiness.v2`.
+- checker contract: `monthly_fg_b_readiness.v3`.
 - unresolved post-remediation terminal code: `MONTHLY_READINESS_UNRESOLVED_AFTER_REMEDIATION`.
 
 RT contract notes:
-- checker contract: `rt_artifact_readiness.v2`.
+- checker contract: `rt_artifact_readiness.v3`.
 - remediation request consumes checker `missing_ranges` directly with no ad-hoc transformation.
 - unresolved post-remediation terminal code: `RT_READINESS_UNRESOLVED_AFTER_REMEDIATION`.
 

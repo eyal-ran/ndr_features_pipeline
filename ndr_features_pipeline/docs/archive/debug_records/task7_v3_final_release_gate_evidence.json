@@ -1,0 +1,83 @@
+{
+  "contract_version": "task7_v3_final_release_gate.v1",
+  "release_gate": {
+    "gate_id": "task7_v3_final_readiness",
+    "block_on_critical_failure": true,
+    "allow_warning_only_critical_checks": false
+  },
+  "correctness_critical_checks": [
+    {
+      "check_id": "bootstrap_jsonata_querylanguage_declared",
+      "critical": true,
+      "status": "passed",
+      "warning_only": false
+    },
+    {
+      "check_id": "readiness_from_input_antipattern_blocked",
+      "critical": true,
+      "status": "passed",
+      "warning_only": false
+    },
+    {
+      "check_id": "backfill_requested_families_honored",
+      "critical": true,
+      "status": "passed",
+      "warning_only": false
+    },
+    {
+      "check_id": "rt_raw_fallback_contract_enforced",
+      "critical": true,
+      "status": "passed",
+      "warning_only": false
+    }
+  ],
+  "targeted_pytest_matrix": [
+    {
+      "matrix_id": "monthly",
+      "status": "passed",
+      "flows_covered": ["monthly", "rt", "backfill", "bootstrap", "training", "deployment"]
+    },
+    {
+      "matrix_id": "rt",
+      "status": "passed",
+      "flows_covered": ["monthly", "rt", "backfill", "bootstrap", "training", "deployment"]
+    },
+    {
+      "matrix_id": "backfill",
+      "status": "passed",
+      "flows_covered": ["monthly", "rt", "backfill", "bootstrap", "training", "deployment"]
+    },
+    {
+      "matrix_id": "bootstrap",
+      "status": "passed",
+      "flows_covered": ["monthly", "rt", "backfill", "bootstrap", "training", "deployment"]
+    },
+    {
+      "matrix_id": "training",
+      "status": "passed",
+      "flows_covered": ["monthly", "rt", "backfill", "bootstrap", "training", "deployment"]
+    },
+    {
+      "matrix_id": "deployment",
+      "status": "passed",
+      "flows_covered": ["monthly", "rt", "backfill", "bootstrap", "training", "deployment"]
+    }
+  ],
+  "producer_consumer": {
+    "interfaces_verified": true,
+    "drift_detected": false
+  },
+  "contract_drift": {
+    "check_contract_drift_v3_passed": true
+  },
+  "startup_gates": {
+    "startup_contract_gate": {"status": "go"},
+    "startup_observability_gate": {"status": "go"},
+    "deployment_precondition_gate": {"status": "go"}
+  },
+  "rollback": {
+    "drill_executed": true,
+    "restore_successful": true,
+    "deterministic_replay_verified": true
+  }
+}

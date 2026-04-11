@@ -1,0 +1,37 @@
+{
+  "contract_version": "task7_v3_final_release_gate.v1",
+  "gate_id": "task7_v3_final_readiness",
+  "block_on_critical_failure": true,
+  "allow_warning_only_critical_checks": false,
+  "required_correctness_critical_checks": [
+    "bootstrap_jsonata_querylanguage_declared",
+    "readiness_from_input_antipattern_blocked",
+    "backfill_requested_families_honored",
+    "rt_raw_fallback_contract_enforced"
+  ],
+  "required_flow_matrix_entries": [
+    "monthly",
+    "rt",
+    "backfill",
+    "bootstrap",
+    "training",
+    "deployment"
+  ],
+  "required_startup_gates": [
+    "startup_contract_gate",
+    "startup_observability_gate",
+    "deployment_precondition_gate"
+  ],
+  "required_contract_drift_checks": [
+    "check_contract_drift_v3_passed"
+  ],
+  "required_rollback_checks": [
+    "drill_executed",
+    "restore_successful",
+    "deterministic_replay_verified"
+  ],
+  "error_codes": {
+    "contract": "TASK7_CONTRACT_VIOLATION",
+    "gate": "TASK7_FINAL_RELEASE_GATE_RED"
+  }
+}

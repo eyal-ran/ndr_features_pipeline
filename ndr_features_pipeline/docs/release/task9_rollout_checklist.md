@@ -3,6 +3,7 @@
 ## Preconditions
 - [ ] `task9_release_hardening_gate.v1` validator is available in the release image.
 - [ ] Release gate configuration loaded from `docs/release/task9_release_gate_config.json`.
+- [ ] Final v3 gate configuration loaded from `docs/release/task7_v3_final_release_gate_config.json`.
 - [ ] Scenario fixtures and contract fixtures match the candidate release version.
 
 ## Scenario matrix execution

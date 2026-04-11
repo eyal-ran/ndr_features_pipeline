@@ -28,6 +28,9 @@ TASK15_GATE_ERROR_CODE = "TASK15_OBSERVABILITY_GATE_RED"
 TASK9_RELEASE_HARDENING_VERSION = "task9_release_hardening_gate.v1"
 TASK9_CONTRACT_ERROR_CODE = "TASK9_CONTRACT_VIOLATION"
 TASK9_GATE_ERROR_CODE = "TASK9_RELEASE_GATE_RED"
+TASK7_FINAL_RELEASE_GATE_VERSION = "task7_v3_final_release_gate.v1"
+TASK7_CONTRACT_ERROR_CODE = "TASK7_CONTRACT_VIOLATION"
+TASK7_GATE_ERROR_CODE = "TASK7_FINAL_RELEASE_GATE_RED"
 TASK6_CROSS_FLOW_CONFORMANCE_VERSION = "task6_cross_flow_contract_conformance.v1"
 TASK6_CONTRACT_ERROR_CODE = "TASK6_CONTRACT_VIOLATION"
 TASK6_GATE_ERROR_CODE = "TASK6_CROSS_FLOW_CONTRACT_RED"
@@ -57,6 +60,18 @@ _TASK9_REQUIRED_SCENARIOS = (
 )
 _TASK9_REQUIRED_FLOWS = ("monthly", "rt", "backfill", "training", "control_plane")
 _TASK6_REQUIRED_FLOWS = ("monthly", "rt", "backfill", "bootstrap", "training", "deployment")
+_TASK7_REQUIRED_CRITICAL_CHECKS = (
+    "bootstrap_jsonata_querylanguage_declared",
+    "readiness_from_input_antipattern_blocked",
+    "backfill_requested_families_honored",
+    "rt_raw_fallback_contract_enforced",
+)
+_TASK7_REQUIRED_STARTUP_GATES = (
+    "startup_contract_gate",
+    "startup_observability_gate",
+    "deployment_precondition_gate",
+)
+_TASK7_REQUIRED_FLOWS = ("monthly", "rt", "backfill", "bootstrap", "training", "deployment")
 
 _TASK11_REQUIRED_FINDINGS = (
     "F1.1",
@@ -1122,5 +1137,182 @@ def evaluate_task9_release_hardening_gate(*, evidence: Mapping[str, Any]) -> dic
     if failed_checks:
         raise ValueError(
             f"{TASK9_GATE_ERROR_CODE}: Task 9 release hardening gate failed checks {failed_checks}"
+        )
+    return report
+
+
+def evaluate_task7_v3_final_release_gate(*, evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate final v3 release readiness gates are strictly blocking on critical defects."""
+
+    required_sections = (
+        "release_gate",
+        "correctness_critical_checks",
+        "targeted_pytest_matrix",
+        "producer_consumer",
+        "contract_drift",
+        "startup_gates",
+        "rollback",
+    )
+    missing_sections = [section for section in required_sections if section not in evidence]
+    if missing_sections:
+        raise ValueError(f"{TASK7_CONTRACT_ERROR_CODE}: missing required sections {missing_sections}")
+
+    release_gate = evidence["release_gate"]
+    critical_checks = evidence["correctness_critical_checks"]
+    pytest_matrix = evidence["targeted_pytest_matrix"]
+    producer_consumer = evidence["producer_consumer"]
+    contract_drift = evidence["contract_drift"]
+    startup_gates = evidence["startup_gates"]
+    rollback = evidence["rollback"]
+
+    if not isinstance(release_gate, Mapping):
+        raise ValueError(f"{TASK7_CONTRACT_ERROR_CODE}: release_gate must be a mapping")
+    if not isinstance(critical_checks, Sequence):
+        raise ValueError(f"{TASK7_CONTRACT_ERROR_CODE}: correctness_critical_checks must be a sequence")
+    if not isinstance(pytest_matrix, Sequence):
+        raise ValueError(f"{TASK7_CONTRACT_ERROR_CODE}: targeted_pytest_matrix must be a sequence")
+    if not isinstance(producer_consumer, Mapping):
+        raise ValueError(f"{TASK7_CONTRACT_ERROR_CODE}: producer_consumer must be a mapping")
+    if not isinstance(contract_drift, Mapping):
+        raise ValueError(f"{TASK7_CONTRACT_ERROR_CODE}: contract_drift must be a mapping")
+    if not isinstance(startup_gates, Mapping):
+        raise ValueError(f"{TASK7_CONTRACT_ERROR_CODE}: startup_gates must be a mapping")
+    if not isinstance(rollback, Mapping):
+        raise ValueError(f"{TASK7_CONTRACT_ERROR_CODE}: rollback must be a mapping")
+
+    checks: list[dict[str, Any]] = []
+
+    def _check(check_id: str, passed: bool, detail: str) -> None:
+        checks.append({"check_id": check_id, "passed": bool(passed), "detail": detail})
+
+    _check(
+        "7.release.block_on_critical_failure",
+        bool(release_gate.get("block_on_critical_failure")),
+        "TASK7_RELEASE_POLICY_INVALID: block_on_critical_failure must be true",
+    )
+    _check(
+        "7.release.no_warning_only_critical",
+        not bool(release_gate.get("allow_warning_only_critical_checks")),
+        "TASK7_WARNING_ONLY_CRITICAL_NOT_ALLOWED: critical checks cannot be warning-only",
+    )
+
+    critical_rows: dict[str, Mapping[str, Any]] = {}
+    for idx, row in enumerate(critical_checks):
+        if not isinstance(row, Mapping):
+            raise ValueError(f"{TASK7_CONTRACT_ERROR_CODE}: correctness_critical_checks[{idx}] must be a mapping")
+        check_id = str(row.get("check_id") or "").strip()
+        if not check_id:
+            raise ValueError(f"{TASK7_CONTRACT_ERROR_CODE}: correctness_critical_checks[{idx}] missing check_id")
+        critical_rows[check_id] = row
+
+    missing_critical = sorted(set(_TASK7_REQUIRED_CRITICAL_CHECKS) - set(critical_rows))
+    _check(
+        "7.critical.required_set",
+        not missing_critical,
+        f"TASK7_CRITICAL_CHECKSET_INCOMPLETE: missing required checks={missing_critical}",
+    )
+    for critical_id in sorted(_TASK7_REQUIRED_CRITICAL_CHECKS):
+        row = critical_rows.get(critical_id, {})
+        status = str(row.get("status") or "").strip().lower()
+        is_critical = bool(row.get("critical"))
+        warning_only = bool(row.get("warning_only"))
+        _check(
+            f"7.critical.{critical_id}.critical",
+            is_critical,
+            f"TASK7_CRITICAL_FLAG_MISSING: {critical_id} must be marked critical",
+        )
+        _check(
+            f"7.critical.{critical_id}.status",
+            status == "passed",
+            f"TASK7_CRITICAL_CHECK_FAILED: {critical_id} status={status or '<missing>'}",
+        )
+        _check(
+            f"7.critical.{critical_id}.warning",
+            not warning_only,
+            f"TASK7_WARNING_ONLY_CRITICAL_NOT_ALLOWED: {critical_id} is warning-only",
+        )
+
+    matrix_rows: dict[str, Mapping[str, Any]] = {}
+    for idx, row in enumerate(pytest_matrix):
+        if not isinstance(row, Mapping):
+            raise ValueError(f"{TASK7_CONTRACT_ERROR_CODE}: targeted_pytest_matrix[{idx}] must be a mapping")
+        matrix_id = str(row.get("matrix_id") or "").strip()
+        if not matrix_id:
+            raise ValueError(f"{TASK7_CONTRACT_ERROR_CODE}: targeted_pytest_matrix[{idx}] missing matrix_id")
+        matrix_rows[matrix_id] = row
+
+    required_matrix_ids = {
+        "monthly",
+        "rt",
+        "backfill",
+        "bootstrap",
+        "training",
+        "deployment",
+    }
+    missing_matrix_ids = sorted(required_matrix_ids - set(matrix_rows))
+    _check(
+        "7.pytest.required_matrix",
+        not missing_matrix_ids,
+        f"TASK7_TARGETED_MATRIX_INCOMPLETE: missing matrix entries={missing_matrix_ids}",
+    )
+    for matrix_id in sorted(required_matrix_ids):
+        row = matrix_rows.get(matrix_id, {})
+        status = str(row.get("status") or "").strip().lower()
+        flows = {str(v).strip() for v in (row.get("flows_covered") or []) if str(v).strip()}
+        _check(
+            f"7.pytest.{matrix_id}.status",
+            status == "passed",
+            f"TASK7_TARGETED_MATRIX_FAILED: matrix_id={matrix_id} status={status or '<missing>'}",
+        )
+        _check(
+            f"7.pytest.{matrix_id}.flow_coverage",
+            flows >= set(_TASK7_REQUIRED_FLOWS),
+            f"TASK7_FLOW_COVERAGE_GAP: matrix_id={matrix_id} missing flows={sorted(set(_TASK7_REQUIRED_FLOWS)-flows)}",
+        )
+
+    _check(
+        "7.producer_consumer.verified",
+        bool(producer_consumer.get("interfaces_verified")) and not bool(producer_consumer.get("drift_detected")),
+        "TASK7_PRODUCER_CONSUMER_NOT_ALIGNED: producer/consumer interfaces must be verified with no drift",
+    )
+
+    _check(
+        "7.contract_drift.v3_green",
+        bool(contract_drift.get("check_contract_drift_v3_passed")),
+        "TASK7_CONTRACT_DRIFT_NOT_BLOCKED: v3 contract drift check must pass",
+    )
+
+    startup_statuses = {
+        gate_name: str((startup_gates.get(gate_name) or {}).get("status") or "").strip().lower()
+        for gate_name in _TASK7_REQUIRED_STARTUP_GATES
+    }
+    for gate_name, status in startup_statuses.items():
+        _check(
+            f"7.startup.{gate_name}",
+            status == "go",
+            f"TASK7_STARTUP_GATE_RED: gate={gate_name} status={status or '<missing>'}",
+        )
+
+    _check(
+        "7.rollback.drill",
+        bool(rollback.get("drill_executed")) and bool(rollback.get("restore_successful")),
+        "TASK7_ROLLBACK_NOT_READY: rollback drill and restoration must be successful",
+    )
+    _check(
+        "7.rollback.deterministic",
+        bool(rollback.get("deterministic_replay_verified")),
+        "TASK7_ROLLBACK_NON_DETERMINISTIC: deterministic replay safety must be validated",
+    )
+
+    failed_checks = [check["check_id"] for check in checks if not check["passed"]]
+    report = {
+        "contract_version": TASK7_FINAL_RELEASE_GATE_VERSION,
+        "status": "go" if not failed_checks else "no-go",
+        "checks": checks,
+        "failed_checks": failed_checks,
+    }
+    if failed_checks:
+        raise ValueError(
+            f"{TASK7_GATE_ERROR_CODE}: Task 7 final release gate failed checks {failed_checks}"
         )
     return report

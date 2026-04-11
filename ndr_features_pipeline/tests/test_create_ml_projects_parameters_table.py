@@ -108,7 +108,17 @@ def test_pipeline_seed_items_have_runtime_and_script_contracts():
     ]
     assert dependent_spec["scripts"]["steps"]["FGCCorrBuilderStep"]["entry_script"] == "run_fg_c_builder.py"
 
-    extractor_step = by_job["pipeline_backfill_historical_extractor"]["spec"]["scripts"]["steps"]["HistoricalWindowsExtractorStep"]
+    extractor_spec = by_job["pipeline_backfill_historical_extractor"]["spec"]
+    assert extractor_spec["required_runtime_params"] == [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "StartTsIso",
+        "EndTsIso",
+        "InputS3Prefix",
+        "OutputS3Prefix",
+        "RequestedFamilies",
+    ]
+    extractor_step = extractor_spec["scripts"]["steps"]["HistoricalWindowsExtractorStep"]
     assert extractor_step["entry_script"] == "run_historical_windows_extractor.py"
 
     backfill_spec = by_job["pipeline_backfill_15m_reprocessing"]["spec"]

@@ -166,3 +166,16 @@ def test_completion_event_blocked_when_any_family_fails():
     assert verdict["all_succeeded"] is False
     assert verdict["failed_families"] == ["fg_a"]
     assert verdict["verifier_code"] == COMPLETION_ERROR_CODE
+
+
+def test_requested_family_contract_rejects_unsupported_value_at_dispatcher_init():
+    with pytest.raises(ValueError, match=DISPATCHER_ERROR_CODE):
+        BackfillFamilyDispatcher(
+            project_name="ndr-prod",
+            feature_spec_version="v1",
+            requested_families=("delta", "unsupported"),
+            correlation_id="bkf-invalid",
+            retry_attempt=0,
+            dpp_spec=_targets(),
+            sagemaker_client=_FakeSageMaker(),
+        )

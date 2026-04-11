@@ -32,5 +32,6 @@ This `docs/` tree is organized to separate canonical architecture and operationa
 ## Source-of-truth guidance
 
 - For **current runtime behavior**, use code in `src/ndr/` and the canonical docs under `docs/architecture/` and `docs/feature_builders/current_state.md`.
+- Backfill orchestration is **consumer-scoped**: `requested_families` is required in backfill requests, propagated through `sfn_ndr_backfill_reprocessing`, honored by the historical extractor when building manifest `map_items`, and used by completion verification/event gating for unresolved-family auditing.
 - For **feature definitions**, use `docs/feature_catalog/` and `docs/FEATURE_CATALOG.md`.
 - For historical context and migration history, use `docs/archive/`.

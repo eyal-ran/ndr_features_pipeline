@@ -30,6 +30,7 @@ def build_backfill_historical_extractor_pipeline(
     end_ts_iso = ParameterString(name="EndTsIso", default_value="<required:EndTsIso>")
     input_s3_prefix = ParameterString(name="InputS3Prefix", default_value="<required:InputS3Prefix>")
     output_s3_prefix = ParameterString(name="OutputS3Prefix", default_value="<required:OutputS3Prefix>")
+    requested_families = ParameterString(name="RequestedFamilies", default_value="")
 
     processing_image_uri = ParameterString(
         name="ProcessingImageUri",
@@ -78,6 +79,8 @@ def build_backfill_historical_extractor_pipeline(
             "8,23,38,53",
             "--feature-spec-version",
             feature_spec_version,
+            "--requested-families",
+            requested_families,
         ],
     )
 
@@ -90,6 +93,7 @@ def build_backfill_historical_extractor_pipeline(
             end_ts_iso,
             input_s3_prefix,
             output_s3_prefix,
+            requested_families,
             processing_image_uri,
             processing_instance_type,
             processing_instance_count,

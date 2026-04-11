@@ -6,7 +6,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from ndr.orchestration.backfill_contracts import ARTIFACT_FAMILY_ORDER, FAMILY_DEPENDENCIES
+from ndr.orchestration.backfill_contracts import ARTIFACT_FAMILY_ORDER
 
 CONTRACT_VERSION = "backfill_execution_request.v2"
 CONTRACT_ERROR_CODE = "BACKFILL_CONTRACT_VALIDATION_ERROR"
@@ -45,18 +45,7 @@ def parse_artifact_families(artifact_family: str) -> tuple[str, ...]:
             f"{CONTRACT_ERROR_CODE}: unknown ArtifactFamily values: {sorted(unknown)}"
         )
 
-    expanded: set[str] = set()
-
-    def _include_with_dependencies(family: str) -> None:
-        for dependency in FAMILY_DEPENDENCIES.get(family, ()):
-            _include_with_dependencies(dependency)
-        expanded.add(family)
-
-    for family in requested:
-        _include_with_dependencies(family)
-
-    ordered = tuple(f for f in ARTIFACT_FAMILY_ORDER if f in expanded)
-    return ordered
+    return tuple(f for f in ARTIFACT_FAMILY_ORDER if f in requested)
 
 
 def _parse_iso_utc(value: str) -> datetime:

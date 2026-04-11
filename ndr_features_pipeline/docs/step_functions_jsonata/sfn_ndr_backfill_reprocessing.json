@@ -28,7 +28,8 @@
         "input_s3_prefix": "{% $exists($states.input.input_s3_prefix) ? $states.input.input_s3_prefix : ($exists($project_defaults.HistoricalInputS3Prefix.S) ? $project_defaults.HistoricalInputS3Prefix.S : '') %}",
         "output_s3_prefix": "{% $exists($states.input.output_s3_prefix) ? $states.input.output_s3_prefix : ($exists($project_defaults.HistoricalWindowsOutputS3Prefix.S) ? $project_defaults.HistoricalWindowsOutputS3Prefix.S : '') %}",
         "output_s3_bucket": "{% $split($replace($output_s3_prefix, 's3://', ''), '/')[0] %}",
-        "output_s3_key_prefix": "{% $substringAfter($replace($output_s3_prefix, 's3://', ''), '/') %}"
+        "output_s3_key_prefix": "{% $substringAfter($replace($output_s3_prefix, 's3://', ''), '/') %}",
+        "requested_families_csv": "{% $exists($states.input.requested_families[0]) ? $join($states.input.requested_families, ',') : '' %}"
       },
       "Next": "ValidateResolvedRuntimeParams"
     },
@@ -61,6 +62,10 @@
           {
             "Name": "OutputS3Prefix",
             "Value": "{% $output_s3_prefix %}"
+          },
+          {
+            "Name": "RequestedFamilies",
+            "Value": "{% $requested_families_csv %}"
           }
         ]
       },
@@ -271,7 +276,7 @@
             "Source": "ndr.orchestration",
             "DetailType": "NdrBackfillCompleted",
             "EventBusName": "${EventBusName}",
-            "Detail": "{% $string({'project_name': $project_name, 'feature_spec_version': $feature_spec_version, 'start_ts': $start_ts, 'end_ts': $end_ts, 'window_count': $count($windows), 'families_executed': $distinct($windows.family)}) %}"
+            "Detail": "{% $string({'project_name': $project_name, 'feature_spec_version': $feature_spec_version, 'start_ts': $start_ts, 'end_ts': $end_ts, 'window_count': $count($windows), 'families_executed': $distinct($windows.family), 'families_unresolved': $unresolved_families}) %}"
           }
         ]
       },
@@ -292,6 +297,10 @@
         {
           "Condition": "{% $feature_spec_version = \"\" %}",
           "Next": "FailMissingFeatureSpecVersion"
+        },
+        {
+          "Condition": "{% $requested_families_csv = \"\" %}",
+          "Next": "FailMissingRequestedFamilies"
         },
         {
           "Condition": "{% $input_s3_prefix = \"\" %}",
@@ -423,6 +432,10 @@
         {
           "Condition": "{% not($exists($extractor_manifest.map_items)) %}",
           "Next": "FailInvalidExtractorManifest"
+        },
+        {
+          "Condition": "{% not($exists($extractor_manifest.requested_families[0])) %}",
+          "Next": "FailInvalidExtractorManifest"
         }
       ],
       "Default": "ResolveBackfillWindows"
@@ -435,7 +448,7 @@
     "BackfillCompletionVerifier": {
       "Type": "Pass",
       "Assign": {
-        "requested_families": "{% $extractor_manifest.family_plan[execute=true].family %}",
+        "requested_families": "{% $extractor_manifest.requested_families %}",
         "executed_families": "{% $distinct($windows.family) %}",
         "unresolved_families": "{% $filter($requested_families, function($f){$not($contains($executed_families, $f))}) %}",
         "all_families_succeeded": "{% $count($requested_families) > 0 and $count($unresolved_families) = 0 %}"
@@ -456,6 +469,11 @@
       "Type": "Fail",
       "Error": "BackfillCompletionContractError",
       "Cause": "Backfill completion verifier blocked event publication because requested families are unresolved"
+    },
+    "FailMissingRequestedFamilies": {
+      "Type": "Fail",
+      "Error": "RuntimeParameterValidationError",
+      "Cause": "Missing required runtime parameter: requested_families"
     }
   }
 }

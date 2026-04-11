@@ -3,6 +3,9 @@
 ## Purpose
 This runbook defines deterministic day-0 bootstrap orchestration for empty environments and establishes the readiness contract that enables RT steady-state activation.
 
+## State machine expression semantics
+- Bootstrap contract source (`docs/step_functions_jsonata/sfn_ndr_initial_deployment_bootstrap.json`) explicitly declares `QueryLanguage: JSONata` so `{% ... %}` expressions and `Assign` behavior are deterministic across deployment/runtime environments.
+
 ## Startup path dependency orientation (RT, Monthly, Backfill)
 1. RT steady-state (`sfn_ndr_15m_features_inference`) now checks a persisted bootstrap control record before running feature/inference stages.
 2. Bootstrap execution seeds machine inventory, invokes backfill reconstruction for required families, and invokes the monthly baseline **state machine** (`${MonthlyStateMachineArn}`) synchronously.

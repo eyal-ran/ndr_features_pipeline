@@ -231,6 +231,8 @@ RT contract notes:
 - checker contract: `rt_artifact_readiness.v3`.
 - remediation request consumes checker `missing_ranges` directly with no ad-hoc transformation.
 - unresolved post-remediation terminal code: `RT_READINESS_UNRESOLVED_AFTER_REMEDIATION`.
+- artifact read key: `orchestration/readiness/rt_artifact_readiness/v3/<project>/<version>/<ml_project>/<mini_batch_id>/cycle=<cycle>/manifest.json`.
+- fail-fast gate codes: `RT_READINESS_ARTIFACT_MISSING` and `RT_READINESS_CONTRACT_INVALID`.
 
 Determinism/idempotency constraints:
 - stale/external readiness payloads are ignored for gate authority.

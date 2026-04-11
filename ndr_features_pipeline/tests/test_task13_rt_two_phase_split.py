@@ -16,7 +16,9 @@ def test_task13_cold_start_path_runs_core_then_readiness_then_dependent_phase():
     assert states["FeaturesPipelineStatusChoice"]["Choices"][0]["Next"] == "ComputeRtArtifactReadiness"
     assert states["CheckRtArtifactReadiness"]["Choices"][1]["Next"] == "BuildRtBackfillRemediationRequest"
     assert states["UpdateBatchIndexRemediationSucceeded"]["Next"] == "IncrementRtReadinessCycle"
-    assert states["RecheckRtArtifactReadiness"]["Next"] == "BuildRtArtifactReadinessManifest"
+    assert states["ComputeRtArtifactReadiness"]["Next"] == "DescribeRtReadinessPipeline"
+    assert states["RecheckRtArtifactReadiness"]["Next"] == "DescribeRtReadinessPipeline"
+    assert states["RtReadinessPipelineStatusChoice"]["Choices"][0]["Next"] == "ReadRtReadinessArtifact"
     assert states["CheckRtArtifactReadiness"]["Choices"][0]["Next"] == "Start15mDependentFeaturesPipeline"
 
 

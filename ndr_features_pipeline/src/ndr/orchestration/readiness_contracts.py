@@ -157,7 +157,6 @@ def _compute_readiness(
         "ready": ready,
         "required_families": families,
         "missing_ranges": normalized,
-        "unresolved_count": len(normalized),
         "decision_code": decision_code,
         "as_of_ts": as_of_ts or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }

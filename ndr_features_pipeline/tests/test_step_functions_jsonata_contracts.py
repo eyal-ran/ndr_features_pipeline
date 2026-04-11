@@ -18,6 +18,16 @@ def _collect_states(state_machine: dict) -> dict:
     return collected
 
 
+def _contains_jsonata_expression(value):
+    if isinstance(value, str):
+        return "{%" in value and "%}" in value
+    if isinstance(value, dict):
+        return any(_contains_jsonata_expression(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_contains_jsonata_expression(item) for item in value)
+    return False
+
+
 def test_step_functions_load_required_control_plane_configs_from_dynamodb():
     dpp_required = {
         "sfn_ndr_15m_features_inference.json",
@@ -118,3 +128,12 @@ def test_step_functions_do_not_source_table_names_from_eventbridge_payload():
         assert 'states.input.BatchIndexTableName' not in text
         assert 'states.input.table_name' not in text
         assert 'states.input.TableName' not in text
+
+
+def test_step_functions_with_jsonata_expressions_explicitly_declare_jsonata_query_language():
+    for path in STEP_FUNCTIONS_DIR.glob("sfn_ndr_*.json"):
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        if _contains_jsonata_expression(doc) or "Assign" in json.dumps(doc):
+            assert doc.get("QueryLanguage") == "JSONata", (
+                f"{path.name} uses JSONata expressions and must declare QueryLanguage=JSONata"
+            )

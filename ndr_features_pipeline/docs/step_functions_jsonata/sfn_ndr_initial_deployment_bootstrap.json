@@ -1,5 +1,6 @@
 {
   "Comment": "NDR initial deployment bootstrap orchestration (Task 12)",
+  "QueryLanguage": "JSONata",
   "StartAt": "LoadBootstrapControlRecord",
   "States": {
     "LoadBootstrapControlRecord": {

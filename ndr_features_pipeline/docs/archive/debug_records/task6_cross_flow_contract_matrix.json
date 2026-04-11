@@ -1,0 +1,375 @@
+{
+  "contract_version": "task6_cross_flow_contract_conformance.v1",
+  "flows": [
+    "monthly",
+    "rt",
+    "backfill",
+    "bootstrap",
+    "training",
+    "deployment"
+  ],
+  "interfaces": [
+    {
+      "interface_id": "monthly_readiness_artifact",
+      "producer_fields": [
+        "contract_version",
+        "project_name",
+        "feature_spec_version",
+        "reference_month",
+        "ready",
+        "required_families",
+        "missing_ranges",
+        "decision_code",
+        "as_of_ts",
+        "idempotency_key"
+      ],
+      "consumer_fields": [
+        "contract_version",
+        "project_name",
+        "feature_spec_version",
+        "reference_month",
+        "ready",
+        "required_families",
+        "missing_ranges",
+        "decision_code",
+        "as_of_ts",
+        "idempotency_key"
+      ],
+      "producer_to_consumer_map": {
+        "contract_version": "contract_version",
+        "project_name": "project_name",
+        "feature_spec_version": "feature_spec_version",
+        "reference_month": "reference_month",
+        "ready": "ready",
+        "required_families": "required_families",
+        "missing_ranges": "missing_ranges",
+        "decision_code": "decision_code",
+        "as_of_ts": "as_of_ts",
+        "idempotency_key": "idempotency_key"
+      },
+      "consumer_to_producer_map": {
+        "contract_version": "contract_version",
+        "project_name": "project_name",
+        "feature_spec_version": "feature_spec_version",
+        "reference_month": "reference_month",
+        "ready": "ready",
+        "required_families": "required_families",
+        "missing_ranges": "missing_ranges",
+        "decision_code": "decision_code",
+        "as_of_ts": "as_of_ts",
+        "idempotency_key": "idempotency_key"
+      }
+    },
+    {
+      "interface_id": "rt_readiness_artifact",
+      "producer_fields": [
+        "contract_version",
+        "project_name",
+        "feature_spec_version",
+        "ml_project_name",
+        "mini_batch_id",
+        "ready",
+        "required_families",
+        "missing_ranges",
+        "decision_code",
+        "as_of_ts",
+        "idempotency_key"
+      ],
+      "consumer_fields": [
+        "contract_version",
+        "project_name",
+        "feature_spec_version",
+        "ml_project_name",
+        "mini_batch_id",
+        "ready",
+        "required_families",
+        "missing_ranges",
+        "decision_code",
+        "as_of_ts",
+        "idempotency_key"
+      ],
+      "producer_to_consumer_map": {
+        "contract_version": "contract_version",
+        "project_name": "project_name",
+        "feature_spec_version": "feature_spec_version",
+        "ml_project_name": "ml_project_name",
+        "mini_batch_id": "mini_batch_id",
+        "ready": "ready",
+        "required_families": "required_families",
+        "missing_ranges": "missing_ranges",
+        "decision_code": "decision_code",
+        "as_of_ts": "as_of_ts",
+        "idempotency_key": "idempotency_key"
+      },
+      "consumer_to_producer_map": {
+        "contract_version": "contract_version",
+        "project_name": "project_name",
+        "feature_spec_version": "feature_spec_version",
+        "ml_project_name": "ml_project_name",
+        "mini_batch_id": "mini_batch_id",
+        "ready": "ready",
+        "required_families": "required_families",
+        "missing_ranges": "missing_ranges",
+        "decision_code": "decision_code",
+        "as_of_ts": "as_of_ts",
+        "idempotency_key": "idempotency_key"
+      }
+    },
+    {
+      "interface_id": "rt_raw_input_resolution",
+      "producer_fields": [
+        "contract_version",
+        "project_name",
+        "feature_spec_version",
+        "mini_batch_id",
+        "batch_start_ts_iso",
+        "batch_end_ts_iso",
+        "raw_input_s3_prefix",
+        "source_mode",
+        "resolution_reason",
+        "provenance"
+      ],
+      "consumer_fields": [
+        "contract_version",
+        "project_name",
+        "feature_spec_version",
+        "mini_batch_id",
+        "batch_start_ts_iso",
+        "batch_end_ts_iso",
+        "raw_input_s3_prefix",
+        "source_mode",
+        "resolution_reason",
+        "provenance"
+      ],
+      "producer_to_consumer_map": {
+        "contract_version": "contract_version",
+        "project_name": "project_name",
+        "feature_spec_version": "feature_spec_version",
+        "mini_batch_id": "mini_batch_id",
+        "batch_start_ts_iso": "batch_start_ts_iso",
+        "batch_end_ts_iso": "batch_end_ts_iso",
+        "raw_input_s3_prefix": "raw_input_s3_prefix",
+        "source_mode": "source_mode",
+        "resolution_reason": "resolution_reason",
+        "provenance": "provenance"
+      },
+      "consumer_to_producer_map": {
+        "contract_version": "contract_version",
+        "project_name": "project_name",
+        "feature_spec_version": "feature_spec_version",
+        "mini_batch_id": "mini_batch_id",
+        "batch_start_ts_iso": "batch_start_ts_iso",
+        "batch_end_ts_iso": "batch_end_ts_iso",
+        "raw_input_s3_prefix": "raw_input_s3_prefix",
+        "source_mode": "source_mode",
+        "resolution_reason": "resolution_reason",
+        "provenance": "provenance"
+      }
+    },
+    {
+      "interface_id": "backfill_request_v2",
+      "producer_fields": [
+        "contract_version",
+        "consumer",
+        "project_name",
+        "feature_spec_version",
+        "requested_families",
+        "missing_ranges",
+        "provenance",
+        "idempotency_key"
+      ],
+      "consumer_fields": [
+        "contract_version",
+        "consumer",
+        "project_name",
+        "feature_spec_version",
+        "requested_families",
+        "missing_ranges",
+        "provenance",
+        "idempotency_key"
+      ],
+      "metadata_noop_fields": [
+        "ml_project_name",
+        "batch_id",
+        "source_hint"
+      ],
+      "producer_to_consumer_map": {
+        "contract_version": "contract_version",
+        "consumer": "consumer",
+        "project_name": "project_name",
+        "feature_spec_version": "feature_spec_version",
+        "requested_families": "requested_families",
+        "missing_ranges": "missing_ranges",
+        "provenance": "provenance",
+        "idempotency_key": "idempotency_key"
+      },
+      "consumer_to_producer_map": {
+        "contract_version": "contract_version",
+        "consumer": "consumer",
+        "project_name": "project_name",
+        "feature_spec_version": "feature_spec_version",
+        "requested_families": "requested_families",
+        "missing_ranges": "missing_ranges",
+        "provenance": "provenance",
+        "idempotency_key": "idempotency_key"
+      }
+    },
+    {
+      "interface_id": "backfill_execution_request_v2",
+      "producer_fields": [
+        "project_name",
+        "feature_spec_version",
+        "artifact_families",
+        "range_start_ts_iso",
+        "range_end_ts_iso",
+        "idempotency_key",
+        "contract_version"
+      ],
+      "consumer_fields": [
+        "project_name",
+        "feature_spec_version",
+        "artifact_families",
+        "range_start_ts_iso",
+        "range_end_ts_iso",
+        "idempotency_key",
+        "contract_version"
+      ],
+      "producer_to_consumer_map": {
+        "project_name": "project_name",
+        "feature_spec_version": "feature_spec_version",
+        "artifact_families": "artifact_families",
+        "range_start_ts_iso": "range_start_ts_iso",
+        "range_end_ts_iso": "range_end_ts_iso",
+        "idempotency_key": "idempotency_key",
+        "contract_version": "contract_version"
+      },
+      "consumer_to_producer_map": {
+        "project_name": "project_name",
+        "feature_spec_version": "feature_spec_version",
+        "artifact_families": "artifact_families",
+        "range_start_ts_iso": "range_start_ts_iso",
+        "range_end_ts_iso": "range_end_ts_iso",
+        "idempotency_key": "idempotency_key",
+        "contract_version": "contract_version"
+      }
+    },
+    {
+      "interface_id": "bootstrap_jsonata_semantics",
+      "producer_fields": [
+        "QueryLanguage"
+      ],
+      "consumer_fields": [
+        "QueryLanguage"
+      ],
+      "producer_to_consumer_map": {
+        "QueryLanguage": "QueryLanguage"
+      },
+      "consumer_to_producer_map": {
+        "QueryLanguage": "QueryLanguage"
+      }
+    },
+    {
+      "interface_id": "training_remediation_request",
+      "producer_fields": [
+        "contract_version",
+        "consumer",
+        "project_name",
+        "feature_spec_version",
+        "run_id",
+        "training_window",
+        "evaluation_windows",
+        "missing_manifest",
+        "requested_families",
+        "missing_ranges",
+        "provenance",
+        "idempotency_key"
+      ],
+      "consumer_fields": [
+        "contract_version",
+        "consumer",
+        "project_name",
+        "feature_spec_version",
+        "run_id",
+        "training_window",
+        "evaluation_windows",
+        "missing_manifest",
+        "requested_families",
+        "missing_ranges",
+        "provenance",
+        "idempotency_key"
+      ],
+      "metadata_noop_fields": [
+        "ml_project_name"
+      ],
+      "producer_to_consumer_map": {
+        "contract_version": "contract_version",
+        "consumer": "consumer",
+        "project_name": "project_name",
+        "feature_spec_version": "feature_spec_version",
+        "run_id": "run_id",
+        "training_window": "training_window",
+        "evaluation_windows": "evaluation_windows",
+        "missing_manifest": "missing_manifest",
+        "requested_families": "requested_families",
+        "missing_ranges": "missing_ranges",
+        "provenance": "provenance",
+        "idempotency_key": "idempotency_key"
+      },
+      "consumer_to_producer_map": {
+        "contract_version": "contract_version",
+        "consumer": "consumer",
+        "project_name": "project_name",
+        "feature_spec_version": "feature_spec_version",
+        "run_id": "run_id",
+        "training_window": "training_window",
+        "evaluation_windows": "evaluation_windows",
+        "missing_manifest": "missing_manifest",
+        "requested_families": "requested_families",
+        "missing_ranges": "missing_ranges",
+        "provenance": "provenance",
+        "idempotency_key": "idempotency_key"
+      }
+    },
+    {
+      "interface_id": "step_code_artifact_contract",
+      "producer_fields": [
+        "code_artifact_s3_uri",
+        "entry_script",
+        "artifact_build_id",
+        "artifact_sha256",
+        "artifact_format"
+      ],
+      "consumer_fields": [
+        "code_artifact_s3_uri",
+        "entry_script",
+        "artifact_build_id",
+        "artifact_sha256",
+        "artifact_format"
+      ],
+      "producer_to_consumer_map": {
+        "code_artifact_s3_uri": "code_artifact_s3_uri",
+        "entry_script": "entry_script",
+        "artifact_build_id": "artifact_build_id",
+        "artifact_sha256": "artifact_sha256",
+        "artifact_format": "artifact_format"
+      },
+      "consumer_to_producer_map": {
+        "code_artifact_s3_uri": "code_artifact_s3_uri",
+        "entry_script": "entry_script",
+        "artifact_build_id": "artifact_build_id",
+        "artifact_sha256": "artifact_sha256",
+        "artifact_format": "artifact_format"
+      }
+    }
+  ],
+  "strict_controls": {
+    "reject_unknown_fields": true,
+    "reject_missing_required_fields": true,
+    "reject_contract_version_mismatch": true
+  },
+  "safeguards": {
+    "idempotency_verified": true,
+    "retry_verified": true,
+    "rollback_verified": true
+  }
+}

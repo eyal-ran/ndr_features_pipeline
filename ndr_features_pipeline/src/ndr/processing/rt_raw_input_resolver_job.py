@@ -14,6 +14,7 @@ from typing import Any
 import boto3
 
 from ndr.config.project_parameters_loader import load_project_parameters, resolve_batch_index_table_name
+from ndr.orchestration.contract_schemas_v3 import validate_payload
 from ndr.processing.raw_input_resolver import RawInputResolver
 
 
@@ -63,7 +64,7 @@ def run_rt_raw_input_resolver(runtime_config: RtRawInputResolverRuntimeConfig) -
         provenance=resolution.provenance,
     )
 
-    return {
+    payload = {
         "contract_version": "rt.raw_input_resolution.v1",
         "project_name": runtime_config.project_name,
         "feature_spec_version": runtime_config.feature_spec_version,
@@ -75,6 +76,8 @@ def run_rt_raw_input_resolver(runtime_config: RtRawInputResolverRuntimeConfig) -
         "resolution_reason": resolution.resolution_reason,
         "provenance": resolution.provenance,
     }
+    validate_payload(payload, contract_version="rt.raw_input_resolution.v1")
+    return payload
 
 
 def _write_batch_index_resolution(

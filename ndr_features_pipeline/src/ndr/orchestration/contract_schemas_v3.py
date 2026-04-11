@@ -11,6 +11,7 @@ from ndr.orchestration.remediation_contracts import ContractValidationError, _re
 SCHEMA_FILE_BY_VERSION = {
     "monthly_fg_b_readiness.v3": "monthly_fg_b_readiness_v3.schema.json",
     "rt_artifact_readiness.v3": "rt_artifact_readiness_v3.schema.json",
+    "rt.raw_input_resolution.v1": "rt_raw_input_resolution_v1.schema.json",
     "NdrBackfillRequest.v2": "ndr_backfill_request_v2.schema.json",
     "step_code_artifact_contract.v1": "step_code_artifact_contract_v1.schema.json",
 }

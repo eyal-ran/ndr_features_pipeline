@@ -73,13 +73,19 @@ def test_rt_resolver_fallback_enabled_path(monkeypatch):
     monkeypatch.setattr(
         module.RawInputResolver,
         "resolve",
-        lambda *_a, **_k: types.SimpleNamespace(
-            source_mode="redshift_unload_fallback",
-            raw_input_s3_prefix="s3://bucket/fallback/descriptor=delta/range_0000/attempt_01/",
-            resolution_reason="ingestion_rows_missing",
-            provenance={"source_mode": "redshift_unload_fallback", "resolution_reason": "ingestion_rows_missing"},
-        ),
-    )
+            lambda *_a, **_k: types.SimpleNamespace(
+                source_mode="redshift_unload_fallback",
+                raw_input_s3_prefix="s3://bucket/fallback/descriptor=delta/range_0000/attempt_01/",
+                resolution_reason="ingestion_rows_missing",
+                provenance={
+                    "source_mode": "redshift_unload_fallback",
+                    "resolution_reason": "ingestion_rows_missing",
+                    "producer_flow": "rt_pre_delta_raw_input_resolver",
+                    "request_id": "mb-1",
+                    "resolved_at": "2025-01-01T00:00:00Z",
+                },
+            ),
+        )
 
     result = run_rt_raw_input_resolver(
         RtRawInputResolverRuntimeConfig(

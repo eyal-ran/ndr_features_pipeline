@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rt_raw_input_resolution_v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "project_name",
+    "feature_spec_version",
+    "mini_batch_id",
+    "batch_start_ts_iso",
+    "batch_end_ts_iso",
+    "raw_input_s3_prefix",
+    "source_mode",
+    "resolution_reason",
+    "provenance"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "rt.raw_input_resolution.v1"
+    },
+    "project_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "feature_spec_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mini_batch_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "batch_start_ts_iso": {
+      "type": "string",
+      "minLength": 1
+    },
+    "batch_end_ts_iso": {
+      "type": "string",
+      "minLength": 1
+    },
+    "raw_input_s3_prefix": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_mode": {
+      "type": "string",
+      "enum": [
+        "ingestion",
+        "redshift_unload_fallback"
+      ]
+    },
+    "resolution_reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "producer_flow": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_mode": {
+          "type": "string",
+          "enum": [
+            "ingestion",
+            "redshift_unload_fallback"
+          ]
+        },
+        "resolution_reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "resolved_at": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "producer_flow",
+        "source_mode",
+        "resolution_reason",
+        "request_id",
+        "resolved_at"
+      ]
+    }
+  }
+}

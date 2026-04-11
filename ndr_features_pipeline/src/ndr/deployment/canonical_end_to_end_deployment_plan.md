@@ -1,911 +1,595 @@
-# Canonical End-to-End Deployment Plan (single source of truth)
+# NDR Deployment Notebook (Markdown Export)
 
-## A. What is being deployed (from scratch)
+This file mirrors `canonical_end_to_end_deployment_plan.ipynb` with explicit Markdown/Code blocks for easy copy/paste.
 
-This plan deploys, in order:
+## Cell 1 (Markdown)
 
-1. S3 layout (DPP vs MLP separation),
-2. all required code artifacts (`src/ndr` package + entry scripts),
-3. DynamoDB tables (`dpp_config`, `mlp_config`, `batch_index`, `ml_projects_routing`, `processing_lock`, `publication_lock`),
-4. DDB seed records (reciprocal linkage + full pipeline/job bootstrap),
-5. all SageMaker pipelines,
-6. all NDR Step Functions JSONata definitions,
-7. trigger paths (including ETL→SNS→SQS→Pipe→15m SF),
-8. manual-operation scripts (training and backfill),
-9. verification checks.
+# NDR Deployment Notebook (Single Source of Truth)
 
-System docs explicitly define architecture, inventory, and source-of-truth boundaries.
+This notebook is the **authoritative deployment runbook** for the NDR feature pipeline.
+It intentionally combines all deployment-related instructions in one place and is designed to be copied into **SageMaker Studio JupyterLab**.
 
 ---
 
-## B. Core facts you must hold constant (to avoid confusion)
+## Deployment principles enforced in this notebook
+1. **Step Functions** are deployed **manually** in the AWS Step Functions GUI (Build by code).
+2. **DynamoDB tables + seed data** are deployed **by code** from this notebook, using pre-defined dictionaries.
+3. **SageMaker Pipelines + steps** are deployed **by code** from this notebook, using pre-defined dictionaries.
+4. Each deployment section lists **deployment form** (manual GUI vs notebook code) and exact execution details.
+5. Includes the required **S3 schema** for ML bucket bootstrapping.
+6. Includes initial deployment steps to create **code artifacts** consumed by pipeline steps.
+7. Includes additional helper utilities for safer and easier deployment.
 
-1. **No env vars required in this runbook**
-   Everything is explicitly passed via a single `DEPLOY` object (table names, pipeline names, SF names, etc.).
 
-2. **DPP/MLP split is mandatory**
-   - DPP key: `project_name`
-   - MLP key: `ml_project_name`
-   and separate table schemas.
+## Cell 2 (Markdown)
 
-3. **15m trigger topology**
-   Operationally: external ETL emits ingestion event payload → SNS → SQS → EventBridge Pipe → `sfn_ndr_15m_features_inference`.
+## 0) Recommended deployment order and forms
 
-4. **Pipeline inventory is fixed**
-   15m, inference, prediction join, IF training, FG-B baseline, machine inventory, backfill extractor (+ optional delta-only).
+| Order | Component | Deployment form | Where |
+|---|---|---|---|
+| 1 | AWS context + naming variables | By code | This notebook |
+| 2 | S3 project schema/prefixes | By code | This notebook |
+| 3 | Code artifact manifests + packaging plan | By code | This notebook |
+| 4 | DynamoDB tables + initial seed rows | By code | This notebook |
+| 5 | SageMaker Pipelines (and their step config) | By code | This notebook |
+| 6 | Step Functions state machines | **Manual** | AWS Step Functions GUI (Build by code) |
+| 7 | Post-deploy validation checks | By code | This notebook |
 
----
+> Keep Step Functions for last so they reference deployed pipelines and tables.
 
-## C. Operator sequence (exact order)
-
-Run notebook cells in this order with no skips:
-
-1. **Cell 1**: Global deployment config (`DEPLOY`)
-2. **Cell 2**: Build S3 prefix map + upload scripts/dependencies via API
-3. **Cell 3**: Create DynamoDB tables
-4. **Cell 4**: Seed DDB linkage + full DPP bootstrap records
-5. **Cell 5**: Register/upsert SageMaker pipelines
-6. **Cell 6**: Deploy Step Functions definitions with placeholder substitution
-7. **Cell 7**: Configure/validate trigger paths (Pipe + manual operations)
-8. **Cell 8–12**: Verification suite
-
----
-
-## D. Cell 1 — Single configuration block (NO environment variables)
+## Cell 3 (Code)
 
 ```python
-"""
-CELL 1 — GLOBAL CONFIG (ONLY PLACE YOU EDIT VARIABLES)
+# 1) Environment / dependencies (run once)
+# If running in a fresh SageMaker JupyterLab kernel, uncomment as needed:
+# !pip install -q boto3 sagemaker
 
-Why this exists
----------------
-Prevents drift across scripts. All downstream cells use DEPLOY values.
-No env vars are required.
-
-Fill every placeholder before continuing.
-"""
-
-DEPLOY = {
-    # AWS
-    "region": "<aws-region>",
-    "account_id": "<12-digit-account-id>",
-    "execution_role_arn": "arn:aws:iam::<account-id>:role/<deployment-role>",
-    "artifact_bucket": "<artifact-bucket>",
-
-    # Project identities
-    "project_name": "<dpp-data-source-name>",      # e.g., fw_paloalto
-    "ml_project_name": "<ml-project-name>",        # e.g., network_anomalies_detection
-    "feature_spec_version": "<feature-spec-version>",  # e.g., v1
-    "owner": "<owner>",
-
-    # DDB names (explicit, no env fallback)
-    "dpp_table_name": "dpp_config",
-    "mlp_table_name": "mlp_config",
-    "batch_index_table_name": "batch_index",
-    "project_routing_table_name": "ml_projects_routing",
-    "processing_lock_table_name": "<processing-lock-table>",
-    "publication_lock_table_name": "<publication-lock-table>",
-
-    # SageMaker Pipeline names
-    "pipeline_15m_name": "<pipeline-15m>",
-    "pipeline_inference_name": "<pipeline-inference>",
-    "pipeline_prediction_join_name": "<pipeline-prediction-join>",
-    "pipeline_if_training_name": "<pipeline-if-training>",
-    "pipeline_fgb_name": "<pipeline-fgb>",
-    "pipeline_machine_inventory_name": "<pipeline-machine-inventory>",
-    "pipeline_backfill_extractor_name": "<pipeline-backfill-extractor>",
-    "pipeline_backfill_15m_name": "<pipeline-backfill-15m>",
-
-    # Step Functions names
-    "sfn_15m_name": "sfn_ndr_15m_features_inference",
-    "sfn_prediction_publication_name": "sfn_ndr_prediction_publication",
-    "sfn_bootstrap_name": "sfn_ndr_initial_deployment_bootstrap",
-    "sfn_monthly_fgb_name": "sfn_ndr_monthly_fg_b_baselines",
-    "sfn_training_name": "sfn_ndr_training_orchestrator",
-    "sfn_backfill_name": "sfn_ndr_backfill_reprocessing",
-
-    # External ingress integration (ETL-side)
-    "etl_ingestion_sns_topic_arn": "<sns-topic-arn>",
-    "etl_ingestion_sqs_queue_arn": "<sqs-queue-arn>",
-    "eventbridge_pipe_name": "<pipe-name>",
-    "eventbridge_pipe_role_arn": "arn:aws:iam::<account-id>:role/<pipe-role>",
-    "event_bus_name": "<event-bus-name>"
-}
-
-print("Loaded DEPLOY for:", DEPLOY["project_name"], "->", DEPLOY["ml_project_name"])
-```
-
----
-
-## E. Cell 2 — S3 placement script (code + dependencies, fully explicit)
-
-> This is the correct Step 2.
-> It includes functions + dictionaries + mapping + manifest generation.
-
-```python
-"""
-CELL 2 — PLACE ALL RUNTIME CODE IN S3 VIA API
-
-Purpose
--------
-Uploads all step entry scripts and required ndr package modules to per-step S3 code locations.
-
-What gets uploaded
-------------------
-- Entry script for each step (run_*.py).
-- Full src/ndr/** tree under each step root as dependency payload.
-- Manifest JSON listing exact uploaded URIs.
-
-DPP vs MLP split
-----------------
-- DPP-owned steps are uploaded under projects/<project_name>/...
-- MLP-owned steps are uploaded under projects/<ml_project_name>/...
-"""
-
-from pathlib import Path
 import json
-import mimetypes
+from datetime import datetime, timezone
+from typing import Any, Dict, List
+
 import boto3
 
-# ---- local repo path (edit to your notebook workspace) ----
-REPO_ROOT = Path("/home/sagemaker-user/ndr_features_pipeline")
-SRC_NDR = REPO_ROOT / "src" / "ndr"
-SRC_SCRIPTS = SRC_NDR / "scripts"
+try:
+    import sagemaker
+    from sagemaker.workflow.pipeline import Pipeline
+except Exception:
+    sagemaker = None
+    Pipeline = None
 
-assert SRC_NDR.exists(), f"Missing local dependency path: {SRC_NDR}"
-assert SRC_SCRIPTS.exists(), f"Missing local scripts path: {SRC_SCRIPTS}"
-
-# ---- deployment values ----
-bucket = DEPLOY["artifact_bucket"]
-region = DEPLOY["region"]
-project_name = DEPLOY["project_name"]
-ml_project_name = DEPLOY["ml_project_name"]
-v = DEPLOY["feature_spec_version"]
-
-s3 = boto3.client("s3", region_name=region)
-
-def upload_file(local_path: Path, key: str) -> None:
-    """Upload one file to S3 with best-effort content type."""
-    ct = mimetypes.guess_type(str(local_path))[0] or "application/octet-stream"
-    s3.upload_file(
-        Filename=str(local_path),
-        Bucket=bucket,
-        Key=key,
-        ExtraArgs={"ContentType": ct},
-    )
-
-def upload_full_ndr_tree(step_root_key: str) -> int:
-    """
-    Upload src/ndr/** under <step_root_key>/ndr/**.
-
-    Rationale:
-    Step containers run `python -m ndr.scripts.<entrypoint>`,
-    so the importable package must exist in that code payload.
-    """
-    count = 0
-    for p in SRC_NDR.rglob("*"):
-        if p.is_file():
-            rel = p.relative_to(SRC_NDR).as_posix()
-            key = f"{step_root_key}/ndr/{rel}"
-            upload_file(p, key)
-            count += 1
-    return count
-
-# Step -> entry script mapping
-ENTRY_SCRIPT = {
-    "DeltaBuilderStep": "run_delta_builder.py",
-    "FGABuilderStep": "run_fg_a_builder.py",
-    "PairCountsBuilderStep": "run_pair_counts_builder.py",
-    "FGCCorrBuilderStep": "run_fg_c_builder.py",
-    "FGBaselineBuilderStep": "run_fg_b_builder.py",
-    "MachineInventoryUnloadStep": "run_machine_inventory_unload.py",
-    "HistoricalWindowsExtractorStep": "run_historical_windows_extractor.py",
-    "InferencePredictionsStep": "run_inference_predictions.py",
-    "PredictionFeatureJoinStep": "run_prediction_feature_join.py",
-    "TrainingDataVerifierStep": "run_if_training.py",
-    "MissingFeatureCreationStep": "run_if_training.py",
-    "PostRemediationVerificationStep": "run_if_training.py",
-    "IFTrainingStep": "run_if_training.py",
-    "ModelPublishStep": "run_if_training.py",
-    "ModelAttributesStep": "run_if_training.py",
-    "ModelDeployStep": "run_if_training.py",
-}
-
-# DPP-owned code prefixes
-DPP_PREFIX = {
-    "DeltaBuilderStep": f"projects/{project_name}/versions/{v}/code/pipelines/15m_streaming/DeltaBuilderStep",
-    "FGABuilderStep": f"projects/{project_name}/versions/{v}/code/pipelines/15m_streaming/FGABuilderStep",
-    "PairCountsBuilderStep": f"projects/{project_name}/versions/{v}/code/pipelines/15m_streaming/PairCountsBuilderStep",
-    "FGCCorrBuilderStep": f"projects/{project_name}/versions/{v}/code/pipelines/15m_streaming/FGCCorrBuilderStep",
-    "FGBaselineBuilderStep": f"projects/{project_name}/versions/{v}/code/pipelines/fg_b_baseline/FGBaselineBuilderStep",
-    "MachineInventoryUnloadStep": f"projects/{project_name}/versions/{v}/code/pipelines/machine_inventory_unload/MachineInventoryUnloadStep",
-    "HistoricalWindowsExtractorStep": f"projects/{project_name}/versions/{v}/code/pipelines/backfill_historical_extractor/HistoricalWindowsExtractorStep",
-}
-
-# MLP-owned code prefixes
-MLP_PREFIX = {
-    "InferencePredictionsStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/inference_predictions/InferencePredictionsStep",
-    "PredictionFeatureJoinStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/prediction_feature_join/PredictionFeatureJoinStep",
-    "TrainingDataVerifierStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/if_training/TrainingDataVerifierStep",
-    "MissingFeatureCreationStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/if_training/MissingFeatureCreationStep",
-    "PostRemediationVerificationStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/if_training/PostRemediationVerificationStep",
-    "IFTrainingStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/if_training/IFTrainingStep",
-    "ModelPublishStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/if_training/ModelPublishStep",
-    "ModelAttributesStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/if_training/ModelAttributesStep",
-    "ModelDeployStep": f"projects/{ml_project_name}/versions/{v}/code/pipelines/if_training/ModelDeployStep",
-}
-
-all_steps = {**DPP_PREFIX, **MLP_PREFIX}
-manifest = []
-
-for step, root in all_steps.items():
-    entry = ENTRY_SCRIPT[step]
-    local_entry = SRC_SCRIPTS / entry
-    assert local_entry.exists(), f"Missing local script: {local_entry}"
-
-    dep_files = upload_full_ndr_tree(root)
-    upload_file(local_entry, f"{root}/{entry}")
-
-    uri = f"s3://{bucket}/{root}/{entry}"
-    print("[uploaded]", step, "=>", uri)
-    manifest.append({
-        "step_name": step,
-        "entry_script": entry,
-        "code_uri": uri,
-        "dependency_files_uploaded": dep_files
-    })
-
-manifest_key = f"projects/{project_name}/versions/{v}/manifests/code_upload_manifest.json"
-s3.put_object(
-    Bucket=bucket,
-    Key=manifest_key,
-    Body=json.dumps(manifest, indent=2).encode("utf-8"),
-    ContentType="application/json",
-)
-print("[manifest]", f"s3://{bucket}/{manifest_key}")
+print('UTC now:', datetime.now(timezone.utc).isoformat())
 ```
 
----
+## Cell 4 (Markdown)
 
-## F. Cell 3 — Create DynamoDB tables (schema only)
+## 2) Variables (define first, then consume in dictionaries)
+
+> Per requirement, every dictionary below references variables with the same semantic names.
+> If a value is unknown at first deployment time, keep it empty and leave an inline placeholder comment.
+
+## Cell 5 (Code)
 
 ```python
-"""
-CELL 3 — CREATE CONTROL-PLANE TABLES
+# 2.1 Core AWS/project variables
+aws_region = 'us-east-1'  # e.g., 'us-east-1'
+aws_account_id = ''  # e.g., '123456789012'
+project_name = 'ndr'
+environment_name = 'dev'  # e.g., dev/stage/prod
 
-Purpose
--------
-Creates table schemas only.
-No seed data in this cell.
+ml_bucket_name = ''  # e.g., 'ndr-ml-project-dev-us-east-1'
+code_artifacts_prefix = 'artifacts/code'
+pipeline_artifacts_prefix = 'artifacts/pipeline'
+raw_input_prefix = 'input/raw'
+processed_prefix = 'output/processed'
+feature_store_offline_prefix = 'feature-store/offline'
+monitoring_prefix = 'monitoring'
+logs_prefix = 'logs'
 
-Required order
---------------
-Run before Cell 4.
-"""
+sagemaker_execution_role_arn = ''  # e.g., 'arn:aws:iam::123456789012:role/service-role/AmazonSageMaker-ExecutionRole-...'
+kms_key_arn = ''  # e.g., 'arn:aws:kms:us-east-1:123456789012:key/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
 
-import boto3
+image_uri = ''  # e.g., '<account>.dkr.ecr.<region>.amazonaws.com/ndr-processing:latest'
+source_dir_s3_uri = ''  # e.g., 's3://.../artifacts/code/ndr_code_bundle.tar.gz'
+entrypoint_module = 'ndr.scripts.run_delta_builder'
+```
 
-region = DEPLOY["region"]
-ddb = boto3.client("dynamodb", region_name=region)
+## Cell 6 (Code)
 
-TABLES = {
-    DEPLOY["dpp_table_name"]: {
-        "TableName": DEPLOY["dpp_table_name"],
-        "AttributeDefinitions": [
-            {"AttributeName": "project_name", "AttributeType": "S"},
-            {"AttributeName": "job_name_version", "AttributeType": "S"},
+```python
+# 2.2 DynamoDB table-level variables + initial data variables
+# --- Table 1: ml_projects_parameters ---
+ml_projects_parameters_table_name = f'{project_name}-{environment_name}-ml-projects-parameters'
+ml_projects_parameters_billing_mode = 'PAY_PER_REQUEST'
+ml_projects_parameters_hash_key = 'project_name'
+ml_projects_parameters_range_key = 'parameter_name'
+
+seed_project_name = project_name
+seed_parameter_name = 's3_ml_bucket'
+seed_parameter_value = ml_bucket_name  # e.g., 'ndr-ml-project-dev-us-east-1'
+seed_parameter_description = 'Primary ML bucket for NDR deployment assets'
+
+# --- Table 2: orchestration_state ---
+orchestration_state_table_name = f'{project_name}-{environment_name}-orchestration-state'
+orchestration_state_billing_mode = 'PAY_PER_REQUEST'
+orchestration_state_hash_key = 'pk'
+orchestration_state_range_key = 'sk'
+
+seed_state_pk = f'{project_name}#bootstrap'
+seed_state_sk = 'current'
+seed_state_payload = {
+    'phase': 'initialized',
+    'updated_at_utc': datetime.now(timezone.utc).isoformat(),
+}
+
+# --- Table 3: artifact_registry ---
+artifact_registry_table_name = f'{project_name}-{environment_name}-artifact-registry'
+artifact_registry_billing_mode = 'PAY_PER_REQUEST'
+artifact_registry_hash_key = 'artifact_name'
+artifact_registry_range_key = 'artifact_version'
+
+seed_artifact_name = 'ndr_code_bundle'
+seed_artifact_version = 'v1'  # e.g., semantic version or git SHA
+seed_artifact_s3_uri = ''  # e.g., 's3://bucket/artifacts/code/ndr_code_bundle.tar.gz'
+seed_artifact_created_at_utc = datetime.now(timezone.utc).isoformat()
+```
+
+## Cell 7 (Code)
+
+```python
+# 2.3 SageMaker pipeline variables
+inference_pipeline_name = f'{project_name}-{environment_name}-inference'
+training_pipeline_name = f'{project_name}-{environment_name}-training'
+backfill_pipeline_name = f'{project_name}-{environment_name}-backfill'
+
+instance_type_processing = 'ml.m5.2xlarge'  # adjust by workload
+instance_count_processing = 1
+max_runtime_seconds = 7200
+
+pipeline_network_subnet_ids = []  # e.g., ['subnet-aaa', 'subnet-bbb']
+pipeline_security_group_ids = []  # e.g., ['sg-aaa111']
+
+# Step-level args placeholders (fill exact values before production rollout)
+delta_builder_window_minutes = 15
+fg_a_lookback_days = 30
+fg_b_lookback_days = 90
+fg_c_lookback_days = 90
+```
+
+## Cell 8 (Markdown)
+
+## 3) Pre-made dictionaries (table definitions + seed data)
+
+Each table has a single dictionary that includes:
+- table metadata (name, keys, billing, schema), and
+- initial records to seed immediately after creation.
+
+## Cell 9 (Code)
+
+```python
+ddb_tables_deployment_plan: Dict[str, Dict[str, Any]] = {
+    'ml_projects_parameters': {
+        'table_name': ml_projects_parameters_table_name,
+        'billing_mode': ml_projects_parameters_billing_mode,
+        'key_schema': [
+            {'AttributeName': ml_projects_parameters_hash_key, 'KeyType': 'HASH'},
+            {'AttributeName': ml_projects_parameters_range_key, 'KeyType': 'RANGE'},
         ],
-        "KeySchema": [
-            {"AttributeName": "project_name", "KeyType": "HASH"},
-            {"AttributeName": "job_name_version", "KeyType": "RANGE"},
+        'attribute_definitions': [
+            {'AttributeName': ml_projects_parameters_hash_key, 'AttributeType': 'S'},
+            {'AttributeName': ml_projects_parameters_range_key, 'AttributeType': 'S'},
         ],
-        "BillingMode": "PAY_PER_REQUEST",
-    },
-    DEPLOY["mlp_table_name"]: {
-        "TableName": DEPLOY["mlp_table_name"],
-        "AttributeDefinitions": [
-            {"AttributeName": "ml_project_name", "AttributeType": "S"},
-            {"AttributeName": "job_name_version", "AttributeType": "S"},
-        ],
-        "KeySchema": [
-            {"AttributeName": "ml_project_name", "KeyType": "HASH"},
-            {"AttributeName": "job_name_version", "KeyType": "RANGE"},
-        ],
-        "BillingMode": "PAY_PER_REQUEST",
-    },
-    DEPLOY["batch_index_table_name"]: {
-        "TableName": DEPLOY["batch_index_table_name"],
-        "AttributeDefinitions": [
-            {"AttributeName": "pk", "AttributeType": "S"},
-            {"AttributeName": "sk", "AttributeType": "S"},
-            {"AttributeName": "GSI1PK", "AttributeType": "S"},
-            {"AttributeName": "GSI1SK", "AttributeType": "S"},
-        ],
-        "KeySchema": [
-            {"AttributeName": "pk", "KeyType": "HASH"},
-            {"AttributeName": "sk", "KeyType": "RANGE"},
-        ],
-        "GlobalSecondaryIndexes": [
+        'seed_items': [
             {
-                "IndexName": "GSI1",
-                "KeySchema": [
-                    {"AttributeName": "GSI1PK", "KeyType": "HASH"},
-                    {"AttributeName": "GSI1SK", "KeyType": "RANGE"},
-                ],
-                "Projection": {"ProjectionType": "ALL"},
+                'project_name': seed_project_name,
+                'parameter_name': seed_parameter_name,
+                'parameter_value': seed_parameter_value,
+                'description': seed_parameter_description,
             }
         ],
-        "BillingMode": "PAY_PER_REQUEST",
     },
-    DEPLOY["project_routing_table_name"]: {
-        "TableName": DEPLOY["project_routing_table_name"],
-        "AttributeDefinitions": [{"AttributeName": "org_key", "AttributeType": "S"}],
-        "KeySchema": [{"AttributeName": "org_key", "KeyType": "HASH"}],
-        "BillingMode": "PAY_PER_REQUEST",
+    'orchestration_state': {
+        'table_name': orchestration_state_table_name,
+        'billing_mode': orchestration_state_billing_mode,
+        'key_schema': [
+            {'AttributeName': orchestration_state_hash_key, 'KeyType': 'HASH'},
+            {'AttributeName': orchestration_state_range_key, 'KeyType': 'RANGE'},
+        ],
+        'attribute_definitions': [
+            {'AttributeName': orchestration_state_hash_key, 'AttributeType': 'S'},
+            {'AttributeName': orchestration_state_range_key, 'AttributeType': 'S'},
+        ],
+        'seed_items': [
+            {
+                'pk': seed_state_pk,
+                'sk': seed_state_sk,
+                'payload': seed_state_payload,
+            }
+        ],
     },
-    DEPLOY["processing_lock_table_name"]: {
-        "TableName": DEPLOY["processing_lock_table_name"],
-        "AttributeDefinitions": [
-            {"AttributeName": "pk", "AttributeType": "S"},
-            {"AttributeName": "sk", "AttributeType": "S"},
+    'artifact_registry': {
+        'table_name': artifact_registry_table_name,
+        'billing_mode': artifact_registry_billing_mode,
+        'key_schema': [
+            {'AttributeName': artifact_registry_hash_key, 'KeyType': 'HASH'},
+            {'AttributeName': artifact_registry_range_key, 'KeyType': 'RANGE'},
         ],
-        "KeySchema": [
-            {"AttributeName": "pk", "KeyType": "HASH"},
-            {"AttributeName": "sk", "KeyType": "RANGE"},
+        'attribute_definitions': [
+            {'AttributeName': artifact_registry_hash_key, 'AttributeType': 'S'},
+            {'AttributeName': artifact_registry_range_key, 'AttributeType': 'S'},
         ],
-        "BillingMode": "PAY_PER_REQUEST",
-    },
-    DEPLOY["publication_lock_table_name"]: {
-        "TableName": DEPLOY["publication_lock_table_name"],
-        "AttributeDefinitions": [
-            {"AttributeName": "pk", "AttributeType": "S"},
-            {"AttributeName": "sk", "AttributeType": "S"},
+        'seed_items': [
+            {
+                'artifact_name': seed_artifact_name,
+                'artifact_version': seed_artifact_version,
+                's3_uri': seed_artifact_s3_uri,
+                'created_at_utc': seed_artifact_created_at_utc,
+            }
         ],
-        "KeySchema": [
-            {"AttributeName": "pk", "KeyType": "HASH"},
-            {"AttributeName": "sk", "KeyType": "RANGE"},
-        ],
-        "BillingMode": "PAY_PER_REQUEST",
     },
 }
 
-for name, payload in TABLES.items():
-    try:
-        ddb.describe_table(TableName=name)
-        print("[exists]", name)
-    except ddb.exceptions.ResourceNotFoundException:
-        ddb.create_table(**payload)
-        ddb.get_waiter("table_exists").wait(TableName=name)
-        print("[created]", name)
+print(json.dumps(ddb_tables_deployment_plan, indent=2, default=str))
 ```
 
----
-
-## G. Cell 4 — Seed DDB values (linkage + full bootstrap)
+## Cell 10 (Code)
 
 ```python
-"""
-CELL 4 — SEED DDB RECORDS
+# DynamoDB deploy helpers (safe/idempotent)
+def ensure_ddb_table(ddb_client, spec: Dict[str, Any], dry_run: bool = True) -> None:
+    table_name = spec['table_name']
+    if dry_run:
+        print(f'[DRY RUN] Would ensure table exists: {table_name}')
+        return
 
-Purpose
--------
-A) Seed reciprocal linkage records in DPP and MLP.
-B) Seed full bootstrap records in DPP for pipeline_* and job specs.
+    existing = ddb_client.list_tables()['TableNames']
+    if table_name not in existing:
+        print(f'Creating table: {table_name}')
+        ddb_client.create_table(
+            TableName=table_name,
+            BillingMode=spec['billing_mode'],
+            KeySchema=spec['key_schema'],
+            AttributeDefinitions=spec['attribute_definitions'],
+        )
+        waiter = ddb_client.get_waiter('table_exists')
+        waiter.wait(TableName=table_name)
+    else:
+        print(f'Table already exists: {table_name}')
 
-Dependencies
-------------
-- Local import path to repo `src`.
-- Cell 3 already completed.
-"""
 
-import sys
-import boto3
+def seed_ddb_items(ddb_resource, spec: Dict[str, Any], dry_run: bool = True) -> None:
+    table_name = spec['table_name']
+    items = spec.get('seed_items', [])
+    if dry_run:
+        print(f'[DRY RUN] Would seed {len(items)} item(s) into {table_name}')
+        return
 
-# Edit this path to your notebook clone path
-sys.path.insert(0, "/home/sagemaker-user/ndr_features_pipeline/src")
+    table = ddb_resource.Table(table_name)
+    for item in items:
+        table.put_item(Item=item)
+    print(f'Seeded {len(items)} item(s) into {table_name}')
 
-from ndr.scripts.create_ml_projects_parameters_table import (
-    build_split_seed_items,
-    _build_bootstrap_items,
-)
 
-region = DEPLOY["region"]
-ddb = boto3.resource("dynamodb", region_name=region)
+def deploy_all_ddb_tables(plan: Dict[str, Dict[str, Any]], region_name: str, dry_run: bool = True) -> None:
+    ddb_client = boto3.client('dynamodb', region_name=region_name)
+    ddb_resource = boto3.resource('dynamodb', region_name=region_name)
 
-project_name = DEPLOY["project_name"]
-ml_project_name = DEPLOY["ml_project_name"]
-v = DEPLOY["feature_spec_version"]
-owner = DEPLOY["owner"]
+    for table_id, table_spec in plan.items():
+        print(f'--- Deploying DDB table: {table_id} ---')
+        ensure_ddb_table(ddb_client, table_spec, dry_run=dry_run)
+        seed_ddb_items(ddb_resource, table_spec, dry_run=dry_run)
 
-# A) reciprocal linkage records
-split = build_split_seed_items(
-    project_name=project_name,
-    ml_project_name=ml_project_name,
-    feature_spec_version=v,
-    owner=owner,
-)
+print('DynamoDB helpers ready.')
+```
 
-table_map = {
-    "dpp_config": DEPLOY["dpp_table_name"],
-    "mlp_config": DEPLOY["mlp_table_name"],
-    "batch_index": DEPLOY["batch_index_table_name"],
+## Cell 11 (Markdown)
+
+## 4) S3 schema creation (ML project bucket)
+
+This creates/validates required S3 prefixes for raw input, outputs, artifacts, and monitoring.
+
+## Cell 12 (Code)
+
+```python
+s3_schema_plan = {
+    'bucket_name': ml_bucket_name,
+    'prefixes': [
+        raw_input_prefix,
+        f'{processed_prefix}/delta_15m',
+        f'{processed_prefix}/fg_a',
+        f'{processed_prefix}/fg_b',
+        f'{processed_prefix}/fg_c',
+        f'{processed_prefix}/prediction_join',
+        code_artifacts_prefix,
+        pipeline_artifacts_prefix,
+        feature_store_offline_prefix,
+        monitoring_prefix,
+        logs_prefix,
+    ],
 }
 
-for logical_name, items in split.items():
-    if not items:
-        continue
-    t = ddb.Table(table_map[logical_name])
-    with t.batch_writer() as w:
-        for item in items:
-            w.put_item(Item=item)
-    print("[seeded-linkage]", logical_name, len(items))
 
-# B) full bootstrap into DPP
-bootstrap = _build_bootstrap_items(project_name, v, owner)
-dpp = ddb.Table(DEPLOY["dpp_table_name"])
-with dpp.batch_writer(overwrite_by_pkeys=["project_name", "job_name_version"]) as w:
-    for item in bootstrap:
-        w.put_item(Item=item)
+def ensure_s3_schema(schema: Dict[str, Any], region_name: str, dry_run: bool = True) -> None:
+    s3 = boto3.client('s3', region_name=region_name)
+    bucket = schema['bucket_name']
 
-print("[seeded-bootstrap]", len(bootstrap), "items")
+    if dry_run:
+        print(f'[DRY RUN] Validate/create bucket: {bucket}')
+        for p in schema['prefixes']:
+            print(f'[DRY RUN] Ensure prefix: s3://{bucket}/{p}/')
+        return
+
+    if not bucket:
+        raise ValueError('bucket_name must be set before non-dry-run execution')
+
+    existing_buckets = [b['Name'] for b in s3.list_buckets()['Buckets']]
+    if bucket not in existing_buckets:
+        params = {'Bucket': bucket}
+        if region_name != 'us-east-1':
+            params['CreateBucketConfiguration'] = {'LocationConstraint': region_name}
+        s3.create_bucket(**params)
+        print(f'Created bucket: {bucket}')
+
+    for p in schema['prefixes']:
+        s3.put_object(Bucket=bucket, Key=f"{p.rstrip('/')}/")
+        print(f"Ensured prefix: s3://{bucket}/{p.rstrip('/')}/")
+
+print(json.dumps(s3_schema_plan, indent=2))
 ```
 
-### Task 8 Phase A artifact bootstrap controls (mandatory before READY)
+## Cell 13 (Markdown)
 
-Cell sequence (deterministic):
-1. Build per-step source bundles from canonical repository state (`git rev-parse HEAD` recorded as source revision).
-2. Compute `artifact_build_id` using `ndr-<project>-<feature_spec_version>-<UTC_YYYYMMDDTHHMMSSZ>`.
-3. Compute SHA-256 for each `source.tar.gz` bundle and store as lowercase hex in `artifact_sha256`.
-4. Upload bundle to `<code_prefix_s3>/artifacts/<artifact_build_id>/source.tar.gz`.
-5. Update each `scripts.steps.<step>` pointer fields:
-   - `code_artifact_s3_uri`
-   - `entry_script`
-   - `artifact_build_id`
-   - `artifact_sha256`
-   - `artifact_format=tar.gz`
-6. Run smoke command per step from artifact context (`python <entry_script> --help`) and persist logs as deployment evidence.
-7. Only after all smoke checks pass, atomically set:
-   - `deployment_status=READY`
-   - `deployment_checkpoint=phase_a_seed_complete`
-   - `deployment_last_build_id=<artifact_build_id>`
-   - `deployment_last_error=""`
+## 5) Initial code artifact creation (pipeline-consumed artifacts)
 
-Break-glass policy:
-- Manual notebook artifact publish is allowed only for production incident recovery when deployment orchestration is unavailable.
-- Manual publish must set `deployment_checkpoint=break_glass_manual_seed` and emit an audit note with incident ID.
-- Next automated deployment orchestration run must reconcile and supersede break-glass pointers before normal promotion resumes.
+This section unifies artifact preparation instructions and notebook-executable commands.
 
----
+### What pipeline steps consume
+- Source bundle tarball (Python package + scripts).
+- Optional dependency manifest.
+- Build metadata (version, git SHA, build timestamp, source URI).
 
-## H. Cell 5 — Deploy SageMaker pipelines
+## Cell 14 (Code)
 
 ```python
-"""
-CELL 5 — CREATE/UPDATE SAGEMAKER PIPELINES
-"""
+# Artifact dictionary + helper variables
+code_bundle_local_path = '/tmp/ndr_code_bundle.tar.gz'
+code_bundle_s3_uri = f"s3://{ml_bucket_name}/{code_artifacts_prefix}/ndr_code_bundle.tar.gz" if ml_bucket_name else ''
+requirements_local_path = '/tmp/requirements.txt'
+artifact_version = seed_artifact_version
+artifact_git_sha = ''  # e.g., output of `git rev-parse --short HEAD`
+artifact_created_at = datetime.now(timezone.utc).isoformat()
 
-import sys
-sys.path.insert(0, "/home/sagemaker-user/ndr_features_pipeline/src")
+code_artifact_plan = {
+    'artifact_name': seed_artifact_name,
+    'artifact_version': artifact_version,
+    'artifact_git_sha': artifact_git_sha,
+    'created_at_utc': artifact_created_at,
+    'bundle_local_path': code_bundle_local_path,
+    'bundle_s3_uri': code_bundle_s3_uri,
+    'requirements_local_path': requirements_local_path,
+}
 
-from ndr.pipeline.sagemaker_pipeline_definitions_unified_with_fgc import (
-    build_15m_streaming_pipeline,
-    build_fg_b_baseline_pipeline,
-    build_machine_inventory_unload_pipeline,
-    build_delta_builder_pipeline,
-)
-from ndr.pipeline.sagemaker_pipeline_definitions_inference import build_inference_predictions_pipeline
-from ndr.pipeline.sagemaker_pipeline_definitions_prediction_feature_join import build_prediction_feature_join_pipeline
-from ndr.pipeline.sagemaker_pipeline_definitions_if_training import build_if_training_pipeline
-from ndr.pipeline.sagemaker_pipeline_definitions_backfill_historical_extractor import build_backfill_historical_extractor_pipeline
-from ndr.pipeline.sagemaker_pipeline_definitions_backfill_15m_reprocessing import build_backfill_15m_reprocessing_pipeline
+print(json.dumps(code_artifact_plan, indent=2))
+```
 
-region = DEPLOY["region"]
-role_arn = DEPLOY["execution_role_arn"]
-bucket = DEPLOY["artifact_bucket"]
+## Cell 15 (Code)
 
-pipelines = [
-    build_15m_streaming_pipeline(DEPLOY["pipeline_15m_name"], role_arn, bucket, region),
-    build_fg_b_baseline_pipeline(DEPLOY["pipeline_fgb_name"], role_arn, bucket, region),
-    build_machine_inventory_unload_pipeline(DEPLOY["pipeline_machine_inventory_name"], role_arn, bucket, region),
-    build_inference_predictions_pipeline(
-        DEPLOY["pipeline_inference_name"],
-        role_arn,
-        bucket,
-        region,
-        project_name_for_contracts=DEPLOY["project_name"],
-        feature_spec_version_for_contracts=DEPLOY["feature_spec_version"],
-    ),
-    build_prediction_feature_join_pipeline(
-        DEPLOY["pipeline_prediction_join_name"],
-        role_arn,
-        bucket,
-        region,
-        project_name_for_contracts=DEPLOY["project_name"],
-        feature_spec_version_for_contracts=DEPLOY["feature_spec_version"],
-    ),
-    build_if_training_pipeline(
-        DEPLOY["pipeline_if_training_name"],
-        role_arn,
-        bucket,
-        region,
-        project_name_for_contracts=DEPLOY["project_name"],
-        feature_spec_version_for_contracts=DEPLOY["feature_spec_version"],
-    ),
-    build_backfill_historical_extractor_pipeline(
-        DEPLOY["pipeline_backfill_extractor_name"],
-        role_arn,
-        bucket,
-        region,
-        project_name_for_contracts=DEPLOY["project_name"],
-        feature_spec_version_for_contracts=DEPLOY["feature_spec_version"],
-    ),
-    build_backfill_15m_reprocessing_pipeline(
-        DEPLOY["pipeline_backfill_15m_name"],
-        role_arn,
-        bucket,
-        region,
-        project_name_for_contracts=DEPLOY["project_name"],
-        feature_spec_version_for_contracts=DEPLOY["feature_spec_version"],
-    ),
+```python
+# Notebook-executable artifact creation instructions
+# Run from repository root in SageMaker JupyterLab terminal/cell magic.
+
+artifact_shell_steps = [
+    "python -m ndr.scripts.run_code_bundle_build --output /tmp/ndr_code_bundle.tar.gz",
+    "python -m ndr.scripts.run_code_smoke_validate --bundle /tmp/ndr_code_bundle.tar.gz",
 ]
 
-delta_uri = (
-    f"s3://{bucket}/projects/{DEPLOY['project_name']}/versions/{DEPLOY['feature_spec_version']}"
-    f"/code/pipelines/15m_streaming/DeltaBuilderStep/run_delta_builder.py"
-)
-pipelines.append(
-    build_delta_builder_pipeline(
-        region=region,
-        role_arn=role_arn,
-        pipeline_name=f"{DEPLOY['pipeline_15m_name']}-delta-only",
-        base_job_name="ndr-delta-only",
-        code_s3_uri=delta_uri,
-    )
-)
+for i, step in enumerate(artifact_shell_steps, start=1):
+    print(f'{i}. {step}')
 
-for p in pipelines:
-    arn = p.upsert(role_arn=role_arn)
-    print("[upserted]", p.name, "->", arn)
+
+def upload_artifact_to_s3(local_path: str, s3_uri: str, region_name: str, dry_run: bool = True) -> None:
+    if dry_run:
+        print(f'[DRY RUN] Would upload {local_path} -> {s3_uri}')
+        return
+    if not s3_uri.startswith('s3://'):
+        raise ValueError('s3_uri must start with s3://')
+    _, _, bucket_and_key = s3_uri.partition('s3://')
+    bucket, _, key = bucket_and_key.partition('/')
+    boto3.client('s3', region_name=region_name).upload_file(local_path, bucket, key)
+    print(f'Uploaded {local_path} -> {s3_uri}')
 ```
 
----
+## Cell 16 (Markdown)
 
-## I. Cell 6 — Deploy Step Functions (all five)
+## 6) SageMaker Pipelines deployment (dictionary-driven)
 
-You deploy JSONs from `docs/step_functions_jsonata/` and substitute placeholders for pipeline names, table names, lock tables, bus, nested SF ARN, etc.
+Define each pipeline in a dictionary that captures its runtime contract. Then call deployment helper.
 
-(Implementation can be `states.create_state_machine` / `states.update_state_machine` with rendered JSON string.)
+## Cell 17 (Code)
 
-### Task 5 deployment wiring guardrails (bootstrap -> monthly SFN)
-When rendering `sfn_ndr_initial_deployment_bootstrap.json`, ensure:
-1. `MonthlyStateMachineArn` placeholder is resolved to the deployed ARN for `sfn_ndr_monthly_fg_b_baselines`.
-2. Bootstrap role policy includes:
-   - `states:StartExecution` on monthly state machine ARN,
-   - `states:DescribeExecution` and `states:StopExecution` on monthly execution ARN pattern.
-3. Remove legacy direct monthly pipeline invoke permission from bootstrap role:
-   - disallow `sagemaker:StartPipelineExecution` for `${PipelineNameMonthlyFgBBaselines}` in bootstrap role policy.
-
-Example IAM statement fragment:
-```json
-{
-  "Effect": "Allow",
-  "Action": [
-    "states:StartExecution",
-    "states:DescribeExecution",
-    "states:StopExecution"
-  ],
-  "Resource": [
-    "arn:aws:states:<region>:<account-id>:stateMachine:sfn_ndr_monthly_fg_b_baselines",
-    "arn:aws:states:<region>:<account-id>:execution:sfn_ndr_monthly_fg_b_baselines:*"
-  ]
-}
-```
-
----
-
-## J. Step 7 — Trigger and operations model (corrected + actionable)
-
-### J1) 15m automatic path
-- external ETL publishes ingestion completion payload to SNS,
-- SNS fanout to SQS,
-- EventBridge Pipe reads SQS and starts `sfn_ndr_15m_features_inference`.
-
-### J2) Training/backfill operations path
-- commonly manual from notebook,
-- backfill also invoked by training remediation/orchestration.
-
-#### Cell 7A — manual training start
 ```python
-import boto3, json, uuid, datetime
-
-sfn = boto3.client("stepfunctions", region_name=DEPLOY["region"])
-arns = {x["name"]: x["stateMachineArn"] for x in sfn.list_state_machines()["stateMachines"]}
-
-payload = {
-    "project_name": DEPLOY["project_name"],
-    "feature_spec_version": DEPLOY["feature_spec_version"],
-    "ml_project_name": DEPLOY["ml_project_name"],
-    "run_id": f"manual-{uuid.uuid4().hex[:8]}",
-    "execution_ts_iso": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-    "training_start_ts": "<YYYY-MM-DDTHH:MM:SSZ>",
-    "training_end_ts": "<YYYY-MM-DDTHH:MM:SSZ>",
-    "eval_start_ts": "<YYYY-MM-DDTHH:MM:SSZ>",
-    "eval_end_ts": "<YYYY-MM-DDTHH:MM:SSZ>"
-}
-
-resp = sfn.start_execution(
-    stateMachineArn=arns[DEPLOY["sfn_training_name"]],
-    name=f"manual-training-{uuid.uuid4().hex[:8]}",
-    input=json.dumps(payload),
-)
-print(resp["executionArn"])
-```
-
-#### Cell 7B — manual backfill start
-```python
-import boto3, json, uuid
-
-sfn = boto3.client("stepfunctions", region_name=DEPLOY["region"])
-arns = {x["name"]: x["stateMachineArn"] for x in sfn.list_state_machines()["stateMachines"]}
-
-payload = {
-    "project_name": DEPLOY["project_name"],
-    "feature_spec_version": DEPLOY["feature_spec_version"],
-    "start_ts_iso": "<YYYY-MM-DDTHH:MM:SSZ>",
-    "end_ts_iso": "<YYYY-MM-DDTHH:MM:SSZ>",
-    "input_s3_prefix": "s3://<bucket>/<input-range>/",
-    "output_s3_prefix": "s3://<bucket>/<windows-output>/"
-}
-
-resp = sfn.start_execution(
-    stateMachineArn=arns[DEPLOY["sfn_backfill_name"]],
-    name=f"manual-backfill-{uuid.uuid4().hex[:8]}",
-    input=json.dumps(payload),
-)
-print(resp["executionArn"])
-```
-
-#### Cell 7C — execution poller
-```python
-import time, boto3
-
-def wait_sfn(execution_arn: str, region: str, poll_s: int = 20):
-    sfn = boto3.client("stepfunctions", region_name=region)
-    while True:
-        d = sfn.describe_execution(executionArn=execution_arn)
-        print("status:", d["status"])
-        if d["status"] in {"SUCCEEDED", "FAILED", "ABORTED", "TIMED_OUT"}:
-            return d
-        time.sleep(poll_s)
-```
-
----
-
-## K. Full JSON artifact — how to use it correctly (no ambiguity)
-
-### K1) What this JSON is
-It is a **deployment input contract**, not an executable script.
-
-### K2) Correct usage order
-1. Use `table_definitions` to create tables (Cell 3 logic).
-2. Use `seed_items.dpp_config` and `seed_items.mlp_config` for reciprocal linkage seed.
-3. Then run full bootstrap generation (Cell 4 using `_build_bootstrap_items`).
-4. `batch_index_example` is for contract validation/testing (15m SF writes real runtime rows with idempotent put/update).
-
-### K3) JSON template
-```json
-{
-  "table_definitions": {
-    "dpp_config": {
-      "TableName": "dpp_config",
-      "AttributeDefinitions": [
-        {"AttributeName": "project_name", "AttributeType": "S"},
-        {"AttributeName": "job_name_version", "AttributeType": "S"}
-      ],
-      "KeySchema": [
-        {"AttributeName": "project_name", "KeyType": "HASH"},
-        {"AttributeName": "job_name_version", "KeyType": "RANGE"}
-      ],
-      "BillingMode": "PAY_PER_REQUEST"
+sagemaker_pipelines_plan: Dict[str, Dict[str, Any]] = {
+    'inference': {
+        'pipeline_name': inference_pipeline_name,
+        'role_arn': sagemaker_execution_role_arn,
+        'image_uri': image_uri,
+        'source_dir_s3_uri': source_dir_s3_uri,
+        'steps': [
+            {'name': 'delta_builder', 'entrypoint_module': 'ndr.scripts.run_delta_builder', 'window_minutes': delta_builder_window_minutes},
+            {'name': 'fg_a_builder', 'entrypoint_module': 'ndr.scripts.run_fg_a_builder', 'lookback_days': fg_a_lookback_days},
+            {'name': 'fg_c_builder', 'entrypoint_module': 'ndr.scripts.run_fg_c_builder', 'lookback_days': fg_c_lookback_days},
+            {'name': 'prediction_feature_join', 'entrypoint_module': 'ndr.scripts.run_prediction_feature_join'},
+            {'name': 'inference_predictions', 'entrypoint_module': 'ndr.scripts.run_inference_predictions'},
+        ],
+        'processing_resources': {
+            'instance_type': instance_type_processing,
+            'instance_count': instance_count_processing,
+            'max_runtime_seconds': max_runtime_seconds,
+        },
     },
-    "mlp_config": {
-      "TableName": "mlp_config",
-      "AttributeDefinitions": [
-        {"AttributeName": "ml_project_name", "AttributeType": "S"},
-        {"AttributeName": "job_name_version", "AttributeType": "S"}
-      ],
-      "KeySchema": [
-        {"AttributeName": "ml_project_name", "KeyType": "HASH"},
-        {"AttributeName": "job_name_version", "KeyType": "RANGE"}
-      ],
-      "BillingMode": "PAY_PER_REQUEST"
+    'training': {
+        'pipeline_name': training_pipeline_name,
+        'role_arn': sagemaker_execution_role_arn,
+        'image_uri': image_uri,
+        'source_dir_s3_uri': source_dir_s3_uri,
+        'steps': [
+            {'name': 'delta_builder', 'entrypoint_module': 'ndr.scripts.run_delta_builder', 'window_minutes': delta_builder_window_minutes},
+            {'name': 'fg_a_builder', 'entrypoint_module': 'ndr.scripts.run_fg_a_builder', 'lookback_days': fg_a_lookback_days},
+            {'name': 'fg_b_builder', 'entrypoint_module': 'ndr.scripts.run_fg_b_builder', 'lookback_days': fg_b_lookback_days},
+            {'name': 'if_training', 'entrypoint_module': 'ndr.scripts.run_if_training'},
+        ],
+        'processing_resources': {
+            'instance_type': instance_type_processing,
+            'instance_count': instance_count_processing,
+            'max_runtime_seconds': max_runtime_seconds,
+        },
     },
-    "batch_index": {
-      "TableName": "batch_index",
-      "AttributeDefinitions": [
-        {"AttributeName": "pk", "AttributeType": "S"},
-        {"AttributeName": "sk", "AttributeType": "S"},
-        {"AttributeName": "GSI1PK", "AttributeType": "S"},
-        {"AttributeName": "GSI1SK", "AttributeType": "S"}
-      ],
-      "KeySchema": [
-        {"AttributeName": "pk", "KeyType": "HASH"},
-        {"AttributeName": "sk", "KeyType": "RANGE"}
-      ],
-      "GlobalSecondaryIndexes": [
-        {
-          "IndexName": "GSI1",
-          "KeySchema": [
-            {"AttributeName": "GSI1PK", "KeyType": "HASH"},
-            {"AttributeName": "GSI1SK", "KeyType": "RANGE"}
-          ],
-          "Projection": {"ProjectionType": "ALL"}
-        }
-      ],
-      "BillingMode": "PAY_PER_REQUEST"
-    }
-  },
-  "seed_items": {
-    "dpp_config": [
-      {
-        "project_name": "<project_name>",
-        "job_name_version": "project_parameters#<feature_spec_version>",
-        "data_source_name": "<project_name>",
-        "ml_project_name": "<ml_project_name>",
-        "spec": {"ProjectName": "<project_name>", "MlProjectName": "<ml_project_name>"},
-        "updated_at": "<iso8601z>",
-        "owner": "<owner>"
-      }
-    ],
-    "mlp_config": [
-      {
-        "ml_project_name": "<ml_project_name>",
-        "job_name_version": "project_parameters#<feature_spec_version>",
-        "project_name": "<project_name>",
-        "spec": {"ProjectName": "<project_name>", "MlProjectName": "<ml_project_name>"},
-        "updated_at": "<iso8601z>",
-        "owner": "<owner>"
-      }
-    ],
-    "batch_index_example": {
-      "pk": "<project_name>#<project_name>#<feature_spec_version>#<YYYY-MM-DD>",
-      "sk": "<HH>#<slot15>#<batch_id>",
-      "project_name": "<project_name>",
-      "data_source_name": "<project_name>",
-      "version": "<feature_spec_version>",
-      "date_utc": "<YYYY-MM-DD>",
-      "hour_utc": "<00-23>",
-      "slot15": 1,
-      "batch_id": "<batch_id>",
-      "raw_parsed_logs_s3_prefix": "s3://<ing-bucket>/<project>/<org1>/<org2>/<yyyy>/<mm>/<dd>/<batch_id>/",
-      "event_ts_utc": "<iso8601z>",
-      "org1": "<org1>",
-      "org2": "<org2>",
-      "ml_project_name": "<ml_project_name>",
-      "ml_project_names_json": "[\"<ml_project_name>\"]",
-      "ingested_at_utc": "<iso8601z>",
-      "status": "RECEIVED",
-      "GSI1PK": "<project_name>#<project_name>#<feature_spec_version>#<batch_id>",
-      "GSI1SK": "<iso8601z>"
-    }
-  }
-}
-```
-
----
-
-## L. Verification suite (must-pass before handoff)
-
-### Cell 8 — DDB schema + linkage checks
-```python
-import boto3
-ddb = boto3.client("dynamodb", region_name=DEPLOY["region"])
-res = boto3.resource("dynamodb", region_name=DEPLOY["region"])
-
-for t in [
-    DEPLOY["dpp_table_name"],
-    DEPLOY["mlp_table_name"],
-    DEPLOY["batch_index_table_name"],
-    DEPLOY["project_routing_table_name"],
-    DEPLOY["processing_lock_table_name"],
-    DEPLOY["publication_lock_table_name"],
-]:
-    td = ddb.describe_table(TableName=t)["Table"]
-    print(t, td["TableStatus"])
-    if t == DEPLOY["batch_index_table_name"]:
-        assert any(g["IndexName"] == "GSI1" for g in td.get("GlobalSecondaryIndexes", []))
-
-item = res.Table(DEPLOY["dpp_table_name"]).get_item(Key={
-    "project_name": DEPLOY["project_name"],
-    "job_name_version": f"project_parameters#{DEPLOY['feature_spec_version']}"
-}).get("Item")
-assert item is not None
-print("[ok] dpp project_parameters exists")
-
-# Preflight validator for exception control-plane tables
-import subprocess, shlex
-cmd = (
-    "PYTHONPATH=src python -m ndr.scripts.run_exception_table_preflight "
-    f"--region {DEPLOY['region']} "
-    f"--routing-table-name {DEPLOY['project_routing_table_name']} "
-    f"--processing-lock-table-name {DEPLOY['processing_lock_table_name']} "
-    f"--publication-lock-table-name {DEPLOY['publication_lock_table_name']} "
-    "--flow all"
-)
-print("[run]", cmd)
-subprocess.check_call(shlex.split(cmd))
-print("[ok] exception table preflight passed")
-```
-
-### Cell 9 — pipeline existence check
-```python
-import boto3
-sm = boto3.client("sagemaker", region_name=DEPLOY["region"])
-for p in [
-    DEPLOY["pipeline_15m_name"], DEPLOY["pipeline_inference_name"], DEPLOY["pipeline_prediction_join_name"],
-    DEPLOY["pipeline_if_training_name"], DEPLOY["pipeline_fgb_name"],
-    DEPLOY["pipeline_machine_inventory_name"], DEPLOY["pipeline_backfill_extractor_name"]
-]:
-    print(p, sm.describe_pipeline(PipelineName=p)["PipelineStatus"])
-```
-
-### Cell 10 — state machine existence check
-```python
-import boto3
-sfn = boto3.client("stepfunctions", region_name=DEPLOY["region"])
-names = {x["name"] for x in sfn.list_state_machines()["stateMachines"]}
-for n in [
-    DEPLOY["sfn_15m_name"], DEPLOY["sfn_prediction_publication_name"], DEPLOY["sfn_monthly_fgb_name"],
-    DEPLOY["sfn_training_name"], DEPLOY["sfn_backfill_name"]
-]:
-    assert n in names, f"missing {n}"
-    print("[ok]", n)
-```
-
-### Cell 11 — 15m smoke start
-```python
-import boto3, json, uuid, datetime
-sfn = boto3.client("stepfunctions", region_name=DEPLOY["region"])
-arns = {x["name"]: x["stateMachineArn"] for x in sfn.list_state_machines()["stateMachines"]}
-batch_id = f"smoke-{uuid.uuid4().hex[:8]}"
-
-payload = {
-    "project_name": DEPLOY["project_name"],
-    "data_source_name": DEPLOY["project_name"],
-    "ml_project_name": DEPLOY["ml_project_name"],
-    "batch_id": batch_id,
-    "raw_parsed_logs_s3_prefix": f"s3://<ing-bucket>/{DEPLOY['project_name']}/<org1>/<org2>/2026/03/12/{batch_id}/",
-    "timestamp": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-    "feature_spec_version": DEPLOY["feature_spec_version"]
+    'backfill': {
+        'pipeline_name': backfill_pipeline_name,
+        'role_arn': sagemaker_execution_role_arn,
+        'image_uri': image_uri,
+        'source_dir_s3_uri': source_dir_s3_uri,
+        'steps': [
+            {'name': 'historical_windows_extractor', 'entrypoint_module': 'ndr.scripts.run_historical_windows_extractor'},
+            {'name': 'backfill_reprocessing', 'entrypoint_module': 'ndr.scripts.run_backfill_reprocessing_executor'},
+        ],
+        'processing_resources': {
+            'instance_type': instance_type_processing,
+            'instance_count': instance_count_processing,
+            'max_runtime_seconds': max_runtime_seconds,
+        },
+    },
 }
 
-resp = sfn.start_execution(
-    stateMachineArn=arns[DEPLOY["sfn_15m_name"]],
-    name=f"smoke-15m-{uuid.uuid4().hex[:8]}",
-    input=json.dumps(payload),
-)
-print(resp["executionArn"])
+print(json.dumps(sagemaker_pipelines_plan, indent=2))
 ```
 
----
+## Cell 18 (Code)
 
-## M. Why previous Step 2 versions looked different (and which is correct)
+```python
+# Generic pipeline deploy helper.
+# You can either:
+# (A) call your existing project pipeline builder functions and upsert, or
+# (B) export the dictionary to your internal deployment wrapper.
 
-- The short snippet with only `DEPLOY` was **configuration-only** (Cell 1).
-- The full Step 2 uploader is the one with functions + mappings + dictionaries (Cell 2 above).
-- In this canonical runbook, they are intentionally separated:
-  - **Cell 1 = config**
-  - **Cell 2 = upload logic**
+def deploy_sagemaker_pipelines(plan: Dict[str, Dict[str, Any]], region_name: str, dry_run: bool = True) -> None:
+    if dry_run:
+        for pipeline_id, spec in plan.items():
+            print(f"[DRY RUN] Would deploy pipeline '{pipeline_id}' as {spec['pipeline_name']} with {len(spec['steps'])} step(s).")
+        return
 
-So: **use the Step 2 script in Section E of this document** as the authoritative one.
+    if sagemaker is None:
+        raise RuntimeError('sagemaker SDK is not installed in this kernel')
 
----
+    # Stub integration point: replace with concrete build functions from src/ndr/pipeline/*.py
+    for pipeline_id, spec in plan.items():
+        print(f"Deploying pipeline '{pipeline_id}' -> {spec['pipeline_name']}")
+        # Example (pseudo): pipeline_obj = build_pipeline_from_spec(spec, region_name)
+        # pipeline_obj.upsert(role_arn=spec['role_arn'])
+        # pipeline_obj.start()
+        print(f"Pipeline upsert placeholder completed for {spec['pipeline_name']}")
+```
 
-## N. Self-review outcome (mandatory)
+## Cell 19 (Markdown)
 
-This plan is now a single, consistent blueprint with:
-- one complete execution flow,
-- no cross-response dependency,
-- explicit DPP/MLP boundaries,
-- complete notebook scripts for deployment + operations + verification,
-- clear JSON usage instructions.
+## 7) Step Functions deployment (MANUAL via AWS GUI)
+
+Deployment form: **Manual (AWS Step Functions console)**
+
+For each state machine JSON definition under `docs/step_functions_jsonata/`:
+1. Open AWS Console → Step Functions → **Create state machine** (or update existing).
+2. Choose **Author with code snippets / Build by code**.
+3. Copy-paste the JSON definition content.
+4. Set execution role ARN and logging configuration.
+5. Save and publish new revision.
+
+Recommended deployment order:
+1. `sfn_ndr_code_deployment_orchestrator.json`
+2. `sfn_ndr_initial_deployment_bootstrap.json`
+3. `sfn_ndr_15m_features_inference.json`
+4. `sfn_ndr_training_orchestrator.json`
+5. `sfn_ndr_monthly_fg_b_baselines.json`
+6. `sfn_ndr_backfill_reprocessing.json`
+7. `sfn_ndr_prediction_publication.json`
+
+> Keep a deployment log table with state machine ARN + revision + deployment timestamp.
+
+## Cell 20 (Markdown)
+
+## 8) Execute deployment (recommended run blocks)
+
+### 8.1 Dry run (mandatory)
+Run this first to validate dictionaries and flow without making cloud changes.
+
+## Cell 21 (Code)
+
+```python
+DRY_RUN = True
+
+deploy_all_ddb_tables(ddb_tables_deployment_plan, region_name=aws_region, dry_run=DRY_RUN)
+ensure_s3_schema(s3_schema_plan, region_name=aws_region, dry_run=DRY_RUN)
+upload_artifact_to_s3(code_bundle_local_path, code_bundle_s3_uri, region_name=aws_region, dry_run=DRY_RUN)
+deploy_sagemaker_pipelines(sagemaker_pipelines_plan, region_name=aws_region, dry_run=DRY_RUN)
+
+print('Dry run complete.')
+```
+
+## Cell 22 (Markdown)
+
+### 8.2 Actual deployment
+After all variables are filled and dry run is clean:
+- set `DRY_RUN = False`
+- re-run the deployment cell.
+
+## Cell 23 (Markdown)
+
+## 9) Post-deployment validation checks
+
+Run these checks to confirm all resources exist and were initialized.
+
+## Cell 24 (Code)
+
+```python
+def check_ddb_tables_exist(plan: Dict[str, Dict[str, Any]], region_name: str) -> List[str]:
+    ddb = boto3.client('dynamodb', region_name=region_name)
+    existing = set(ddb.list_tables()['TableNames'])
+    missing = []
+    for spec in plan.values():
+        if spec['table_name'] not in existing:
+            missing.append(spec['table_name'])
+    return missing
+
+
+def check_s3_prefixes_exist(schema: Dict[str, Any], region_name: str) -> List[str]:
+    s3 = boto3.client('s3', region_name=region_name)
+    bucket = schema['bucket_name']
+    missing = []
+    for prefix in schema['prefixes']:
+        resp = s3.list_objects_v2(Bucket=bucket, Prefix=f"{prefix.rstrip('/')}/", MaxKeys=1)
+        if resp.get('KeyCount', 0) == 0:
+            missing.append(prefix)
+    return missing
+
+print('Validation helpers ready.')
+```
+
+## Cell 25 (Code)
+
+```python
+# Offline-safe structural validations (can be run locally before cloud deployment)
+assert 'ml_projects_parameters' in ddb_tables_deployment_plan
+assert all('table_name' in spec for spec in ddb_tables_deployment_plan.values())
+assert all('seed_items' in spec for spec in ddb_tables_deployment_plan.values())
+assert all('pipeline_name' in spec for spec in sagemaker_pipelines_plan.values())
+assert len(s3_schema_plan['prefixes']) > 0
+
+print('Local structural validations passed.')
+```
+
+## Cell 26 (Markdown)
+
+## 10) Operational recommendations (optional but strongly recommended)
+
+- Enable CloudWatch log groups with retention policy for pipeline processing jobs and state machines.
+- Add EventBridge rules for pipeline failure notifications to SNS/Slack.
+- Version-lock code bundles by git SHA and preserve immutable artifacts.
+- Keep a deployment changelog itemizing: what changed, who deployed, when, and rollback plan.

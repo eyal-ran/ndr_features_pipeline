@@ -55,7 +55,7 @@ def test_rt_remediation_invocation_uses_backfill_contract_payload_and_revalidate
 
     assert states["UpdateBatchIndexRemediationSucceeded"]["Next"] == "IncrementRtReadinessCycle"
     assert states["IncrementRtReadinessCycle"]["Next"] == "RecheckRtArtifactReadiness"
-    assert states["RecheckRtArtifactReadiness"]["Next"] == "BuildRtArtifactReadinessManifest"
+    assert states["RecheckRtArtifactReadiness"]["Next"] == "DescribeRtReadinessPipeline"
 
 
 def test_rt_dependent_phase_pipeline_runs_after_readiness_gate():
@@ -99,10 +99,42 @@ def test_rt_retry_and_idempotency_key_reuse_are_deterministic():
 
     compute_state = states["ComputeRtArtifactReadiness"]
     assert compute_state["Arguments"]["PipelineName"] == "${PipelineNameRtReadiness}"
+    assert compute_state["Next"] == "DescribeRtReadinessPipeline"
 
     initial_manifest_expr = states["BuildRtArtifactReadinessManifest"]["Assign"]["rt_artifact_readiness_manifest"]
-    assert "rt_artifact_readiness.v2" in initial_manifest_expr
-    assert "RT_READINESS_MANIFEST_MISSING" in initial_manifest_expr
+    assert "RT_READINESS_ARTIFACT_MISSING" in initial_manifest_expr
+    assert "$states.input.rt_artifact_readiness" not in initial_manifest_expr
+
+
+def test_rt_gate_reads_and_validates_computed_v3_artifact() -> None:
+    raw = RT_STEP_FUNCTION_PATH.read_text(encoding="utf-8")
+    states = json.loads(raw)["States"]["RunPerMlProjectBranch"]["ItemProcessor"]["States"]
+
+    read_state = states["ReadRtReadinessArtifact"]
+    assert read_state["Resource"] == "arn:aws:states:::aws-sdk:s3:getObject"
+    assert read_state["Arguments"]["Bucket"] == "${ArtifactsBucketName}"
+    assert "orchestration/readiness/rt_artifact_readiness/v3/" in read_state["Arguments"]["Key"]
+    assert "cycle=" in read_state["Arguments"]["Key"]
+    assert read_state["Next"] == "BuildRtArtifactReadinessManifest"
+
+    validate = states["ValidateRtArtifactReadinessManifest"]
+    assert validate["Default"] == "CheckRtArtifactReadiness"
+    assert "rt_artifact_readiness.v3" in json.dumps(validate)
+
+    assert "$states.input.rt_artifact_readiness" not in raw
+
+
+def test_rt_gate_fails_fast_for_missing_or_invalid_artifact() -> None:
+    states = _load_rt_states()
+
+    read_state = states["ReadRtReadinessArtifact"]
+    assert read_state["Catch"][0]["Next"] == "FailRtReadinessArtifactMissing"
+
+    assert states["FailRtReadinessArtifactMissing"]["Error"] == "RealtimeArtifactReadinessGateFailed"
+    assert "RT_READINESS_ARTIFACT_MISSING" in states["FailRtReadinessArtifactMissing"]["Cause"]
+
+    assert states["FailRtReadinessContractInvalid"]["Error"] == "RealtimeArtifactReadinessGateFailed"
+    assert "RT_READINESS_CONTRACT_INVALID" in states["FailRtReadinessContractInvalid"]["Cause"]
 
 
 def test_backfill_consumer_derives_window_from_contract_missing_ranges_when_start_end_not_provided():

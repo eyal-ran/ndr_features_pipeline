@@ -833,10 +833,40 @@
           "BuildRtArtifactReadinessManifest": {
             "Type": "Pass",
             "Assign": {
-              "rt_artifact_readiness_manifest": "{% $exists($states.input.rt_artifact_readiness) ? {'contract_version':'rt_artifact_readiness.v2','ready':($states.input.rt_artifact_readiness.ready = true),'required_families':$states.input.rt_artifact_readiness.required_families,'missing_ranges':$states.input.rt_artifact_readiness.missing_ranges,'decision_code':$states.input.rt_artifact_readiness.decision_code,'as_of_ts':$states.input.rt_artifact_readiness.as_of_ts,'idempotency_key':$states.input.rt_artifact_readiness.idempotency_key} : $error('RT_READINESS_MANIFEST_MISSING','Computed RT readiness manifest is required') %}",
+              "rt_artifact_readiness_manifest": "{% $exists($states.result.Body) ? $eval($states.result.Body) : $error('RT_READINESS_ARTIFACT_MISSING','Computed RT readiness artifact is required') %}",
               "rt_readiness_cycle": "{% $exists($rt_readiness_cycle) ? $rt_readiness_cycle : 0 %}"
             },
-            "Next": "CheckRtArtifactReadiness"
+            "Next": "ValidateRtArtifactReadinessManifest"
+          },
+          "ValidateRtArtifactReadinessManifest": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Condition": "{% not($exists($rt_artifact_readiness_manifest.contract_version)) or $rt_artifact_readiness_manifest.contract_version != 'rt_artifact_readiness.v3' %}",
+                "Next": "FailRtReadinessContractInvalid"
+              },
+              {
+                "Condition": "{% not($exists($rt_artifact_readiness_manifest.project_name)) or $rt_artifact_readiness_manifest.project_name != $states.input.project_name %}",
+                "Next": "FailRtReadinessContractInvalid"
+              },
+              {
+                "Condition": "{% not($exists($rt_artifact_readiness_manifest.feature_spec_version)) or $rt_artifact_readiness_manifest.feature_spec_version != $states.input.feature_spec_version %}",
+                "Next": "FailRtReadinessContractInvalid"
+              },
+              {
+                "Condition": "{% not($exists($rt_artifact_readiness_manifest.ml_project_name)) or $rt_artifact_readiness_manifest.ml_project_name != $states.input.ml_project_name %}",
+                "Next": "FailRtReadinessContractInvalid"
+              },
+              {
+                "Condition": "{% not($exists($rt_artifact_readiness_manifest.mini_batch_id)) or $rt_artifact_readiness_manifest.mini_batch_id != $states.input.mini_batch_id %}",
+                "Next": "FailRtReadinessContractInvalid"
+              },
+              {
+                "Condition": "{% not($exists($rt_artifact_readiness_manifest.ready)) or not($exists($rt_artifact_readiness_manifest.required_families)) or not($exists($rt_artifact_readiness_manifest.missing_ranges)) or not($exists($rt_artifact_readiness_manifest.decision_code)) or not($exists($rt_artifact_readiness_manifest.as_of_ts)) or not($exists($rt_artifact_readiness_manifest.idempotency_key)) %}",
+                "Next": "FailRtReadinessContractInvalid"
+              }
+            ],
+            "Default": "CheckRtArtifactReadiness"
           },
           "CheckRtArtifactReadiness": {
             "Type": "Choice",
@@ -1039,7 +1069,8 @@
               ]
             },
             "Assign": {
-              "rt_recheck_readiness_execution_arn": "{% $states.result.PipelineExecutionArn %}"
+              "rt_recheck_readiness_execution_arn": "{% $states.result.PipelineExecutionArn %}",
+              "rt_readiness_poll_attempt": 0
             },
             "Retry": [
               {
@@ -1053,7 +1084,105 @@
                 "BackoffRate": 2.0
               }
             ],
+            "Next": "DescribeRtReadinessPipeline"
+          },
+          "DescribeRtReadinessPipeline": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
+            "Arguments": {
+              "PipelineExecutionArn": "{% $exists($rt_recheck_readiness_execution_arn) ? $rt_recheck_readiness_execution_arn : $rt_readiness_execution_arn %}"
+            },
+            "Assign": {
+              "rt_readiness_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "SageMaker.AmazonSageMakerException",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "BranchFailed"
+              }
+            ],
+            "Next": "RtReadinessPipelineStatusChoice"
+          },
+          "RtReadinessPipelineStatusChoice": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Condition": "{% $rt_readiness_pipeline_status = 'Succeeded' %}",
+                "Next": "ReadRtReadinessArtifact"
+              },
+              {
+                "Condition": "{% ($rt_readiness_pipeline_status = 'Executing' or $rt_readiness_pipeline_status = 'Stopping') and $rt_readiness_poll_attempt < 120 %}",
+                "Next": "WaitBeforeDescribeRtReadiness"
+              }
+            ],
+            "Default": "BranchFailed"
+          },
+          "WaitBeforeDescribeRtReadiness": {
+            "Type": "Wait",
+            "Seconds": 20,
+            "Next": "IncrementRtReadinessPollAttempt"
+          },
+          "IncrementRtReadinessPollAttempt": {
+            "Type": "Pass",
+            "Assign": {
+              "rt_readiness_poll_attempt": "{% $rt_readiness_poll_attempt + 1 %}"
+            },
+            "Next": "DescribeRtReadinessPipeline"
+          },
+          "ReadRtReadinessArtifact": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:s3:getObject",
+            "Arguments": {
+              "Bucket": "${ArtifactsBucketName}",
+              "Key": "{% 'orchestration/readiness/rt_artifact_readiness/v3/' & $states.input.project_name & '/' & $states.input.feature_spec_version & '/' & $states.input.ml_project_name & '/' & $states.input.mini_batch_id & '/cycle=' & $string($rt_readiness_cycle) & '/manifest.json' %}"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "S3.S3Exception",
+                  "ThrottlingException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 3,
+                "MaxAttempts": 3,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "NoSuchKey",
+                  "S3.NoSuchKey",
+                  "States.ALL"
+                ],
+                "Next": "FailRtReadinessArtifactMissing"
+              }
+            ],
             "Next": "BuildRtArtifactReadinessManifest"
+          },
+          "FailRtReadinessArtifactMissing": {
+            "Type": "Fail",
+            "Error": "RealtimeArtifactReadinessGateFailed",
+            "Cause": "RT_READINESS_ARTIFACT_MISSING: RT readiness artifact not found for gate evaluation"
+          },
+          "FailRtReadinessContractInvalid": {
+            "Type": "Fail",
+            "Error": "RealtimeArtifactReadinessGateFailed",
+            "Cause": "RT_READINESS_CONTRACT_INVALID: RT readiness artifact schema/version/identity validation failed"
           },
           "FailRtArtifactsUnresolvedAfterRemediation": {
             "Type": "Fail",
@@ -1379,7 +1508,8 @@
               ]
             },
             "Assign": {
-              "rt_readiness_execution_arn": "{% $states.result.PipelineExecutionArn %}"
+              "rt_readiness_execution_arn": "{% $states.result.PipelineExecutionArn %}",
+              "rt_readiness_poll_attempt": 0
             },
             "Retry": [
               {
@@ -1393,7 +1523,7 @@
                 "BackoffRate": 2.0
               }
             ],
-            "Next": "BuildRtArtifactReadinessManifest"
+            "Next": "DescribeRtReadinessPipeline"
           },
           "IncrementRtReadinessCycle": {
             "Type": "Pass",

@@ -21,6 +21,7 @@
       "type": "string",
       "enum": [
         "NdrBackfillRequest.v1",
+        "NdrBackfillRequest.v2",
         "NdrBaselineRemediationRequest.v1",
         "NdrTrainingRemediationRequest.v1"
       ]

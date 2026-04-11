@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ndr.contracts.step_code_artifact_contract.v1",
+  "title": "step_code_artifact_contract.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["code_prefix_s3", "code_artifact_s3_uri", "entry_script", "artifact_build_id", "artifact_sha256", "artifact_format"],
+  "properties": {
+    "code_prefix_s3": {"type": "string", "pattern": "^s3://.+"},
+    "code_artifact_s3_uri": {"type": "string", "pattern": "^s3://.+"},
+    "entry_script": {"type": "string", "minLength": 1},
+    "artifact_build_id": {"type": "string", "minLength": 1},
+    "artifact_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "artifact_format": {"type": "string", "enum": ["zip", "tar.gz"]}
+  }
+}

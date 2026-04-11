@@ -104,7 +104,7 @@ def test_validate_step_code_metadata_requires_packaging_fields():
                         "IFTrainingStep": {
                             "code_prefix_s3": "s3://bucket/path",
                             "entry_script": "run_if_training.py",
-                            "code_metadata": {"artifact_mode": "single_file"},
+                            "code_metadata": {"code_artifact_s3_uri": "s3://bucket/artifacts/build/source.tar.gz"},
                         }
                     }
                 }
@@ -154,9 +154,10 @@ def test_resolve_step_code_uri_training_accepts_step_code_metadata(monkeypatch):
                         "code_prefix_s3": "s3://bucket/path",
                         "entry_script": "run_if_training.py",
                         "code_metadata": {
-                            "artifact_mode": "single_file",
+                            "code_artifact_s3_uri": "s3://bucket/artifacts/build/source.tar.gz",
                             "artifact_build_id": "build-123",
                             "artifact_sha256": "deadbeef",
+                            "artifact_format": "tar.gz",
                         },
                     }
                 }

@@ -12,7 +12,7 @@ from typing import Any
 
 ISO_UTC_PATTERN = "%Y-%m-%dT%H:%M:%SZ"
 
-BACKFILL_REQUEST_VERSION = "NdrBackfillRequest.v1"
+BACKFILL_REQUEST_VERSION = "NdrBackfillRequest.v2"
 BASELINE_REQUEST_VERSION = "NdrBaselineRemediationRequest.v1"
 TRAINING_REQUEST_VERSION = "NdrTrainingRemediationRequest.v1"
 REMEDIATION_RESPONSE_VERSION = "NdrRemediationResponse.v1"
@@ -24,7 +24,7 @@ SUPPORTED_REQUEST_VERSIONS = {
 }
 
 SCHEMA_FILE_BY_VERSION = {
-    BACKFILL_REQUEST_VERSION: "ndr_backfill_request_v1.schema.json",
+    BACKFILL_REQUEST_VERSION: "ndr_backfill_request_v2.schema.json",
     BASELINE_REQUEST_VERSION: "ndr_baseline_remediation_request_v1.schema.json",
     TRAINING_REQUEST_VERSION: "ndr_training_remediation_request_v1.schema.json",
     REMEDIATION_RESPONSE_VERSION: "ndr_remediation_response_v1.schema.json",

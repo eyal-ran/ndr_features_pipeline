@@ -98,6 +98,7 @@ def build_execution_manifest(
     source: str,
     family_plan: list[FamilyPlan],
     run_id: str | None = None,
+    requested_families: list[str] | None = None,
 ) -> dict[str, Any]:
     """Serialize canonical manifest consumed by backfill map and training remediation caller."""
     map_items = []
@@ -124,6 +125,11 @@ def build_execution_manifest(
                     }
                 )
 
+    requested = requested_families or [plan.family for plan in family_plan if plan.execute]
+    unknown = sorted(set(requested) - set(ARTIFACT_FAMILY_ORDER))
+    if unknown:
+        raise ValueError(f"Unknown requested families in manifest: {unknown}")
+
     return {
         "contract_version": "backfill_manifest.v1",
         "generated_at": datetime.now(timezone.utc).strftime(ISO_Z),
@@ -132,6 +138,7 @@ def build_execution_manifest(
         "planner_mode": planner_mode,
         "source": source,
         "run_id": run_id,
+        "requested_families": [family for family in ARTIFACT_FAMILY_ORDER if family in set(requested)],
         "family_plan": family_entries,
         "map_items": map_items,
     }

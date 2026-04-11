@@ -177,6 +177,7 @@ PIPELINE_RUNTIME_PARAMS = {
         "EndTsIso",
         "InputS3Prefix",
         "OutputS3Prefix",
+        "RequestedFamilies",
     ],
     "pipeline_backfill_15m_reprocessing": [
         "ProjectName",
@@ -1070,6 +1071,7 @@ def _build_bootstrap_items(
                     "WindowFloorMinutes": [8, 23, 38, 53],
                     "HistoricalInputS3Prefix": "s3://REPLACE_ME/raw/",
                     "HistoricalWindowsOutputS3Prefix": "s3://REPLACE_ME/backfill/windows/",
+                    "RequestedFamilies": "<required:RequestedFamilies>",
                 },
                 "validation": {
                     "FeatureSpecVersion": "^[a-zA-Z0-9_.-]+$",

@@ -30,6 +30,7 @@ class HistoricalWindowsExtractorRuntimeConfig:
     project_name: str | None = None
     preferred_feature_spec_version: str | None = None
     dpp_config_table_name: str | None = None
+    requested_families: list[str] | None = None
 
 
 class HistoricalWindowsExtractorJob:
@@ -288,12 +289,17 @@ class HistoricalWindowsExtractorJob:
         }
         source_mode = rows[0].get("source_mode", "ingestion") if rows else "ingestion"
         resolution_reason = rows[0].get("resolution_reason", "batch_index") if rows else "empty"
+        requested_families = self.runtime_config.requested_families or []
         manifest = build_execution_manifest(
             project_name=project_name,
             feature_spec_version=feature_spec_version,
-            planner_mode="self_detect",
+            planner_mode="caller_guided" if requested_families else "self_detect",
             source="historical_windows_extractor",
-            family_plan=build_family_range_plan(family_ranges=family_ranges),
+            family_plan=build_family_range_plan(
+                family_ranges=family_ranges,
+                requested_families=requested_families or None,
+            ),
+            requested_families=requested_families,
         )
         manifest["rows"] = rows
         manifest["source_mode"] = source_mode

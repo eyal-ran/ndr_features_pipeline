@@ -43,7 +43,12 @@ class BackfillFamilyDispatcher:
     ) -> None:
         self.project_name = project_name
         self.feature_spec_version = feature_spec_version
-        self.requested_families = requested_families
+        unknown = sorted(set(requested_families) - set(ARTIFACT_FAMILY_ORDER))
+        if unknown:
+            raise ValueError(
+                f"{DISPATCHER_ERROR_CODE}: unsupported requested_families={unknown}"
+            )
+        self.requested_families = tuple(f for f in ARTIFACT_FAMILY_ORDER if f in requested_families)
         self.correlation_id = correlation_id
         self.retry_attempt = retry_attempt
         self.dpp_spec = dpp_spec
@@ -137,7 +142,12 @@ class BackfillCompletionVerifier:
     """Verifies completion contract truthfully before completion publication."""
 
     def __init__(self, *, requested_families: tuple[str, ...], family_results: list[dict[str, Any]]) -> None:
-        self.requested_families = requested_families
+        unknown = sorted(set(requested_families) - set(ARTIFACT_FAMILY_ORDER))
+        if unknown:
+            raise ValueError(
+                f"{DISPATCHER_ERROR_CODE}: unsupported requested_families={unknown}"
+            )
+        self.requested_families = tuple(f for f in ARTIFACT_FAMILY_ORDER if f in requested_families)
         self.family_results = family_results
 
     def verify(self) -> dict[str, Any]:
@@ -149,10 +159,12 @@ class BackfillCompletionVerifier:
             if family in status_by_family and status_by_family[family] not in _SUCCESS_STATUSES
         ]
         all_succeeded = not missing and not failed
+        executed_families = [item.get("family") for item in self.family_results if item.get("family")]
         return {
             "all_succeeded": all_succeeded,
             "failed_families": failed,
             "unresolved_families": missing,
+            "executed_families": executed_families,
             "verifier_code": "BACKFILL_COMPLETION_OK" if all_succeeded else COMPLETION_ERROR_CODE,
             "verified_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         }

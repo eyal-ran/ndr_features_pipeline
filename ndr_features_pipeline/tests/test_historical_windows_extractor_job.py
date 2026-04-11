@@ -242,3 +242,27 @@ def test_extractor_rejects_explicit_project_mismatch(monkeypatch):
         assert "HWE_PROJECT_MISMATCH" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError")
+
+
+def test_extractor_honors_requested_family_subset(monkeypatch):
+    import ndr.processing.historical_windows_extractor_job as module
+
+    fake_s3 = _S3Client()
+    monkeypatch.setattr(module.boto3, "client", lambda *_a, **_k: fake_s3, raising=False)
+    monkeypatch.setattr(module, "resolve_feature_spec_version", lambda **_k: "v9")
+    monkeypatch.setattr(module, "load_project_parameters", lambda *_a, **_k: {"backfill_redshift_fallback": {"enabled": False}})
+    monkeypatch.setattr(module, "BatchIndexLoader", lambda: _BatchIndexLoader([]))
+
+    runtime = HistoricalWindowsExtractorRuntimeConfig(
+        input_s3_prefix="s3://bucket/raw",
+        output_s3_prefix="s3://bucket/out",
+        start_ts_iso="2025-01-01T00:00:00Z",
+        end_ts_iso="2025-01-02T00:00:00Z",
+        window_floor_minutes=[8, 23, 38, 53],
+        requested_families=["delta", "fg_a"],
+    )
+    HistoricalWindowsExtractorJob(runtime).run()
+    body = json.loads(fake_s3.put_calls[0]["Body"].decode("utf-8"))
+
+    assert body["requested_families"] == ["delta", "fg_a"]
+    assert {item["family"] for item in body["map_items"]} == {"delta", "fg_a"}

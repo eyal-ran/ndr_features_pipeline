@@ -45,6 +45,7 @@ def test_manifest_read_and_map_failure_paths_are_deterministic():
     validate_manifest = states["ValidateExtractorManifest"]
     assert validate_manifest["Default"] == "ResolveBackfillWindows"
     assert all(choice["Next"] == "FailInvalidExtractorManifest" for choice in validate_manifest["Choices"])
+    assert any("requested_families" in choice["Condition"] for choice in validate_manifest["Choices"])
 
     assert states["FailInvalidExtractorManifest"]["Type"] == "Fail"
     assert states["RunBackfillWindows"]["ItemProcessor"]["States"]["BackfillPipelineStatusChoice"]["Default"] == "BackfillWindowFailed"
@@ -52,3 +53,14 @@ def test_manifest_read_and_map_failure_paths_are_deterministic():
     assert states["BackfillCompletionVerifier"]["Next"] == "BackfillCompletionChoice"
     assert states["BackfillCompletionChoice"]["Default"] == "FailBackfillCompletionContract"
     assert states["FailBackfillCompletionContract"]["Error"] == "BackfillCompletionContractError"
+
+
+def test_sfn_passes_requested_families_into_extractor_and_verifier():
+    states = _load()["States"]
+
+    assert states["ResolvePipelineRuntimeParams"]["Assign"]["requested_families_csv"] == "{% $exists($states.input.requested_families[0]) ? $join($states.input.requested_families, ',') : '' %}"
+    params = states["StartHistoricalWindowsExtractorPipeline"]["Arguments"]["PipelineParameters"]
+    requested = next(item for item in params if item["Name"] == "RequestedFamilies")
+    assert requested["Value"] == "{% $requested_families_csv %}"
+
+    assert states["BackfillCompletionVerifier"]["Assign"]["requested_families"] == "{% $extractor_manifest.requested_families %}"

@@ -21,18 +21,12 @@ from ndr.orchestration.backfill_execution_contract import (
 from ndr.scripts.run_backfill_reprocessing_executor import main
 
 
-def test_family_parser_expands_dependencies_in_deterministic_order_for_mixed_input():
-    assert parse_artifact_families("fg_c,fg_b_baseline") == (
-        "delta",
-        "fg_a",
-        "pair_counts",
-        "fg_b_baseline",
-        "fg_c",
-    )
+def test_family_parser_preserves_explicit_requested_scope_only():
+    assert parse_artifact_families("fg_c,fg_b_baseline") == ("fg_b_baseline", "fg_c")
 
 
 def test_family_parser_supports_alias_for_backward_safe_rollout():
-    assert parse_artifact_families("fg_a_15m") == ("delta", "fg_a")
+    assert parse_artifact_families("fg_a_15m") == ("fg_a",)
 
 
 def test_execution_request_fails_fast_with_explicit_error_code_for_contract_violation():
@@ -88,8 +82,8 @@ def test_executor_cli_emits_completion_payload_with_deterministic_idempotency_ke
     assert rc == 0
     payload = json.loads(capsys.readouterr().out.strip())
     assert payload["status"] == "Succeeded"
-    assert payload["artifact_families"] == ["delta", "fg_a", "pair_counts", "fg_b_baseline", "fg_c"]
-    assert payload["fg_b_baseline_results"][0]["status"] == "Started"
+    assert payload["artifact_families"] == ["fg_c"]
+    assert payload["fg_b_baseline_results"] == []
     assert payload["completion"]["all_succeeded"] is True
     assert payload["idempotency_key"].startswith("bkf-")
-    assert len(fake_sm.calls) == 5
+    assert len(fake_sm.calls) == 1

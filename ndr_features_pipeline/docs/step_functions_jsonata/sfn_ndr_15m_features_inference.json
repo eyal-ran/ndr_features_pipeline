@@ -600,10 +600,48 @@
             "Choices": [
               {
                 "Condition": "{% $bootstrap_readiness_manifest.bootstrap_ready = true %}",
-                "Next": "Start15mFeaturesPipeline"
+                "Next": "LoadDeploymentReadinessRecord"
               }
             ],
             "Default": "UpdateBootstrapCheckpointRequested"
+          },
+          "LoadDeploymentReadinessRecord": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:dynamodb:getItem",
+            "Arguments": {
+              "TableName": "${DppConfigTableName}",
+              "Key": {
+                "project_name": {
+                  "S": "{% $states.input.project_name %}"
+                },
+                "job_name_version": {
+                  "S": "{% 'pipeline_15m_streaming#' & $states.input.feature_spec_version %}"
+                }
+              },
+              "ConsistentRead": true
+            },
+            "Assign": {
+              "deployment_status": "{% $exists($states.result.Item.spec.M.deployment_status.S) ? $states.result.Item.spec.M.deployment_status.S : '' %}"
+            },
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "FailDeploymentNotReady"
+              }
+            ],
+            "Next": "CheckDeploymentReady"
+          },
+          "CheckDeploymentReady": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Condition": "{% $deployment_status = 'READY' %}",
+                "Next": "Start15mFeaturesPipeline"
+              }
+            ],
+            "Default": "FailDeploymentNotReady"
           },
           "UpdateBootstrapCheckpointRequested": {
             "Type": "Task",
@@ -708,7 +746,7 @@
             "Assign": {
               "bootstrap_readiness_manifest": "{% {'contract_version':'bootstrap_rt_activation.v1','bootstrap_control_key':'bootstrap_control#v1','bootstrap_ready':true,'bootstrap_status':'READY','bootstrap_execution':$states.result} %}"
             },
-            "Next": "Start15mFeaturesPipeline"
+            "Next": "LoadDeploymentReadinessRecord"
           },
           "UpdateBootstrapCheckpointFailed": {
             "Type": "Task",
@@ -734,6 +772,11 @@
               }
             },
             "Next": "BranchFailed"
+          },
+          "FailDeploymentNotReady": {
+            "Type": "Fail",
+            "Error": "DeploymentPreconditionError",
+            "Cause": "deployment_status must be READY before runtime execution"
           },
           "Start15mFeaturesPipeline": {
             "Type": "Task",

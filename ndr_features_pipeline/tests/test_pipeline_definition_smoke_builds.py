@@ -1,5 +1,6 @@
 import sys
 import types
+from types import SimpleNamespace
 
 
 class _Param:
@@ -63,6 +64,9 @@ def test_pipeline_definitions_smoke_build_with_concrete_contracts(monkeypatch):
     _install_sagemaker_stubs()
 
     from ndr.pipeline import sagemaker_pipeline_definitions_backfill_historical_extractor as p_backfill_hist
+    from ndr.pipeline import sagemaker_pipeline_definitions_code_artifact_validate as p_code_validate
+    from ndr.pipeline import sagemaker_pipeline_definitions_code_bundle_build as p_code_build
+    from ndr.pipeline import sagemaker_pipeline_definitions_code_smoke_validate as p_code_smoke
     from ndr.pipeline import sagemaker_pipeline_definitions_if_training as p_train
     from ndr.pipeline import sagemaker_pipeline_definitions_inference as p_inf
     from ndr.pipeline import sagemaker_pipeline_definitions_prediction_feature_join as p_join
@@ -73,11 +77,20 @@ def test_pipeline_definitions_smoke_build_with_concrete_contracts(monkeypatch):
         "load_job_spec",
         lambda **_kwargs: {"processing_image_uri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/ndr:latest"},
     )
-    for module in (p_unified, p_inf, p_join, p_train, p_backfill_hist):
+    monkeypatch.setattr(
+        p_unified,
+        "resolve_step_code_uri",
+        lambda **kwargs: f"s3://code/{kwargs['pipeline_job_name']}/{kwargs['step_name']}.py",
+    )
+    for module in (p_inf, p_join, p_train, p_backfill_hist):
         monkeypatch.setattr(
             module,
-            "resolve_step_code_uri",
-            lambda **kwargs: f"s3://code/{kwargs['pipeline_job_name']}/{kwargs['step_name']}.py",
+            "resolve_step_execution_contract",
+            lambda **kwargs: SimpleNamespace(
+                script_s3_uri=f"s3://code/{kwargs['pipeline_job_name']}/{kwargs['step_name']}.py",
+                entry_script="run_stub.py",
+                code_artifact_s3_uri=None,
+            ),
         )
 
     p_unified.build_15m_streaming_pipeline(
@@ -144,6 +157,24 @@ def test_pipeline_definitions_smoke_build_with_concrete_contracts(monkeypatch):
         project_name_for_contracts="proj",
         feature_spec_version_for_contracts="v1",
     )
+    p_code_build.build_code_bundle_build_pipeline(
+        pipeline_name="pcode-build",
+        role_arn="arn:aws:iam::123:role/x",
+        default_bucket="bucket",
+        region_name="us-east-1",
+    )
+    p_code_validate.build_code_artifact_validate_pipeline(
+        pipeline_name="pcode-validate",
+        role_arn="arn:aws:iam::123:role/x",
+        default_bucket="bucket",
+        region_name="us-east-1",
+    )
+    p_code_smoke.build_code_smoke_validate_pipeline(
+        pipeline_name="pcode-smoke",
+        role_arn="arn:aws:iam::123:role/x",
+        default_bucket="bucket",
+        region_name="us-east-1",
+    )
 
 
 def test_if_training_pipeline_enforces_verify_plan_remediate_reverify_train_sequence(monkeypatch):
@@ -152,8 +183,12 @@ def test_if_training_pipeline_enforces_verify_plan_remediate_reverify_train_sequ
 
     monkeypatch.setattr(
         p_train,
-        "resolve_step_code_uri",
-        lambda **kwargs: f"s3://code/{kwargs['pipeline_job_name']}/{kwargs['step_name']}.py",
+        "resolve_step_execution_contract",
+        lambda **kwargs: SimpleNamespace(
+            script_s3_uri=f"s3://code/{kwargs['pipeline_job_name']}/{kwargs['step_name']}.py",
+            entry_script="run_if_training.py",
+            code_artifact_s3_uri=None,
+        ),
     )
     pipeline = p_train.build_if_training_pipeline(
         pipeline_name="ptrain",

@@ -141,6 +141,19 @@ def test_pipeline_seed_items_have_runtime_and_script_contracts():
     assert project_defaults["HistoricalWindowsOutputS3Prefix"].startswith("s3://")
 
 
+def test_pipeline_seed_items_include_artifact_and_deployment_contracts():
+    items = _build_bootstrap_items("ndr-prod", "v1", "ndr-team")
+    by_job = _items_by_job(items)
+    spec = by_job["pipeline_15m_streaming"]["spec"]
+    assert spec["deployment_status"] == "BOOTSTRAP_REQUIRED"
+    assert spec["deployment_checkpoint"] == "phase_a_seed_pending"
+    step = spec["scripts"]["steps"]["DeltaBuilderStep"]
+    assert step["code_artifact_s3_uri"].endswith("/artifacts/<required:ArtifactBuildId>/source.tar.gz")
+    assert step["artifact_build_id"] == "<required:ArtifactBuildId>"
+    assert step["artifact_sha256"] == "<required:ArtifactSha256>"
+    assert step["artifact_format"] == "tar.gz"
+
+
 def test_pair_counts_seed_has_required_field_mapping_contract():
     items = _build_bootstrap_items("ndr-prod", "v1", "ndr-team")
     by_job = _items_by_job(items)

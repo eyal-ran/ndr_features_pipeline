@@ -269,6 +269,7 @@ It includes:
 
 ### Item 26 runtime behavior (strict closure)
 - All IF training stages execute through the same runtime resolver path in `run_if_training`/`if_training_job`, ensuring DDB-first target selection and dependency-readiness preflight checks before expensive train/remediate/evaluation operations.
+- Step code resolution now enforces deployment readiness and immutable artifact pointers: runtime resolution fails fast unless `deployment_status=READY`, and step contracts provide `code_artifact_s3_uri`, `entry_script`, `artifact_build_id`, `artifact_sha256`, and `artifact_format`.
 - Remediation and evaluation artifacts now include per-branch target provenance and selected target details for auditability.
 - Runtime `EvaluationWindowsJson` is validated for JSON shape, time ordering, and non-overlap before execution proceeds.
 - Pipeline-definition code URI resolution uses concrete deployment contract identifiers (project/spec values), and rejects placeholder values such as `<required:...>` during pipeline build.

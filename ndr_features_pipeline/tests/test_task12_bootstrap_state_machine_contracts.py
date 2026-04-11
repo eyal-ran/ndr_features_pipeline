@@ -46,8 +46,13 @@ def test_rt_flow_gates_steady_state_execution_on_bootstrap_readiness_contract():
 
     gate = states["CheckBootstrapReadiness"]
     ready_branch = next(c for c in gate["Choices"] if c["Condition"] == "{% $bootstrap_readiness_manifest.bootstrap_ready = true %}")
-    assert ready_branch["Next"] == "Start15mFeaturesPipeline"
+    assert ready_branch["Next"] == "LoadDeploymentReadinessRecord"
     assert gate["Default"] == "UpdateBootstrapCheckpointRequested"
+    assert states["CheckDeploymentReady"]["Default"] == "FailDeploymentNotReady"
+    ready_deployment_branch = next(
+        c for c in states["CheckDeploymentReady"]["Choices"] if c["Condition"] == "{% $deployment_status = 'READY' %}"
+    )
+    assert ready_deployment_branch["Next"] == "Start15mFeaturesPipeline"
 
     invoke = states["StartBootstrapOrchestration"]
     assert invoke["Arguments"]["StateMachineArn"] == "${BootstrapStateMachineArn}"

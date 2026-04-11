@@ -5,6 +5,20 @@
 This document defines the orchestration contract required for DPP/MLP decoupling.
 For Task 1, this is a documentation foundation only.
 
+## Task 9 deployment orchestration contract (code artifact lifecycle)
+
+Dedicated deployment control is now implemented in `docs/step_functions_jsonata/sfn_ndr_code_deployment_orchestrator.json`.
+
+- Code-artifact lifecycle states are first-class and isolated from runtime business flows:
+  `NormalizeDeploymentRequest` -> `LoadDeploymentConfigFromDdb` -> build/validate -> promote (authoritative only) -> smoke -> commit/rollback.
+- Hybrid control is explicit:
+  - `deployment_mode=shadow`: full build/validate/smoke execution without pointer mutation.
+  - `deployment_mode=authoritative`: enables `PromoteArtifactPointers` and post-promotion `RollbackArtifactPointers`.
+- Break-glass reconciliation is enforced:
+  - manual marker + reconciliation checkpoint blocks promotion until a reconciliation run is explicitly requested.
+- Runtime consumer safety:
+  - runtime orchestrator loads deployment readiness from DDB and fails fast unless `deployment_status=READY`.
+
 ## 1) Canonical ingestion payload contract (input to 15m SF)
 
 ### Single-MLP payload (exact)

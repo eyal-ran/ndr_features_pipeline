@@ -54,6 +54,9 @@ def test_bootstrap_items_include_all_runtime_jobs():
         "pipeline_if_training",
         "pipeline_backfill_historical_extractor",
         "pipeline_backfill_15m_reprocessing",
+        "pipeline_code_bundle_build",
+        "pipeline_code_artifact_validate",
+        "pipeline_code_smoke_validate",
     }
 
     assert set(by_job.keys()) == expected_jobs

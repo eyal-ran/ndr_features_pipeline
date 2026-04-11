@@ -187,6 +187,21 @@ PIPELINE_RUNTIME_PARAMS = {
         "RangeEndTsIso",
         "IdempotencyKey",
     ],
+    "pipeline_code_bundle_build": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "ArtifactBuildId",
+    ],
+    "pipeline_code_artifact_validate": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "ArtifactBuildId",
+    ],
+    "pipeline_code_smoke_validate": [
+        "ProjectName",
+        "FeatureSpecVersion",
+        "ArtifactBuildId",
+    ],
 }
 
 REQUIRED_TABLE_CREATE_KEYS = (
@@ -866,6 +881,69 @@ def _build_bootstrap_items(
                             "entry_script": "run_backfill_reprocessing_executor.py",
                             "data_prefixes": {
                                 "output_backfill_status": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/backfill/executions/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name_version": _versioned_job_name("pipeline_code_bundle_build", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_code_bundle_build"],
+                "scripts": {
+                    "steps": {
+                        "CodeBundleBuildStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/code_bundle_build/CodeBundleBuildStep/",
+                            "entry_script": "run_code_bundle_build.py",
+                            "data_prefixes": {
+                                "output_bundle_artifacts": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/artifacts/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name_version": _versioned_job_name("pipeline_code_artifact_validate", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_code_artifact_validate"],
+                "scripts": {
+                    "steps": {
+                        "CodeArtifactValidateStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/code_artifact_validate/CodeArtifactValidateStep/",
+                            "entry_script": "run_code_artifact_validate.py",
+                            "data_prefixes": {
+                                "input_bundle_manifests": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/artifacts/",
+                            },
+                        }
+                    }
+                },
+            },
+            "feature_spec_version": feature_spec_version,
+            "updated_at": now,
+            "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name_version": _versioned_job_name("pipeline_code_smoke_validate", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_code_smoke_validate"],
+                "scripts": {
+                    "steps": {
+                        "CodeSmokeValidateStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/code_smoke_validate/CodeSmokeValidateStep/",
+                            "entry_script": "run_code_smoke_validate.py",
+                            "data_prefixes": {
+                                "input_promoted_artifacts": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/artifacts/",
                             },
                         }
                     }

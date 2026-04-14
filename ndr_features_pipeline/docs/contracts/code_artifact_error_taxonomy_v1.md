@@ -3,11 +3,16 @@
 This taxonomy freezes deterministic error-code semantics for Task 0 contract consumers and producers.
 
 ## Retriable errors
+- `CODE_BUNDLE_UPLOAD_FAILED`: transient S3/network/service failure while uploading immutable artifact bytes or sidecars.
 - `CODE_ARTIFACT_OBJECT_MISSING`: expected S3 artifact object not present yet.
 - `CODE_ARTIFACT_DOWNLOAD_FAILED`: transient S3/network/service failure during artifact retrieval.
 - `CODE_SMOKE_TIMEOUT`: smoke command timeout; safe to retry with same immutable artifact id.
 
 ## Non-retriable errors
+- `CODE_BUNDLE_CONTRACT_VIOLATION`: missing/invalid runtime arguments or malformed DDB contract payload.
+- `CODE_BUNDLE_PLACEHOLDER_ARGUMENT`: runtime input still contains placeholder markers instead of promoted values.
+- `CODE_BUNDLE_DISCOVERY_AMBIGUOUS`: DDB step discovery returned missing/duplicate/ambiguous step contracts.
+- `CODE_BUNDLE_ENTRY_SCRIPT_MISSING`: resolved entry script does not exist in workspace source tree.
 - `CODE_ARTIFACT_HASH_MISMATCH`: immutable bytes diverge from declared hash; operator remediation required.
 - `CODE_ARTIFACT_ARCHIVE_INVALID`: artifact payload is not a valid declared archive format.
 - `CODE_ARTIFACT_ENTRY_SCRIPT_MISSING`: build manifest entry script cannot be resolved inside archive.

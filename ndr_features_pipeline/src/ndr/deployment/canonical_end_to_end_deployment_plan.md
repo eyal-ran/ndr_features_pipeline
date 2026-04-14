@@ -2,6 +2,10 @@
 
 This file mirrors `canonical_end_to_end_deployment_plan.ipynb` exactly, with explicit cell boundaries for copy/paste.
 
+Deterministic sync process: update the `.ipynb` first, then regenerate this mirror from notebook JSON cell order with fenced blocks per cell.
+
+Compatibility note: Step Functions permissions/wiring still require `MonthlyStateMachineArn`, `states:StartExecution`, `states:DescribeExecution`, `states:StopExecution`, and must disallow `sagemaker:StartPipelineExecution` for `${PipelineNameMonthlyFgBBaselines}` in deployment IAM policy text.
+
 ## Cell 1 (markdown)
 
 ```markdown
@@ -26,7 +30,27 @@ This notebook is rebuilt from code/config sources in `src/ndr` and `tests` only,
 9. Readiness checks.
 ```
 
-## Cell 3 (code)
+## Cell 3 (markdown)
+
+```markdown
+### Code Cell 1 Guide
+
+**Behavior:** Import deployment dependencies and expose UTC execution timestamp used for deterministic audit fields.
+
+**Purpose:** Load all pipeline builders/contracts used by later deployment orchestration cells.
+
+**Required input:** Python environment with `ndr` package importable plus notebook kernel access.
+
+**Expected output:** Printed UTC timestamp and initialized module symbols.
+
+**Expected result:** Notebook runtime is ready for DDB-first contract planning and pipeline upsert steps.
+
+**Usage instructions:** Run once per notebook execution before editing deployment variables.
+
+**Runnable example:** `UTC_NOW`
+```
+
+## Cell 4 (code)
 
 ```python
 import json
@@ -53,7 +77,27 @@ UTC_NOW = datetime.now(timezone.utc).isoformat()
 print('UTC now:', UTC_NOW)
 ```
 
-## Cell 4 (code)
+## Cell 5 (markdown)
+
+```markdown
+### Code Cell 2 Guide
+
+**Behavior:** Build the canonical pipeline-builder registry and expose runtime-parameter contracts.
+
+**Purpose:** Define producer/consumer contract lookup used by deployment upsert and readiness checks.
+
+**Required input:** Imports from the prior cell must have executed successfully.
+
+**Expected output:** Counts for builders/runtime contracts and exception table defaults.
+
+**Expected result:** Operator can verify expected pipeline families are present before proceeding.
+
+**Usage instructions:** Run immediately after imports; stop if expected builder count is incorrect.
+
+**Runnable example:** `len(PIPELINE_BUILDERS), len(RUNTIME_PARAM_CONTRACTS)`
+```
+
+## Cell 6 (code)
 
 ```python
 PIPELINE_BUILDERS = {
@@ -76,7 +120,27 @@ print('Runtime param contracts:', len(RUNTIME_PARAM_CONTRACTS))
 print('Exception tables:', {k: v.default_table_name for k, v in EXCEPTION_TABLE_CONTRACTS.items()})
 ```
 
-## Cell 5 (code)
+## Cell 7 (markdown)
+
+```markdown
+### Code Cell 3 Guide
+
+**Behavior:** Declare required deployment inputs, artifact metadata, and contract identifiers.
+
+**Purpose:** Collect all operator-managed runtime parameters in one auditable location.
+
+**Required input:** Concrete values for account, role, bucket, project/spec, and artifact identifiers.
+
+**Expected output:** Variables are populated in memory for downstream contract generation.
+
+**Expected result:** Notebook fails fast later if placeholder/empty values violate contract checks.
+
+**Usage instructions:** Fill every placeholder before switching `DRY_RUN` to `False`.
+
+**Runnable example:** `project_name, feature_spec_version, artifact_build_id`
+```
+
+## Cell 8 (code)
 
 ```python
 aws_region = 'us-east-1'
@@ -117,7 +181,27 @@ artifact_format = 'tar.gz'
 code_artifact_s3_uri = ''  # e.g., s3://bucket/artifacts/code/build-.../source.tar.gz
 ```
 
-## Cell 6 (code)
+## Cell 9 (markdown)
+
+```markdown
+### Code Cell 4 Guide
+
+**Behavior:** Declare canonical DPP/MLP S3 roots consumed by DDB config records.
+
+**Purpose:** Ensure all storage contracts are DDB-first and deterministic.
+
+**Required input:** Valid S3 URI roots for each declared output family.
+
+**Expected output:** Root variables for delta/features/prediction/training outputs.
+
+**Expected result:** Seed items can reference stable roots without hidden fallback paths.
+
+**Usage instructions:** Set non-empty roots before seeding production tables.
+
+**Runnable example:** `dpp_delta_root, mlp_predictions_root`
+```
+
+## Cell 10 (code)
 
 ```python
 dpp_delta_root = ''
@@ -135,7 +219,27 @@ mlp_training_artifacts_root = ''
 mlp_production_model_root = ''
 ```
 
-## Cell 7 (code)
+## Cell 11 (markdown)
+
+```markdown
+### Code Cell 5 Guide
+
+**Behavior:** Define DynamoDB table contracts for producer and consumer components.
+
+**Purpose:** Make table schema expectations explicit before provisioning and seeding.
+
+**Required input:** Resolved table names and consistent key/attribute definitions.
+
+**Expected output:** Printed JSON contract map for all required tables.
+
+**Expected result:** Operators can audit schema determinism before any write action.
+
+**Usage instructions:** Review printed contract JSON; correct naming mismatches before deploy step.
+
+**Runnable example:** `list(ddb_table_contracts.keys())`
+```
+
+## Cell 12 (code)
 
 ```python
 ddb_table_contracts = {
@@ -149,7 +253,27 @@ ddb_table_contracts = {
 print(json.dumps(ddb_table_contracts, indent=2))
 ```
 
-## Cell 8 (code)
+## Cell 13 (markdown)
+
+```markdown
+### Code Cell 6 Guide
+
+**Behavior:** Normalize bootstrap seed templates and promote pipeline specs to READY with artifact metadata.
+
+**Purpose:** Align DDB seed records with artifact lifecycle and deployment checkpoint semantics.
+
+**Required input:** Concrete replacement values including `code_artifact_s3_uri`, `artifact_build_id`, `artifact_sha256`.
+
+**Expected output:** Patched `bootstrap_seed_items` list with READY deployment fields.
+
+**Expected result:** Downstream consumers receive explicit, auditable code metadata and no hidden defaults.
+
+**Usage instructions:** Run after parameter entry; halt if artifact fields are placeholders.
+
+**Runnable example:** `bootstrap_seed_items[0]['job_name_version'] if bootstrap_seed_items else 'no-items'`
+```
+
+## Cell 14 (code)
 
 ```python
 def _replace_placeholders(value, replacements):
@@ -195,7 +319,27 @@ bootstrap_seed_items = _promote_pipeline_specs_ready(bootstrap_seed_items)
 print('bootstrap items:', len(bootstrap_seed_items))
 ```
 
-## Cell 9 (code)
+## Cell 15 (markdown)
+
+```markdown
+### Code Cell 7 Guide
+
+**Behavior:** Build reciprocal DPP/MLP configuration items and S3 roots records.
+
+**Purpose:** Create deterministic producer/consumer contract items for both config tables.
+
+**Required input:** Project/spec identifiers, owner, ml project list, and root dictionaries.
+
+**Expected output:** Four in-memory item payloads for DDB seed plan assembly.
+
+**Expected result:** Config tables can be seeded idempotently with explicit relationship metadata.
+
+**Usage instructions:** Review generated dictionaries before final seed plan composition.
+
+**Runnable example:** `dpp_reciprocal_item['job_name_version']`
+```
+
+## Cell 16 (code)
 
 ```python
 job_name_version = f'project_parameters#{feature_spec_version}'
@@ -208,7 +352,27 @@ mlp_reciprocal_item = {'ml_project_name': ml_project_name, 'job_name_version': j
 mlp_s3_roots_item = {'ml_project_name': ml_project_name, 'job_name_version': 'S3_ROOTS', 'project_name': project_name, 'roots': mlp_s3_roots, 'updated_at': UTC_NOW, 'owner': owner}
 ```
 
-## Cell 10 (code)
+## Cell 17 (markdown)
+
+```markdown
+### Code Cell 8 Guide
+
+**Behavior:** Construct code path/code metadata maps and full DDB seed payload plan.
+
+**Purpose:** Ensure every pipeline step receives the same immutable artifact contract payload.
+
+**Required input:** Non-placeholder artifact metadata and batch/routing context fields.
+
+**Expected output:** `ddb_seed_items_plan` plus printed per-table seed counts.
+
+**Expected result:** Contract payloads remain minimal, deterministic, retry-safe, and rollback-auditable.
+
+**Usage instructions:** Confirm all counts are expected and code metadata values are concrete.
+
+**Runnable example:** `{k: len(v) for k, v in ddb_seed_items_plan.items()}`
+```
+
+## Cell 18 (code)
 
 ```python
 dpp_code_paths = {step_key: code_artifact_s3_uri for step_key in DPP_CODE_STEP_KEYS}
@@ -229,14 +393,54 @@ ddb_seed_items_plan = {'dpp_config': [*bootstrap_seed_items, dpp_reciprocal_item
 print(json.dumps({'seed_counts': {k: len(v) for k, v in ddb_seed_items_plan.items()}}, indent=2))
 ```
 
-## Cell 11 (code)
+## Cell 19 (markdown)
+
+```markdown
+### Code Cell 9 Guide
+
+**Behavior:** Define required S3 bucket prefix schema for ingestion, outputs, artifacts, and observability.
+
+**Purpose:** Provide explicit storage lifecycle contract before provisioning actions.
+
+**Required input:** Target bucket name and agreed prefix list.
+
+**Expected output:** Printed S3 schema plan JSON.
+
+**Expected result:** Operators can validate bucket/prefix coverage against deployment expectations.
+
+**Usage instructions:** Adjust prefixes only if contract changes are approved across producers/consumers.
+
+**Runnable example:** `s3_schema_plan['prefixes'][:3]`
+```
+
+## Cell 20 (code)
 
 ```python
 s3_schema_plan = {'bucket_name': default_bucket, 'prefixes': ['input/raw', 'input/reference', 'output/processed/delta_15m', 'output/processed/fg_a', 'output/processed/pair_counts', 'output/processed/fg_b', 'output/processed/fg_c', 'output/predictions', 'output/prediction_join', 'output/publication', 'artifacts/code', 'artifacts/pipeline', 'feature-store/offline', 'monitoring', 'logs']}
 print(json.dumps(s3_schema_plan, indent=2))
 ```
 
-## Cell 12 (code)
+## Cell 21 (markdown)
+
+```markdown
+### Code Cell 10 Guide
+
+**Behavior:** Declare idempotent deployment helpers for DDB, S3, pipeline upsert, and materialization startup.
+
+**Purpose:** Centralize operational actions with dry-run support and deterministic behavior.
+
+**Required input:** Valid AWS credentials/permissions when `dry_run=False`.
+
+**Expected output:** Reusable helper functions for deployment execution.
+
+**Expected result:** Execution can be retried safely with explicit dry-run and create-if-missing semantics.
+
+**Usage instructions:** Keep `dry_run=True` during review; switch only after readiness checks pass.
+
+**Runnable example:** `deploy_ddb(ddb_table_contracts, ddb_seed_items_plan, aws_region, dry_run=True)`
+```
+
+## Cell 22 (code)
 
 ```python
 def ensure_ddb_table(ddb_client, spec, dry_run=True):
@@ -289,33 +493,63 @@ def start_initial_materialization_runs(region_name, dry_run=True):
     print('Trigger pipeline starts here with finalized runtime parameters.')
 ```
 
-## Cell 13 (code)
+## Cell 23 (markdown)
+
+```markdown
+### Code Cell 11 Guide
+
+**Behavior:** Assemble artifact build/validate/smoke commands and print expected contracts.
+
+**Purpose:** Document producer-to-consumer artifact lifecycle sequence with fail-fast gates.
+
+**Required input:** Concrete `project_name`, `feature_spec_version`, `artifact_build_id`, and manifest/report paths.
+
+**Expected output:** Ordered command list plus expected contract versions and safety reminders.
+
+**Expected result:** Operators execute deterministic build->validate->smoke flow before promotion.
+
+**Usage instructions:** Run commands in listed order; do not proceed when validate/smoke are non-PASS.
+
+**Runnable example:** `artifact_commands[0]`
+```
+
+## Cell 24 (code)
 
 ```python
 artifact_commands = [
     f'python -m ndr.scripts.run_code_bundle_build --project-name {project_name} --feature-spec-version {feature_spec_version} --artifact-build-id {artifact_build_id}',
-    (
-        'python -m ndr.scripts.run_code_artifact_validate '
-        f'--project-name {project_name} --feature-spec-version {feature_spec_version} '
-        f'--artifact-build-id {artifact_build_id} --build-manifest-in /tmp/code_bundle_build_output.json'
-    ),
-    (
-        'python -m ndr.scripts.run_code_smoke_validate '
-        f'--project-name {project_name} --feature-spec-version {feature_spec_version} '
-        f'--artifact-build-id {artifact_build_id} --build-manifest-in /tmp/code_bundle_build_output.json '
-        '--validation-report-in /tmp/code_artifact_validate_report.json'
-    ),
+    f'python -m ndr.scripts.run_code_artifact_validate --project-name {project_name} --feature-spec-version {feature_spec_version} --artifact-build-id {artifact_build_id}',
+    f'python -m ndr.scripts.run_code_smoke_validate --project-name {project_name} --feature-spec-version {feature_spec_version} --artifact-build-id {artifact_build_id}',
 ]
 for i, cmd in enumerate(artifact_commands, 1): print(f'{i}. {cmd}')
 print('code_artifact_s3_uri:', code_artifact_s3_uri or '<set me>')
 print('expected build contract: code_bundle_build_output.v1')
 print('expected validate contract: code_artifact_validate_report.v1')
 print('expected smoke contract: code_smoke_validate_report.v1')
-print('smoke step is now explicitly blocked unless validation_report.status == PASS')
 print('do not promote placeholders: artifact_build_id/artifact_sha256/code_artifact_s3_uri must be concrete values')
 ```
 
-## Cell 14 (code)
+## Cell 25 (markdown)
+
+```markdown
+### Code Cell 12 Guide
+
+**Behavior:** Execute full deployment orchestration in dry-run mode by default.
+
+**Purpose:** Provide safe end-to-end rehearsal for table/schema/pipeline/materialization steps.
+
+**Required input:** All prior configuration cells executed with reviewed values.
+
+**Expected output:** Dry-run logs for each deployment phase and completion message.
+
+**Expected result:** Operator can verify full control-flow before enabling real writes.
+
+**Usage instructions:** Set `DRY_RUN=False` only after validations and approvals are complete.
+
+**Runnable example:** `DRY_RUN = True`
+```
+
+## Cell 26 (code)
 
 ```python
 DRY_RUN = True
@@ -326,7 +560,7 @@ start_initial_materialization_runs(region_name=aws_region, dry_run=DRY_RUN)
 print('Dry-run deployment flow complete.')
 ```
 
-## Cell 15 (markdown)
+## Cell 27 (markdown)
 
 ```markdown
 ## Step Functions deployment (manual)
@@ -334,7 +568,27 @@ print('Dry-run deployment flow complete.')
 Deploy state machines manually in AWS Step Functions GUI using Build by code and pasted JSON definitions.
 ```
 
-## Cell 16 (code)
+## Cell 28 (markdown)
+
+```markdown
+### Code Cell 13 Guide
+
+**Behavior:** Run final structural readiness assertions for DDB seeds and pipeline coverage.
+
+**Purpose:** Fail fast on contract violations before any production rollout.
+
+**Required input:** Populated `ddb_table_contracts`, `ddb_seed_items_plan`, and `PIPELINE_BUILDERS`.
+
+**Expected output:** Assertion pass message or explicit failure with violating key.
+
+**Expected result:** Readiness decisions remain deterministic and auditable from notebook artifacts.
+
+**Usage instructions:** Treat any assertion failure as blocking; remediate configuration then rerun.
+
+**Runnable example:** `print('ready' if not missing_pipeline_jobs else missing_pipeline_jobs)`
+```
+
+## Cell 29 (code)
 
 ```python
 assert all(name in ddb_table_contracts for name in ['dpp_config','mlp_config','batch_index','routing','processing_lock','publication_lock'])
@@ -350,7 +604,7 @@ assert 's3_prefixes' in batch_index_direct_item and 'dpp' in batch_index_direct_
 print('Structural readiness checks passed.')
 ```
 
-## Cell 17 (markdown)
+## Cell 30 (markdown)
 
 ```markdown
 ## Operator completion checklist

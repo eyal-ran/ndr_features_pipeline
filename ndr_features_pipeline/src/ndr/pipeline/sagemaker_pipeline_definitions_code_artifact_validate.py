@@ -3,12 +3,44 @@ from __future__ import annotations
 """SageMaker deployment pipeline definition for artifact contract validation."""
 
 import sagemaker
+from sagemaker.processing import ProcessingInput, ProcessingOutput
 from sagemaker.spark.processing import PySparkProcessor
+from sagemaker.workflow.execution_variables import ExecutionVariables
+from sagemaker.workflow.functions import Join
 from sagemaker.workflow.parameters import ParameterInteger, ParameterString
 from sagemaker.workflow.pipeline import Pipeline
 from sagemaker.workflow.steps import ProcessingStep
 
+from ndr.pipeline.io_contract import resolve_step_execution_contract
+
 PIPELINE_JOB_NAME = "pipeline_code_artifact_validate"
+_BUILD_PIPELINE_JOB_NAME = "pipeline_code_bundle_build"
+_BUILD_STEP_NAME = "CodeBundleBuildStep"
+_VALIDATE_STEP_NAME = "CodeArtifactValidateStep"
+_BUILD_OUTPUT_NAME = "BuildManifestOutput"
+_VALIDATE_OUTPUT_NAME = "ValidationReportOutput"
+_BUILD_OUTPUT_SOURCE_DIR = "/opt/ml/processing/output/build_manifest"
+_BUILD_OUTPUT_FILE = f"{_BUILD_OUTPUT_SOURCE_DIR}/code_bundle_build_output.json"
+_BUILD_INPUT_DIR = "/opt/ml/processing/input/build_manifest"
+_BUILD_INPUT_FILE = f"{_BUILD_INPUT_DIR}/code_bundle_build_output.json"
+_VALIDATE_OUTPUT_SOURCE_DIR = "/opt/ml/processing/output/validation_report"
+_VALIDATE_OUTPUT_FILE = f"{_VALIDATE_OUTPUT_SOURCE_DIR}/code_artifact_validate_report.json"
+
+
+def _handoff_s3_uri(*, default_bucket: str, pipeline_name: str, artifact_name: str):
+    return Join(
+        on="",
+        values=[
+            "s3://",
+            default_bucket,
+            "/ndr/deployment/code-artifact-handoffs/",
+            pipeline_name,
+            "/",
+            ExecutionVariables.PIPELINE_EXECUTION_ID,
+            "/",
+            artifact_name,
+        ],
+    )
 
 
 def build_code_artifact_validate_pipeline(
@@ -16,6 +48,8 @@ def build_code_artifact_validate_pipeline(
     role_arn: str,
     default_bucket: str,
     region_name: str,
+    project_name_for_contracts: str,
+    feature_spec_version_for_contracts: str,
 ) -> Pipeline:
     session = sagemaker.session.Session(default_bucket=default_bucket)
     project_name = ParameterString(name="ProjectName", default_value="<required:ProjectName>")
@@ -40,22 +74,90 @@ def build_code_artifact_validate_pipeline(
         sagemaker_session=session,
     )
 
-    step = ProcessingStep(
-        name="CodeArtifactValidateStep",
+    build_contract = resolve_step_execution_contract(
+        project_name=project_name_for_contracts,
+        feature_spec_version=feature_spec_version_for_contracts,
+        pipeline_job_name=_BUILD_PIPELINE_JOB_NAME,
+        step_name=_BUILD_STEP_NAME,
+    )
+    validate_contract = resolve_step_execution_contract(
+        project_name=project_name_for_contracts,
+        feature_spec_version=feature_spec_version_for_contracts,
+        pipeline_job_name=PIPELINE_JOB_NAME,
+        step_name=_VALIDATE_STEP_NAME,
+    )
+
+    build_step = ProcessingStep(
+        name=_BUILD_STEP_NAME,
         processor=processor,
-        code="s3://placeholder/ndr/deployment/run_code_artifact_validate.py",
+        code=build_contract.script_s3_uri,
         job_arguments=[
             "python",
-            "run_code_artifact_validate.py",
+            build_contract.entry_script,
             "--project-name",
             project_name,
             "--feature-spec-version",
             feature_spec_version,
             "--artifact-build-id",
             artifact_build_id,
+            "--region-name",
+            region_name,
+            "--manifest-out",
+            _BUILD_OUTPUT_FILE,
         ],
         inputs=[],
-        outputs=[],
+        outputs=[
+            ProcessingOutput(
+                output_name=_BUILD_OUTPUT_NAME,
+                source=_BUILD_OUTPUT_SOURCE_DIR,
+                destination=_handoff_s3_uri(
+                    default_bucket=default_bucket,
+                    pipeline_name=pipeline_name,
+                    artifact_name="build_manifest",
+                ),
+            )
+        ],
+    )
+
+    validate_step = ProcessingStep(
+        name=_VALIDATE_STEP_NAME,
+        processor=processor,
+        code=validate_contract.script_s3_uri,
+        job_arguments=[
+            "python",
+            validate_contract.entry_script,
+            "--project-name",
+            project_name,
+            "--feature-spec-version",
+            feature_spec_version,
+            "--artifact-build-id",
+            artifact_build_id,
+            "--build-manifest-in",
+            _BUILD_INPUT_FILE,
+            "--validation-report-out",
+            _VALIDATE_OUTPUT_FILE,
+            "--region-name",
+            region_name,
+        ],
+        inputs=[
+            ProcessingInput(
+                source=build_step.properties.ProcessingOutputConfig.Outputs[_BUILD_OUTPUT_NAME].S3Output.S3Uri,
+                destination=_BUILD_INPUT_DIR,
+                input_name="build_manifest_input",
+            )
+        ],
+        outputs=[
+            ProcessingOutput(
+                output_name=_VALIDATE_OUTPUT_NAME,
+                source=_VALIDATE_OUTPUT_SOURCE_DIR,
+                destination=_handoff_s3_uri(
+                    default_bucket=default_bucket,
+                    pipeline_name=pipeline_name,
+                    artifact_name="validation_report",
+                ),
+            )
+        ],
+        depends_on=[build_step],
     )
 
     return Pipeline(
@@ -68,6 +170,6 @@ def build_code_artifact_validate_pipeline(
             processing_instance_type,
             processing_instance_count,
         ],
-        steps=[step],
+        steps=[build_step, validate_step],
         sagemaker_session=session,
     )

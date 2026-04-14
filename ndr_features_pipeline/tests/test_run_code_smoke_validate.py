@@ -60,11 +60,35 @@ def _manifest(*, entry_script: str) -> dict:
 
 
 def _args(tmp_path: Path, manifest_path: Path) -> argparse.Namespace:
+    validation_report_path = tmp_path / "validation_report.json"
+    validation_report_path.write_text(
+        json.dumps(
+            {
+                "contract_version": "code_artifact_validate_report.v1",
+                "artifact_build_id": "build-1",
+                "status": "PASS",
+                "validated_steps": 1,
+                "step_results": [
+                    {
+                        "artifact_family": "streaming",
+                        "pipeline_job_name": "pipeline_15m_streaming",
+                        "step_name": "DeltaBuilderStep",
+                        "status": "PASS",
+                        "error_code": "OK",
+                        "error_message": "",
+                        "retriable": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     return argparse.Namespace(
         project_name="proj",
         feature_spec_version="v1",
         artifact_build_id="build-1",
         build_manifest_in=str(manifest_path),
+        validation_report_in=str(validation_report_path),
         smoke_report_out=str(tmp_path / "smoke.json"),
         region_name="us-east-1",
         timeout_seconds=5,
@@ -158,6 +182,24 @@ def test_validate_smoke_schema_compliance_rejects_manifest_mismatch(tmp_path: Pa
         assert "artifact_build_id mismatch" in str(exc)
     else:
         raise AssertionError("Expected a contract mismatch ValueError")
+
+
+def test_validate_smoke_blocks_when_validation_report_not_pass(tmp_path: Path):
+    manifest = _manifest(entry_script="run_step.py")
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    args = _args(tmp_path, manifest_path)
+    validation_report_path = Path(args.validation_report_in)
+    validation_report = json.loads(validation_report_path.read_text(encoding="utf-8"))
+    validation_report["status"] = "FAIL"
+    validation_report_path.write_text(json.dumps(validation_report), encoding="utf-8")
+
+    try:
+        script.validate_smoke(args)
+    except ValueError as exc:
+        assert script.ERROR_CODE_VALIDATE_BLOCKED in str(exc)
+    else:
+        raise AssertionError("Expected smoke validation to block on failed artifact validation")
 
 
 def test_build_smoke_env_adds_extracted_src_prefix(tmp_path: Path):

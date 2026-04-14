@@ -13,6 +13,16 @@ class _Step:
     def __init__(self, name, **kwargs):
         self.name = name
         self.kwargs = kwargs
+        outputs = kwargs.get("outputs", [])
+        output_map = {
+            output.output_name: SimpleNamespace(S3Output=SimpleNamespace(S3Uri=output.destination))
+            for output in outputs
+        }
+        self.properties = SimpleNamespace(
+            ProcessingOutputConfig=SimpleNamespace(
+                Outputs=output_map,
+            )
+        )
 
     def add_depends_on(self, _deps):
         return None
@@ -31,6 +41,33 @@ class _Processor:
         self.kwargs = kwargs
 
 
+class _ProcessingOutput:
+    def __init__(self, output_name, source, destination):
+        self.output_name = output_name
+        self.source = source
+        self.destination = destination
+
+
+class _ProcessingInput:
+    def __init__(self, source, destination, input_name=None):
+        self.source = source
+        self.destination = destination
+        self.input_name = input_name
+
+
+class _Join:
+    def __init__(self, on, values):
+        self.on = on
+        self.values = values
+
+    def __str__(self):
+        return self.on.join(str(value) for value in self.values)
+
+
+class _ExecutionVariables:
+    PIPELINE_EXECUTION_ID = "execution-id"
+
+
 def _install_sagemaker_stubs():
     if "sagemaker" in sys.modules:
         return
@@ -41,10 +78,19 @@ def _install_sagemaker_stubs():
 
     spark_processing = types.ModuleType("sagemaker.spark.processing")
     spark_processing.PySparkProcessor = _Processor
+    processing = types.ModuleType("sagemaker.processing")
+    processing.ProcessingInput = _ProcessingInput
+    processing.ProcessingOutput = _ProcessingOutput
 
     wf_params = types.ModuleType("sagemaker.workflow.parameters")
     wf_params.ParameterString = _Param
     wf_params.ParameterInteger = _Param
+
+    wf_functions = types.ModuleType("sagemaker.workflow.functions")
+    wf_functions.Join = _Join
+
+    wf_execution_variables = types.ModuleType("sagemaker.workflow.execution_variables")
+    wf_execution_variables.ExecutionVariables = _ExecutionVariables
 
     wf_pipeline = types.ModuleType("sagemaker.workflow.pipeline")
     wf_pipeline.Pipeline = _Pipeline
@@ -55,9 +101,17 @@ def _install_sagemaker_stubs():
     sys.modules["sagemaker"] = sagemaker
     sys.modules["sagemaker.session"] = sagemaker_session
     sys.modules["sagemaker.spark.processing"] = spark_processing
+    sys.modules["sagemaker.processing"] = processing
     sys.modules["sagemaker.workflow.parameters"] = wf_params
+    sys.modules["sagemaker.workflow.functions"] = wf_functions
+    sys.modules["sagemaker.workflow.execution_variables"] = wf_execution_variables
     sys.modules["sagemaker.workflow.pipeline"] = wf_pipeline
     sys.modules["sagemaker.workflow.steps"] = wf_steps
+    if "boto3" not in sys.modules:
+        boto3 = types.ModuleType("boto3")
+        boto3.client = lambda *args, **kwargs: SimpleNamespace()
+        boto3.resource = lambda *args, **kwargs: SimpleNamespace()
+        sys.modules["boto3"] = boto3
 
 
 def test_pipeline_definitions_smoke_build_with_concrete_contracts(monkeypatch):
@@ -161,23 +215,40 @@ def test_pipeline_definitions_smoke_build_with_concrete_contracts(monkeypatch):
         project_name_for_contracts="proj",
         feature_spec_version_for_contracts="v1",
     )
+    for module in (p_code_build, p_code_validate, p_code_smoke):
+        monkeypatch.setattr(
+            module,
+            "resolve_step_execution_contract",
+            lambda **kwargs: SimpleNamespace(
+                script_s3_uri=f"s3://code/{kwargs['pipeline_job_name']}/{kwargs['step_name']}.py",
+                entry_script=f"{kwargs['step_name']}.py",
+                code_artifact_s3_uri=None,
+            ),
+        )
+
     p_code_build.build_code_bundle_build_pipeline(
         pipeline_name="pcode-build",
         role_arn="arn:aws:iam::123:role/x",
         default_bucket="bucket",
         region_name="us-east-1",
+        project_name_for_contracts="proj",
+        feature_spec_version_for_contracts="v1",
     )
     p_code_validate.build_code_artifact_validate_pipeline(
         pipeline_name="pcode-validate",
         role_arn="arn:aws:iam::123:role/x",
         default_bucket="bucket",
         region_name="us-east-1",
+        project_name_for_contracts="proj",
+        feature_spec_version_for_contracts="v1",
     )
     p_code_smoke.build_code_smoke_validate_pipeline(
         pipeline_name="pcode-smoke",
         role_arn="arn:aws:iam::123:role/x",
         default_bucket="bucket",
         region_name="us-east-1",
+        project_name_for_contracts="proj",
+        feature_spec_version_for_contracts="v1",
     )
 
 
@@ -421,3 +492,99 @@ def test_backfill_historical_extractor_pipeline_rejects_placeholder_contract_ide
         assert "concrete value" in str(exc)
     else:
         raise AssertionError("Expected ValueError")
+
+
+def test_code_artifact_validate_pipeline_wires_build_manifest_handoff(monkeypatch):
+    _install_sagemaker_stubs()
+    from ndr.pipeline import sagemaker_pipeline_definitions_code_artifact_validate as p_code_validate
+
+    monkeypatch.setattr(
+        p_code_validate,
+        "resolve_step_execution_contract",
+        lambda **kwargs: SimpleNamespace(
+            script_s3_uri=f"s3://code/{kwargs['pipeline_job_name']}/{kwargs['step_name']}.py",
+            entry_script=f"{kwargs['step_name']}.py",
+            code_artifact_s3_uri=None,
+        ),
+    )
+
+    pipeline = p_code_validate.build_code_artifact_validate_pipeline(
+        pipeline_name="pcode-validate",
+        role_arn="arn:aws:iam::123:role/x",
+        default_bucket="bucket",
+        region_name="us-east-1",
+        project_name_for_contracts="proj",
+        feature_spec_version_for_contracts="v1",
+    )
+
+    build_step, validate_step = pipeline.steps
+    assert build_step.name == "CodeBundleBuildStep"
+    assert validate_step.name == "CodeArtifactValidateStep"
+    assert validate_step.kwargs["depends_on"] == [build_step]
+    assert validate_step.kwargs["inputs"][0].destination.endswith("/build_manifest")
+    assert "--build-manifest-in" in validate_step.kwargs["job_arguments"]
+    assert "--validation-report-out" in validate_step.kwargs["job_arguments"]
+
+
+def test_code_smoke_validate_pipeline_wires_full_dependency_chain(monkeypatch):
+    _install_sagemaker_stubs()
+    from ndr.pipeline import sagemaker_pipeline_definitions_code_smoke_validate as p_code_smoke
+
+    monkeypatch.setattr(
+        p_code_smoke,
+        "resolve_step_execution_contract",
+        lambda **kwargs: SimpleNamespace(
+            script_s3_uri=f"s3://code/{kwargs['pipeline_job_name']}/{kwargs['step_name']}.py",
+            entry_script=f"{kwargs['step_name']}.py",
+            code_artifact_s3_uri=None,
+        ),
+    )
+
+    pipeline = p_code_smoke.build_code_smoke_validate_pipeline(
+        pipeline_name="pcode-smoke",
+        role_arn="arn:aws:iam::123:role/x",
+        default_bucket="bucket",
+        region_name="us-east-1",
+        project_name_for_contracts="proj",
+        feature_spec_version_for_contracts="v1",
+    )
+
+    build_step, validate_step, smoke_step = pipeline.steps
+    assert validate_step.kwargs["depends_on"] == [build_step]
+    assert smoke_step.kwargs["depends_on"] == [validate_step]
+    assert len(smoke_step.kwargs["inputs"]) == 2
+    assert smoke_step.kwargs["inputs"][0].destination.endswith("/build_manifest")
+    assert smoke_step.kwargs["inputs"][1].destination.endswith("/validation_report")
+    assert "--validation-report-in" in smoke_step.kwargs["job_arguments"]
+
+
+def test_code_bundle_build_pipeline_emits_versioned_manifest_output(monkeypatch):
+    _install_sagemaker_stubs()
+    from ndr.pipeline import sagemaker_pipeline_definitions_code_bundle_build as p_code_build
+
+    monkeypatch.setattr(
+        p_code_build,
+        "resolve_step_execution_contract",
+        lambda **kwargs: SimpleNamespace(
+            script_s3_uri=f"s3://code/{kwargs['pipeline_job_name']}/{kwargs['step_name']}.py",
+            entry_script=f"{kwargs['step_name']}.py",
+            code_artifact_s3_uri=None,
+        ),
+    )
+
+    pipeline = p_code_build.build_code_bundle_build_pipeline(
+        pipeline_name="pcode-build",
+        role_arn="arn:aws:iam::123:role/x",
+        default_bucket="bucket",
+        region_name="us-east-1",
+        project_name_for_contracts="proj",
+        feature_spec_version_for_contracts="v1",
+    )
+
+    build_step = pipeline.steps[0]
+    output = build_step.kwargs["outputs"][0]
+    assert build_step.name == "CodeBundleBuildStep"
+    assert output.output_name == "BuildManifestOutput"
+    assert output.source.endswith("/build_manifest")
+    assert "code-artifact-handoffs" in str(output.destination)
+    assert "--manifest-out" in build_step.kwargs["job_arguments"]

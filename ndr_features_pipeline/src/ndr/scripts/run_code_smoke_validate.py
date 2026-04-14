@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ndr.orchestration.code_artifact_contracts import (
+    validate_code_artifact_validate_report,
     CODE_SMOKE_VALIDATE_REPORT_VERSION,
     validate_code_bundle_build_output,
     validate_code_smoke_validate_report,
@@ -22,6 +23,7 @@ DEFAULT_REPORT_OUT = "/tmp/code_smoke_validate_report.json"
 ERROR_CODE_EXECUTION_FAILED = "CODE_SMOKE_EXECUTION_FAILED"
 ERROR_CODE_TIMEOUT = "CODE_SMOKE_TIMEOUT"
 ERROR_CODE_IMPORT_FAILED = "CODE_SMOKE_IMPORT_FAILED"
+ERROR_CODE_VALIDATE_BLOCKED = "CODE_SMOKE_VALIDATE_BLOCKED"
 ERROR_CODE_SCHEMA_INVALID = "CODE_SMOKE_SCHEMA_INVALID"
 
 
@@ -53,6 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--feature-spec-version", required=True)
     parser.add_argument("--artifact-build-id", required=True)
     parser.add_argument("--build-manifest-in", required=True)
+    parser.add_argument("--validation-report-in", required=True)
     parser.add_argument("--smoke-report-out", default=DEFAULT_REPORT_OUT)
     parser.add_argument("--region-name")
     parser.add_argument("--timeout-seconds", type=int, default=120)
@@ -156,6 +159,18 @@ def validate_smoke(args: argparse.Namespace) -> dict[str, Any]:
     build_payload = json.loads(Path(args.build_manifest_in).read_text(encoding="utf-8"))
     validate_code_bundle_build_output(build_payload)
     _validate_manifest_against_args(args=args, payload=build_payload)
+    validation_report = json.loads(Path(args.validation_report_in).read_text(encoding="utf-8"))
+    validate_code_artifact_validate_report(validation_report)
+    if str(validation_report.get("artifact_build_id") or "") != args.artifact_build_id:
+        raise ValueError(
+            f"validation_report artifact_build_id mismatch: expected {args.artifact_build_id!r}, "
+            f"got {validation_report.get('artifact_build_id')!r}"
+        )
+    if str(validation_report.get("status") or "").upper() != "PASS":
+        raise ValueError(
+            f"{ERROR_CODE_VALIDATE_BLOCKED}: smoke validation blocked because artifact validation status "
+            f"is {validation_report.get('status')!r}, expected 'PASS'"
+        )
 
     boto3 = _load_boto3()
     client_kwargs: dict[str, Any] = {"service_name": "s3"}

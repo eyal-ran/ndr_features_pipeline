@@ -294,14 +294,24 @@ def start_initial_materialization_runs(region_name, dry_run=True):
 ```python
 artifact_commands = [
     f'python -m ndr.scripts.run_code_bundle_build --project-name {project_name} --feature-spec-version {feature_spec_version} --artifact-build-id {artifact_build_id}',
-    f'python -m ndr.scripts.run_code_artifact_validate --project-name {project_name} --feature-spec-version {feature_spec_version} --artifact-build-id {artifact_build_id}',
-    f'python -m ndr.scripts.run_code_smoke_validate --project-name {project_name} --feature-spec-version {feature_spec_version} --artifact-build-id {artifact_build_id}',
+    (
+        'python -m ndr.scripts.run_code_artifact_validate '
+        f'--project-name {project_name} --feature-spec-version {feature_spec_version} '
+        f'--artifact-build-id {artifact_build_id} --build-manifest-in /tmp/code_bundle_build_output.json'
+    ),
+    (
+        'python -m ndr.scripts.run_code_smoke_validate '
+        f'--project-name {project_name} --feature-spec-version {feature_spec_version} '
+        f'--artifact-build-id {artifact_build_id} --build-manifest-in /tmp/code_bundle_build_output.json '
+        '--validation-report-in /tmp/code_artifact_validate_report.json'
+    ),
 ]
 for i, cmd in enumerate(artifact_commands, 1): print(f'{i}. {cmd}')
 print('code_artifact_s3_uri:', code_artifact_s3_uri or '<set me>')
 print('expected build contract: code_bundle_build_output.v1')
 print('expected validate contract: code_artifact_validate_report.v1')
 print('expected smoke contract: code_smoke_validate_report.v1')
+print('smoke step is now explicitly blocked unless validation_report.status == PASS')
 print('do not promote placeholders: artifact_build_id/artifact_sha256/code_artifact_s3_uri must be concrete values')
 ```
 

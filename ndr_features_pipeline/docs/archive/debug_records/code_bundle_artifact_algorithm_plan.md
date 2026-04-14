@@ -552,6 +552,29 @@ Smoke script proves artifacts are runnable for all included step contracts.
 - Deterministic, auditable outputs.
 - No hidden fallback semantics.
 
+### Task 3 implementation status
+- `run_code_smoke_validate.py` now consumes `code_bundle_build_output.v1`, validates argument/contract identity, and deterministically iterates every emitted `step_artifacts` contract in sorted order.
+- For each declared step artifact, the script now:
+  - downloads from declared `code_artifact_s3_uri`,
+  - extracts archive bytes into an isolated temp directory,
+  - sets `PYTHONPATH=<extract_dir>/src[:existing]` to mirror artifact-mode import shape,
+  - executes `python <entry_script> --help` from the extracted root using a deterministic timeout.
+- The smoke producer emits `code_smoke_validate_report.v1` with per-step pass/fail and deterministic failure taxonomy:
+  - `OK`,
+  - `CODE_SMOKE_EXECUTION_FAILED`,
+  - `CODE_SMOKE_IMPORT_FAILED`,
+  - `CODE_SMOKE_TIMEOUT`,
+  - `CODE_SMOKE_SCHEMA_INVALID` (argument/contract mismatch path in `main`).
+- Failure behavior is fail-safe and auditable:
+  - pipeline exit code is non-zero when report status is `FAIL`,
+  - per-step failures are explicit and include deterministic reason text,
+  - retriable flag is true only for timeout scenarios.
+- Added unit coverage for:
+  - positive runnable artifact execution,
+  - negative runtime failure and import failure paths,
+  - contract mismatch/schema path,
+  - environment path setup (`PYTHONPATH`) behavior.
+
 ---
 
 ## Task 4 — Migrate unified_with_fgc pipeline definitions to contract-based artifact launch

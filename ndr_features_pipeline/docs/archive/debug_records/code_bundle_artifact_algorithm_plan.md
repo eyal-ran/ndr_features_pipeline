@@ -503,6 +503,20 @@ Validation script deterministically passes only correct artifacts.
 - Deterministic errors and auditable reports.
 - Idempotent and retry-safe I/O behavior.
 
+### Task 2 implementation status
+- `run_code_artifact_validate.py` now enforces deterministic artifact integrity checks against the frozen build manifest contract:
+  - validates manifest schema before any S3 I/O,
+  - performs per-step S3 `HEAD` + download + SHA-256 verification,
+  - verifies `tar.gz` archive readability and declared `entry_script` presence,
+  - emits `code_artifact_validate_report.v1` and fails fast on first failed step.
+- Failure taxonomy aligns with Task 0 report schema error codes:
+  - `CODE_ARTIFACT_OBJECT_MISSING`,
+  - `CODE_ARTIFACT_DOWNLOAD_FAILED`,
+  - `CODE_ARTIFACT_HASH_MISMATCH`,
+  - `CODE_ARTIFACT_ARCHIVE_INVALID`,
+  - `CODE_ARTIFACT_ENTRY_SCRIPT_MISSING`,
+  - `CODE_ARTIFACT_SCHEMA_INVALID` (top-level contract/argument mismatch path).
+
 ---
 
 ## Task 3 — Implement smoke validation script for runnable entrypoints

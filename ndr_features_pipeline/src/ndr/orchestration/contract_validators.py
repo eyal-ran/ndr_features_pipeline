@@ -31,6 +31,10 @@ TASK9_GATE_ERROR_CODE = "TASK9_RELEASE_GATE_RED"
 TASK7_FINAL_RELEASE_GATE_VERSION = "task7_v3_final_release_gate.v1"
 TASK7_CONTRACT_ERROR_CODE = "TASK7_CONTRACT_VIOLATION"
 TASK7_GATE_ERROR_CODE = "TASK7_FINAL_RELEASE_GATE_RED"
+TASK7_ARTIFACT_LIFECYCLE_GATE_VERSION = "task7_code_artifact_lifecycle_gate.v1"
+TASK7_ARTIFACT_CONTRACT_ERROR_CODE = "TASK7_ARTIFACT_CONTRACT_VIOLATION"
+TASK7_ARTIFACT_GATE_ERROR_CODE = "TASK7_ARTIFACT_RELEASE_GATE_RED"
+TASK7_ARTIFACT_ROLLBACK_ERROR_CODE = "TASK7_ARTIFACT_ROLLBACK_REQUIRED"
 TASK6_CROSS_FLOW_CONFORMANCE_VERSION = "task6_cross_flow_contract_conformance.v1"
 TASK6_CONTRACT_ERROR_CODE = "TASK6_CONTRACT_VIOLATION"
 TASK6_GATE_ERROR_CODE = "TASK6_CROSS_FLOW_CONTRACT_RED"
@@ -72,6 +76,16 @@ _TASK7_REQUIRED_STARTUP_GATES = (
     "deployment_precondition_gate",
 )
 _TASK7_REQUIRED_FLOWS = ("monthly", "rt", "backfill", "bootstrap", "training", "deployment")
+_TASK7_ARTIFACT_REQUIRED_FAMILIES = (
+    "streaming",
+    "dependent",
+    "fg_b_baseline",
+    "unload",
+    "inference",
+    "join",
+    "training",
+    "backfill",
+)
 
 _TASK11_REQUIRED_FINDINGS = (
     "F1.1",
@@ -1314,5 +1328,196 @@ def evaluate_task7_v3_final_release_gate(*, evidence: Mapping[str, Any]) -> dict
     if failed_checks:
         raise ValueError(
             f"{TASK7_GATE_ERROR_CODE}: Task 7 final release gate failed checks {failed_checks}"
+        )
+    return report
+
+
+def determine_task7_artifact_rollback_action(*, failure_stage: str, reason_code: str) -> dict[str, Any]:
+    normalized_stage = (failure_stage or "").strip().lower()
+    if normalized_stage not in {"validate", "smoke", "promotion"}:
+        raise ValueError(
+            f"{TASK7_ARTIFACT_CONTRACT_ERROR_CODE}: failure_stage must be validate|smoke|promotion, "
+            f"got {failure_stage!r}"
+        )
+    normalized_reason = (reason_code or "").strip()
+    if not normalized_reason:
+        raise ValueError(f"{TASK7_ARTIFACT_CONTRACT_ERROR_CODE}: reason_code must be non-empty")
+
+    stage_to_actions = {
+        "validate": ["block_promotion", "keep_previous_contract_pointers", "emit_non_retriable_alert"],
+        "smoke": ["rollback_promoted_contract_pointers", "restore_last_known_good_artifacts", "open_incident"],
+        "promotion": ["rollback_promoted_contract_pointers", "reconcile_ddb_contract_state", "open_incident"],
+    }
+    return {
+        "status": "ROLLBACK_REQUIRED",
+        "error_code": TASK7_ARTIFACT_ROLLBACK_ERROR_CODE,
+        "failure_stage": normalized_stage,
+        "reason_code": normalized_reason,
+        "actions": stage_to_actions[normalized_stage],
+    }
+
+
+def evaluate_task7_code_artifact_lifecycle_gate(*, evidence: Mapping[str, Any]) -> dict[str, Any]:
+    required_sections = (
+        "release_gate",
+        "lifecycle",
+        "targeted_pytest_matrix",
+        "contract_drift",
+        "pipeline_definitions",
+        "notebook_checks",
+        "producer_consumer",
+        "rollback",
+    )
+    missing_sections = [section for section in required_sections if section not in evidence]
+    if missing_sections:
+        raise ValueError(f"{TASK7_ARTIFACT_CONTRACT_ERROR_CODE}: missing required sections {missing_sections}")
+
+    release_gate = evidence["release_gate"]
+    lifecycle = evidence["lifecycle"]
+    matrix = evidence["targeted_pytest_matrix"]
+    contract_drift = evidence["contract_drift"]
+    pipeline_definitions = evidence["pipeline_definitions"]
+    notebook_checks = evidence["notebook_checks"]
+    producer_consumer = evidence["producer_consumer"]
+    rollback = evidence["rollback"]
+
+    if not isinstance(release_gate, Mapping):
+        raise ValueError(f"{TASK7_ARTIFACT_CONTRACT_ERROR_CODE}: release_gate must be a mapping")
+    if not isinstance(lifecycle, Mapping):
+        raise ValueError(f"{TASK7_ARTIFACT_CONTRACT_ERROR_CODE}: lifecycle must be a mapping")
+    if not isinstance(matrix, Sequence):
+        raise ValueError(f"{TASK7_ARTIFACT_CONTRACT_ERROR_CODE}: targeted_pytest_matrix must be a sequence")
+    if not isinstance(contract_drift, Mapping):
+        raise ValueError(f"{TASK7_ARTIFACT_CONTRACT_ERROR_CODE}: contract_drift must be a mapping")
+    if not isinstance(pipeline_definitions, Mapping):
+        raise ValueError(f"{TASK7_ARTIFACT_CONTRACT_ERROR_CODE}: pipeline_definitions must be a mapping")
+    if not isinstance(notebook_checks, Mapping):
+        raise ValueError(f"{TASK7_ARTIFACT_CONTRACT_ERROR_CODE}: notebook_checks must be a mapping")
+    if not isinstance(producer_consumer, Mapping):
+        raise ValueError(f"{TASK7_ARTIFACT_CONTRACT_ERROR_CODE}: producer_consumer must be a mapping")
+    if not isinstance(rollback, Mapping):
+        raise ValueError(f"{TASK7_ARTIFACT_CONTRACT_ERROR_CODE}: rollback must be a mapping")
+
+    checks: list[dict[str, Any]] = []
+
+    def _check(check_id: str, passed: bool, detail: str) -> None:
+        checks.append({"check_id": check_id, "passed": bool(passed), "detail": detail})
+
+    _check(
+        "7a.release.block_on_failure",
+        bool(release_gate.get("block_on_failure")),
+        "TASK7_RELEASE_POLICY_INVALID: block_on_failure must be true",
+    )
+    _check(
+        "7a.lifecycle.build",
+        str(lifecycle.get("build_status") or "").upper() == "PASS",
+        f"TASK7_LIFECYCLE_BUILD_FAILED: build_status={lifecycle.get('build_status')!r}",
+    )
+    _check(
+        "7a.lifecycle.validate",
+        str(lifecycle.get("validate_status") or "").upper() == "PASS",
+        f"TASK7_LIFECYCLE_VALIDATE_FAILED: validate_status={lifecycle.get('validate_status')!r}",
+    )
+    _check(
+        "7a.lifecycle.smoke",
+        str(lifecycle.get("smoke_status") or "").upper() == "PASS",
+        f"TASK7_LIFECYCLE_SMOKE_FAILED: smoke_status={lifecycle.get('smoke_status')!r}",
+    )
+    _check(
+        "7a.lifecycle.promoted_contract_ready",
+        bool(lifecycle.get("promoted_contract_ready")),
+        "TASK7_PROMOTED_CONTRACT_NOT_READY: promoted contract readiness must be true",
+    )
+
+    matrix_rows: dict[str, Mapping[str, Any]] = {}
+    for idx, row in enumerate(matrix):
+        if not isinstance(row, Mapping):
+            raise ValueError(f"{TASK7_ARTIFACT_CONTRACT_ERROR_CODE}: targeted_pytest_matrix[{idx}] must be a mapping")
+        family = str(row.get("artifact_family") or "").strip()
+        if not family:
+            raise ValueError(f"{TASK7_ARTIFACT_CONTRACT_ERROR_CODE}: targeted_pytest_matrix[{idx}] missing artifact_family")
+        matrix_rows[family] = row
+
+    missing_families = sorted(set(_TASK7_ARTIFACT_REQUIRED_FAMILIES) - set(matrix_rows))
+    _check(
+        "7a.matrix.family_coverage",
+        not missing_families,
+        f"TASK7_FAMILY_COVERAGE_GAP: missing families={missing_families}",
+    )
+    for family in _TASK7_ARTIFACT_REQUIRED_FAMILIES:
+        row = matrix_rows.get(family, {})
+        status = str(row.get("status") or "").lower()
+        _check(
+            f"7a.matrix.{family}.status",
+            status == "passed",
+            f"TASK7_MATRIX_FAMILY_FAILED: family={family} status={status or '<missing>'}",
+        )
+        _check(
+            f"7a.matrix.{family}.consumption",
+            bool(row.get("runtime_consumption_verified")),
+            f"TASK7_RUNTIME_CONSUMPTION_NOT_VERIFIED: family={family}",
+        )
+        _check(
+            f"7a.matrix.{family}.retry_replay",
+            bool(row.get("retry_replay_deterministic")),
+            f"TASK7_RETRY_REPLAY_NOT_DETERMINISTIC: family={family}",
+        )
+
+    _check(
+        "7a.contract_drift.v3",
+        bool(contract_drift.get("check_contract_drift_v3_passed")),
+        "TASK7_CONTRACT_DRIFT_NOT_BLOCKED: contract drift check must pass",
+    )
+    _check(
+        "7a.pipeline_definitions",
+        bool(pipeline_definitions.get("checks_passed")),
+        "TASK7_PIPELINE_DEFINITION_CHECK_FAILED: pipeline definition checks must pass",
+    )
+    _check(
+        "7a.notebook.structure",
+        bool(notebook_checks.get("structure_passed")),
+        "TASK7_NOTEBOOK_STRUCTURE_CHECK_FAILED: notebook structure check must pass",
+    )
+    _check(
+        "7a.notebook.parity",
+        bool(notebook_checks.get("parity_passed")),
+        "TASK7_NOTEBOOK_PARITY_CHECK_FAILED: notebook parity check must pass",
+    )
+    _check(
+        "7a.producer_consumer.alignment",
+        bool(producer_consumer.get("interfaces_verified")) and not bool(producer_consumer.get("drift_detected")),
+        "TASK7_PRODUCER_CONSUMER_NOT_ALIGNED: interfaces must be verified with no drift",
+    )
+    _check(
+        "7a.rollback.failed_validation",
+        bool(rollback.get("failed_validation_rollback_tested")),
+        "TASK7_ROLLBACK_VALIDATION_PATH_NOT_TESTED: failed-validation rollback must be tested",
+    )
+    _check(
+        "7a.rollback.failed_smoke",
+        bool(rollback.get("failed_smoke_rollback_tested")),
+        "TASK7_ROLLBACK_SMOKE_PATH_NOT_TESTED: failed-smoke rollback must be tested",
+    )
+    _check(
+        "7a.rollback.deterministic_replay",
+        bool(rollback.get("deterministic_replay_verified")),
+        "TASK7_ROLLBACK_REPLAY_NOT_DETERMINISTIC: rollback replay determinism must be verified",
+    )
+    _check(
+        "7a.rollback.playbook_documented",
+        bool(rollback.get("playbook_documented")),
+        "TASK7_ROLLBACK_PLAYBOOK_MISSING: rollback playbook evidence is required",
+    )
+
+    failed_checks = [check["check_id"] for check in checks if not check["passed"]]
+    report = {
+        "contract_version": TASK7_ARTIFACT_LIFECYCLE_GATE_VERSION,
+        "status": "go" if not failed_checks else "no-go",
+        "checks": checks,
+        "failed_checks": failed_checks,
+    }
+    if failed_checks:
+        raise ValueError(
+            f"{TASK7_ARTIFACT_GATE_ERROR_CODE}: Task 7 artifact lifecycle gate failed checks {failed_checks}"
         )
     return report

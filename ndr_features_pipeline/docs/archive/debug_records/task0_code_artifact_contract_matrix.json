@@ -1,0 +1,67 @@
+{
+  "contract_bundle_version": "task0.code_artifact_contract_matrix.v1",
+  "contracts": [
+    {
+      "contract_version": "code_bundle_build_output.v1",
+      "producer": "ndr.scripts.run_code_bundle_build",
+      "consumers": [
+        "ndr.scripts.run_code_artifact_validate",
+        "ndr.scripts.run_code_smoke_validate",
+        "deployment notebook artifact promotion cell"
+      ],
+      "producer_to_consumer_field_map": {
+        "project_name": "validate/read for project-level audit",
+        "feature_spec_version": "validate/read for version scoping",
+        "artifact_build_id": "validate + smoke run selection",
+        "artifact_sha256": "validate hash compare",
+        "artifact_format": "validate archive parser selection",
+        "step_artifacts[].artifact_family": "validate/smoke family-level decisioning",
+        "step_artifacts[].pipeline_job_name": "downstream per-pipeline audit and traceability",
+        "step_artifacts[].step_name": "validate/smoke step-target execution",
+        "step_artifacts[].entry_script": "validate archive-content check + smoke exec target",
+        "step_artifacts[].code_artifact_s3_uri": "validate/smoke download target",
+        "step_artifacts[].artifact_build_id": "validate/smoke consistency checks",
+        "step_artifacts[].artifact_sha256": "validate per-step hash compare",
+        "step_artifacts[].artifact_format": "validate per-step archive parser selection"
+      }
+    },
+    {
+      "contract_version": "code_artifact_validate_report.v1",
+      "producer": "ndr.scripts.run_code_artifact_validate",
+      "consumers": [
+        "ndr.scripts.run_code_smoke_validate",
+        "deployment orchestration report gate"
+      ],
+      "producer_to_consumer_field_map": {
+        "artifact_build_id": "smoke report linkage + orchestration gate traceability",
+        "status": "pipeline fail-fast gating",
+        "validated_steps": "audit of expected validation coverage",
+        "step_results[].artifact_family": "family-scoped remediation routing",
+        "step_results[].pipeline_job_name": "pipeline-scoped remediation routing",
+        "step_results[].step_name": "step-level diagnostics",
+        "step_results[].status": "step-level gate",
+        "step_results[].error_code": "deterministic remediation class",
+        "step_results[].error_message": "operator diagnostics",
+        "step_results[].retriable": "retry policy decision"
+      }
+    },
+    {
+      "contract_version": "code_smoke_validate_report.v1",
+      "producer": "ndr.scripts.run_code_smoke_validate",
+      "consumers": [
+        "deployment orchestration report gate"
+      ],
+      "producer_to_consumer_field_map": {
+        "artifact_build_id": "promotion candidate linkage",
+        "status": "pipeline fail-fast gating",
+        "step_results[].artifact_family": "family-scoped remediation routing",
+        "step_results[].pipeline_job_name": "pipeline-scoped remediation routing",
+        "step_results[].step_name": "step-level diagnostics",
+        "step_results[].status": "step-level gate",
+        "step_results[].error_code": "deterministic remediation class",
+        "step_results[].error_message": "operator diagnostics",
+        "step_results[].retriable": "retry policy decision"
+      }
+    }
+  ]
+}

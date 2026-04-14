@@ -55,27 +55,27 @@ It includes:
 
 #### Pipeline steps and run chain
 1. `RTRawInputResolverStep`
-   - Pipeline step runs: `python -m ndr.scripts.run_rt_raw_input_resolver`
+   - Pipeline step runs via `build_processing_step_launch_args(...)`: artifact mode executes `python <entry_script>` and dual-read fallback executes `python -m ndr.scripts.run_rt_raw_input_resolver`.
    - Script location: `src/ndr/scripts/run_rt_raw_input_resolver.py`
    - Second-hand invoked processing entrypoint: `run_rt_raw_input_resolver`
    - Processing module location: `src/ndr/processing/rt_raw_input_resolver_job.py`
    - Processing purpose: enforce deterministic ingestion/fallback resolution before delta and persist `source_mode` provenance to Batch Index.
    - Fail-fast contract errors: `RAW_INPUT_FALLBACK_DISABLED`, `RAW_INPUT_FALLBACK_QUERY_CONTRACT_MISSING`, `RAW_INPUT_FALLBACK_EMPTY_RESULT`.
 2. `DeltaBuilderStep` (depends on `RTRawInputResolverStep`)
-   - Pipeline step runs: `python -m ndr.scripts.run_delta_builder`
+   - Pipeline step runs via `build_processing_step_launch_args(...)`: artifact mode executes `python <entry_script>` and dual-read fallback executes `python -m ndr.scripts.run_delta_builder`.
    - Script location: `src/ndr/scripts/run_delta_builder.py`
    - Script purpose: parse runtime params and delegate delta build.
    - Second-hand invoked processing entrypoint: `run_delta_builder_from_runtime_config`
    - Processing module location: `src/ndr/processing/delta_builder_job.py`
    - Processing purpose: build 15-minute delta tables from Palo Alto logs.
 3. `FGABuilderStep` (depends on `DeltaBuilderStep`)
-   - Runs: `python -m ndr.scripts.run_fg_a_builder`
+   - Runs via `build_processing_step_launch_args(...)`: artifact mode executes `python <entry_script>` and dual-read fallback executes `python -m ndr.scripts.run_fg_a_builder`.
    - Script: `src/ndr/scripts/run_fg_a_builder.py`
    - Second-hand processing entrypoint: `run_fg_a_builder_from_runtime_config`
    - Processing module: `src/ndr/processing/fg_a_builder_job.py`
    - Processing purpose: build FG-A (current-behavior) windowed features on top of deltas.
 4. `PairCountsBuilderStep` (depends on `FGABuilderStep`)
-   - Runs: `python -m ndr.scripts.run_pair_counts_builder`
+   - Runs via `build_processing_step_launch_args(...)`: artifact mode executes `python <entry_script>` and dual-read fallback executes `python -m ndr.scripts.run_pair_counts_builder`.
    - Script: `src/ndr/scripts/run_pair_counts_builder.py`
    - Second-hand processing entrypoint: `run_pair_counts_builder_from_runtime_config`
    - Processing module: `src/ndr/processing/pair_counts_builder_job.py`
@@ -87,7 +87,7 @@ It includes:
 
 - **Implemented pipeline function:** `build_15m_dependent_pipeline`.
 - **Step/script:** `FGCCorrBuilderStep` → `run_fg_c_builder.py`.
-   - Runs: `python -m ndr.scripts.run_fg_c_builder`
+   - Runs via `build_processing_step_launch_args(...)`: artifact mode executes `python <entry_script>` and dual-read fallback executes `python -m ndr.scripts.run_fg_c_builder`.
    - Script: `src/ndr/scripts/run_fg_c_builder.py`
    - Second-hand processing entrypoint: `run_fg_c_builder_from_runtime_config`
    - Processing module: `src/ndr/processing/fg_c_builder_job.py`
@@ -183,7 +183,7 @@ It includes:
 
 #### Pipeline steps and run chain
 1. `MachineInventoryUnloadStep`
-   - Runs: `python -m ndr.scripts.run_machine_inventory_unload`
+   - Runs via `build_processing_step_launch_args(...)`: artifact mode executes `python <entry_script>` and dual-read fallback executes `python -m ndr.scripts.run_machine_inventory_unload`.
    - Script: `src/ndr/scripts/run_machine_inventory_unload.py`
    - Second-hand processing entrypoint: `run_machine_inventory_unload_from_runtime_config`
    - Processing module: `src/ndr/processing/machine_inventory_unload_job.py`
@@ -198,7 +198,7 @@ It includes:
 
 #### Pipeline steps and run chain
 1. `FGBaselineBuilderStep`
-   - Runs: `python -m ndr.scripts.run_fg_b_builder`
+   - Runs via `build_processing_step_launch_args(...)`: artifact mode executes `python <entry_script>` and dual-read fallback executes `python -m ndr.scripts.run_fg_b_builder`.
    - Script: `src/ndr/scripts/run_fg_b_builder.py`
    - Second-hand processing entrypoint: `run_fg_b_builder_from_runtime_config`
    - Processing module: `src/ndr/processing/fg_b_builder_job.py`

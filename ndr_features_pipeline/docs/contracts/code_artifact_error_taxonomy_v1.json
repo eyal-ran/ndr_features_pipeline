@@ -1,0 +1,66 @@
+{
+  "contract_version": "code_artifact_error_taxonomy.v1",
+  "domain": "code_artifact_lifecycle",
+  "errors": [
+    {
+      "error_code": "CODE_ARTIFACT_OBJECT_MISSING",
+      "retriable": true,
+      "phase": "validate",
+      "description": "Artifact object does not exist at expected S3 URI."
+    },
+    {
+      "error_code": "CODE_ARTIFACT_DOWNLOAD_FAILED",
+      "retriable": true,
+      "phase": "validate",
+      "description": "Artifact object could not be downloaded due to transport/service failure."
+    },
+    {
+      "error_code": "CODE_ARTIFACT_HASH_MISMATCH",
+      "retriable": false,
+      "phase": "validate",
+      "description": "Downloaded artifact hash does not match declared build manifest hash."
+    },
+    {
+      "error_code": "CODE_ARTIFACT_ARCHIVE_INVALID",
+      "retriable": false,
+      "phase": "validate",
+      "description": "Artifact bytes are not a valid declared archive format."
+    },
+    {
+      "error_code": "CODE_ARTIFACT_ENTRY_SCRIPT_MISSING",
+      "retriable": false,
+      "phase": "validate",
+      "description": "Declared entry script is not present inside extracted artifact."
+    },
+    {
+      "error_code": "CODE_ARTIFACT_SCHEMA_INVALID",
+      "retriable": false,
+      "phase": "validate",
+      "description": "Producer output violates frozen contract schema."
+    },
+    {
+      "error_code": "CODE_SMOKE_EXECUTION_FAILED",
+      "retriable": false,
+      "phase": "smoke",
+      "description": "Entry script command failed in artifact-like execution shape."
+    },
+    {
+      "error_code": "CODE_SMOKE_TIMEOUT",
+      "retriable": true,
+      "phase": "smoke",
+      "description": "Smoke command exceeded execution timeout."
+    },
+    {
+      "error_code": "CODE_SMOKE_IMPORT_FAILED",
+      "retriable": false,
+      "phase": "smoke",
+      "description": "Python import readiness check failed for artifact contents."
+    },
+    {
+      "error_code": "CODE_SMOKE_SCHEMA_INVALID",
+      "retriable": false,
+      "phase": "smoke",
+      "description": "Smoke producer output violates frozen report schema."
+    }
+  ]
+}

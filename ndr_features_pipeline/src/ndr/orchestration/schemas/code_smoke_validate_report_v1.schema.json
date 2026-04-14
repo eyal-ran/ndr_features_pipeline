@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ndr/contracts/code_smoke_validate_report_v1.schema.json",
+  "title": "code_smoke_validate_report.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "artifact_build_id",
+    "status",
+    "step_results"
+  ],
+  "properties": {
+    "contract_version": {
+      "type": "string",
+      "const": "code_smoke_validate_report.v1"
+    },
+    "artifact_build_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": ["PASS", "FAIL"]
+    },
+    "step_results": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/smokeStep"
+      }
+    }
+  },
+  "definitions": {
+    "smokeStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_family",
+        "pipeline_job_name",
+        "step_name",
+        "status",
+        "error_code",
+        "error_message",
+        "retriable"
+      ],
+      "properties": {
+        "artifact_family": {
+          "type": "string",
+          "enum": [
+            "streaming",
+            "dependent",
+            "fg_b_baseline",
+            "unload",
+            "inference",
+            "join",
+            "training",
+            "backfill"
+          ]
+        },
+        "pipeline_job_name": {
+          "type": "string",
+          "enum": [
+            "pipeline_15m_streaming",
+            "pipeline_15m_dependent",
+            "pipeline_fg_b_baseline",
+            "pipeline_machine_inventory_unload",
+            "pipeline_inference_predictions",
+            "pipeline_prediction_feature_join",
+            "pipeline_if_training",
+            "pipeline_backfill_historical_extractor",
+            "pipeline_backfill_15m_reprocessing"
+          ]
+        },
+        "step_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": ["PASS", "FAIL"]
+        },
+        "error_code": {
+          "type": "string",
+          "enum": [
+            "OK",
+            "CODE_SMOKE_EXECUTION_FAILED",
+            "CODE_SMOKE_TIMEOUT",
+            "CODE_SMOKE_IMPORT_FAILED",
+            "CODE_SMOKE_SCHEMA_INVALID"
+          ]
+        },
+        "error_message": {
+          "type": "string"
+        },
+        "retriable": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

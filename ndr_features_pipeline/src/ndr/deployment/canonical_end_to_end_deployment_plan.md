@@ -299,6 +299,10 @@ artifact_commands = [
 ]
 for i, cmd in enumerate(artifact_commands, 1): print(f'{i}. {cmd}')
 print('code_artifact_s3_uri:', code_artifact_s3_uri or '<set me>')
+print('expected build contract: code_bundle_build_output.v1')
+print('expected validate contract: code_artifact_validate_report.v1')
+print('expected smoke contract: code_smoke_validate_report.v1')
+print('do not promote placeholders: artifact_build_id/artifact_sha256/code_artifact_s3_uri must be concrete values')
 ```
 
 ## Cell 14 (code)

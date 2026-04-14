@@ -1,0 +1,33 @@
+{
+  "contract_version": "task7_code_artifact_lifecycle_gate.v1",
+  "block_on_failure": true,
+  "required_families": [
+    "streaming",
+    "dependent",
+    "fg_b_baseline",
+    "unload",
+    "inference",
+    "join",
+    "training",
+    "backfill"
+  ],
+  "required_lifecycle_statuses": {
+    "build_status": "PASS",
+    "validate_status": "PASS",
+    "smoke_status": "PASS",
+    "promoted_contract_ready": true
+  },
+  "required_gate_checks": [
+    "contract_drift_v3_passed",
+    "pipeline_definitions_passed",
+    "notebook_structure_passed",
+    "notebook_parity_passed",
+    "producer_consumer_aligned"
+  ],
+  "required_rollback_checks": [
+    "failed_validation_rollback_tested",
+    "failed_smoke_rollback_tested",
+    "deterministic_replay_verified",
+    "playbook_documented"
+  ]
+}

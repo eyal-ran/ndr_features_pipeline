@@ -1,0 +1,81 @@
+{
+  "release_gate": {
+    "block_on_failure": true
+  },
+  "lifecycle": {
+    "build_status": "PASS",
+    "validate_status": "PASS",
+    "smoke_status": "PASS",
+    "promoted_contract_ready": true
+  },
+  "targeted_pytest_matrix": [
+    {
+      "artifact_family": "streaming",
+      "status": "passed",
+      "runtime_consumption_verified": true,
+      "retry_replay_deterministic": true
+    },
+    {
+      "artifact_family": "dependent",
+      "status": "passed",
+      "runtime_consumption_verified": true,
+      "retry_replay_deterministic": true
+    },
+    {
+      "artifact_family": "fg_b_baseline",
+      "status": "passed",
+      "runtime_consumption_verified": true,
+      "retry_replay_deterministic": true
+    },
+    {
+      "artifact_family": "unload",
+      "status": "passed",
+      "runtime_consumption_verified": true,
+      "retry_replay_deterministic": true
+    },
+    {
+      "artifact_family": "inference",
+      "status": "passed",
+      "runtime_consumption_verified": true,
+      "retry_replay_deterministic": true
+    },
+    {
+      "artifact_family": "join",
+      "status": "passed",
+      "runtime_consumption_verified": true,
+      "retry_replay_deterministic": true
+    },
+    {
+      "artifact_family": "training",
+      "status": "passed",
+      "runtime_consumption_verified": true,
+      "retry_replay_deterministic": true
+    },
+    {
+      "artifact_family": "backfill",
+      "status": "passed",
+      "runtime_consumption_verified": true,
+      "retry_replay_deterministic": true
+    }
+  ],
+  "contract_drift": {
+    "check_contract_drift_v3_passed": true
+  },
+  "pipeline_definitions": {
+    "checks_passed": true
+  },
+  "notebook_checks": {
+    "structure_passed": true,
+    "parity_passed": true
+  },
+  "producer_consumer": {
+    "interfaces_verified": true,
+    "drift_detected": false
+  },
+  "rollback": {
+    "failed_validation_rollback_tested": true,
+    "failed_smoke_rollback_tested": true,
+    "deterministic_replay_verified": true,
+    "playbook_documented": true
+  }
+}

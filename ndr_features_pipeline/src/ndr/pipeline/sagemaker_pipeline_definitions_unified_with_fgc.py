@@ -52,7 +52,7 @@ from sagemaker.workflow.steps import ProcessingStep
 from sagemaker.spark.processing import PySparkProcessor
 
 from ndr.config.job_spec_loader import load_job_spec
-from ndr.pipeline.io_contract import resolve_step_code_uri
+from ndr.pipeline.io_contract import build_processing_step_launch_args, resolve_step_execution_contract
 
 
 PIPELINE_15M_STREAMING_JOB_NAME = "pipeline_15m_streaming"
@@ -252,25 +252,25 @@ def build_15m_streaming_pipeline(
     # ------------------------------------------------------------------ #
     # Step 1: RT pre-delta raw-input resolver                           #
     # ------------------------------------------------------------------ #
-    resolver_code_uri = resolve_step_code_uri(
+    resolver_contract = resolve_step_execution_contract(
         project_name=project_name_for_contracts,
         feature_spec_version=feature_spec_version_for_contracts,
         pipeline_job_name=PIPELINE_15M_STREAMING_JOB_NAME,
         step_name="RTRawInputResolverStep",
     )
-    delta_code_uri = resolve_step_code_uri(
+    delta_contract = resolve_step_execution_contract(
         project_name=project_name_for_contracts,
         feature_spec_version=feature_spec_version_for_contracts,
         pipeline_job_name=PIPELINE_15M_STREAMING_JOB_NAME,
         step_name="DeltaBuilderStep",
     )
-    fg_a_code_uri = resolve_step_code_uri(
+    fg_a_contract = resolve_step_execution_contract(
         project_name=project_name_for_contracts,
         feature_spec_version=feature_spec_version_for_contracts,
         pipeline_job_name=PIPELINE_15M_STREAMING_JOB_NAME,
         step_name="FGABuilderStep",
     )
-    pair_counts_code_uri = resolve_step_code_uri(
+    pair_counts_contract = resolve_step_execution_contract(
         project_name=project_name_for_contracts,
         feature_spec_version=feature_spec_version_for_contracts,
         pipeline_job_name=PIPELINE_15M_STREAMING_JOB_NAME,
@@ -279,24 +279,26 @@ def build_15m_streaming_pipeline(
     resolver_step = ProcessingStep(
         name="RTRawInputResolverStep",
         processor=processor,
-        code=resolver_code_uri,
-        job_arguments=[
-            "python",
-            "-m",
-            "ndr.scripts.run_rt_raw_input_resolver",
-            "--project-name",
-            project_name,
-            "--feature-spec-version",
-            feature_spec_version,
-            "--mini-batch-id",
-            mini_batch_id,
-            "--raw-parsed-logs-s3-prefix",
-            raw_parsed_logs_s3_prefix,
-            "--batch-start-ts-iso",
-            batch_start_ts_iso,
-            "--batch-end-ts-iso",
-            batch_end_ts_iso,
-        ],
+        code=resolver_contract.script_s3_uri,
+        job_arguments=build_processing_step_launch_args(
+            entry_script=resolver_contract.entry_script,
+            module_name="ndr.scripts.run_rt_raw_input_resolver",
+            artifact_uri=resolver_contract.code_artifact_s3_uri,
+            passthrough_args=[
+                "--project-name",
+                project_name,
+                "--feature-spec-version",
+                feature_spec_version,
+                "--mini-batch-id",
+                mini_batch_id,
+                "--raw-parsed-logs-s3-prefix",
+                raw_parsed_logs_s3_prefix,
+                "--batch-start-ts-iso",
+                batch_start_ts_iso,
+                "--batch-end-ts-iso",
+                batch_end_ts_iso,
+            ],
+        ),
         inputs=[],
         outputs=[],
     )
@@ -307,24 +309,26 @@ def build_15m_streaming_pipeline(
     delta_step = ProcessingStep(
         name="DeltaBuilderStep",
         processor=processor,
-        code=delta_code_uri,
-        job_arguments=[
-            "python",
-            "-m",
-            "ndr.scripts.run_delta_builder",
-            "--project-name",
-            project_name,
-            "--feature-spec-version",
-            feature_spec_version,
-            "--mini-batch-id",
-            mini_batch_id,
-            "--raw-parsed-logs-s3-prefix",
-            "",
-            "--batch-start-ts-iso",
-            batch_start_ts_iso,
-            "--batch-end-ts-iso",
-            batch_end_ts_iso,
-        ],
+        code=delta_contract.script_s3_uri,
+        job_arguments=build_processing_step_launch_args(
+            entry_script=delta_contract.entry_script,
+            module_name="ndr.scripts.run_delta_builder",
+            artifact_uri=delta_contract.code_artifact_s3_uri,
+            passthrough_args=[
+                "--project-name",
+                project_name,
+                "--feature-spec-version",
+                feature_spec_version,
+                "--mini-batch-id",
+                mini_batch_id,
+                "--raw-parsed-logs-s3-prefix",
+                "",
+                "--batch-start-ts-iso",
+                batch_start_ts_iso,
+                "--batch-end-ts-iso",
+                batch_end_ts_iso,
+            ],
+        ),
         inputs=[],
         outputs=[],
     )
@@ -336,22 +340,24 @@ def build_15m_streaming_pipeline(
     fg_a_step = ProcessingStep(
         name="FGABuilderStep",
         processor=processor,
-        code=fg_a_code_uri,
-        job_arguments=[
-            "python",
-            "-m",
-            "ndr.scripts.run_fg_a_builder",
-            "--project-name",
-            project_name,
-            "--feature-spec-version",
-            feature_spec_version,
-            "--mini-batch-id",
-            mini_batch_id,
-            "--batch-start-ts-iso",
-            batch_start_ts_iso,
-            "--batch-end-ts-iso",
-            batch_end_ts_iso,
-        ],
+        code=fg_a_contract.script_s3_uri,
+        job_arguments=build_processing_step_launch_args(
+            entry_script=fg_a_contract.entry_script,
+            module_name="ndr.scripts.run_fg_a_builder",
+            artifact_uri=fg_a_contract.code_artifact_s3_uri,
+            passthrough_args=[
+                "--project-name",
+                project_name,
+                "--feature-spec-version",
+                feature_spec_version,
+                "--mini-batch-id",
+                mini_batch_id,
+                "--batch-start-ts-iso",
+                batch_start_ts_iso,
+                "--batch-end-ts-iso",
+                batch_end_ts_iso,
+            ],
+        ),
         inputs=[],
         outputs=[],
     )
@@ -363,24 +369,26 @@ def build_15m_streaming_pipeline(
     pair_counts_step = ProcessingStep(
         name="PairCountsBuilderStep",
         processor=processor,
-        code=pair_counts_code_uri,
-        job_arguments=[
-            "python",
-            "-m",
-            "ndr.scripts.run_pair_counts_builder",
-            "--project-name",
-            project_name,
-            "--feature-spec-version",
-            feature_spec_version,
-            "--mini-batch-id",
-            mini_batch_id,
-            "--raw-parsed-logs-s3-prefix",
-            raw_parsed_logs_s3_prefix,
-            "--batch-start-ts-iso",
-            batch_start_ts_iso,
-            "--batch-end-ts-iso",
-            batch_end_ts_iso,
-        ],
+        code=pair_counts_contract.script_s3_uri,
+        job_arguments=build_processing_step_launch_args(
+            entry_script=pair_counts_contract.entry_script,
+            module_name="ndr.scripts.run_pair_counts_builder",
+            artifact_uri=pair_counts_contract.code_artifact_s3_uri,
+            passthrough_args=[
+                "--project-name",
+                project_name,
+                "--feature-spec-version",
+                feature_spec_version,
+                "--mini-batch-id",
+                mini_batch_id,
+                "--raw-parsed-logs-s3-prefix",
+                raw_parsed_logs_s3_prefix,
+                "--batch-start-ts-iso",
+                batch_start_ts_iso,
+                "--batch-end-ts-iso",
+                batch_end_ts_iso,
+            ],
+        ),
         inputs=[],
         outputs=[],
     )
@@ -435,7 +443,7 @@ def build_15m_dependent_pipeline(
     batch_start_ts_iso = ParameterString(name="BatchStartTsIso", default_value="<required:BatchStartTsIso>")
     batch_end_ts_iso = ParameterString(name="BatchEndTsIso", default_value="<required:BatchEndTsIso>")
 
-    fg_c_code_uri = resolve_step_code_uri(
+    fg_c_contract = resolve_step_execution_contract(
         project_name=project_name_for_contracts,
         feature_spec_version=feature_spec_version_for_contracts,
         pipeline_job_name=PIPELINE_15M_DEPENDENT_JOB_NAME,
@@ -445,22 +453,24 @@ def build_15m_dependent_pipeline(
     fg_c_step = ProcessingStep(
         name="FGCCorrBuilderStep",
         processor=processor,
-        code=fg_c_code_uri,
-        job_arguments=[
-            "python",
-            "-m",
-            "ndr.scripts.run_fg_c_builder",
-            "--project-name",
-            project_name,
-            "--feature-spec-version",
-            feature_spec_version,
-            "--mini-batch-id",
-            mini_batch_id,
-            "--batch-start-ts-iso",
-            batch_start_ts_iso,
-            "--batch-end-ts-iso",
-            batch_end_ts_iso,
-        ],
+        code=fg_c_contract.script_s3_uri,
+        job_arguments=build_processing_step_launch_args(
+            entry_script=fg_c_contract.entry_script,
+            module_name="ndr.scripts.run_fg_c_builder",
+            artifact_uri=fg_c_contract.code_artifact_s3_uri,
+            passthrough_args=[
+                "--project-name",
+                project_name,
+                "--feature-spec-version",
+                feature_spec_version,
+                "--mini-batch-id",
+                mini_batch_id,
+                "--batch-start-ts-iso",
+                batch_start_ts_iso,
+                "--batch-end-ts-iso",
+                batch_end_ts_iso,
+            ],
+        ),
         inputs=[],
         outputs=[],
     )
@@ -534,7 +544,7 @@ def build_fg_b_baseline_pipeline(
         default_value="<required:ReferenceMonth>",
     )
 
-    fg_b_code_uri = resolve_step_code_uri(
+    fg_b_contract = resolve_step_execution_contract(
         project_name=project_name_for_contracts,
         feature_spec_version=feature_spec_version_for_contracts,
         pipeline_job_name=PIPELINE_FG_B_BASELINE_JOB_NAME,
@@ -544,18 +554,20 @@ def build_fg_b_baseline_pipeline(
     fg_b_step = ProcessingStep(
         name="FGBaselineBuilderStep",
         processor=processor,
-        code=fg_b_code_uri,
-        job_arguments=[
-            "python",
-            "-m",
-            "ndr.scripts.run_fg_b_builder",
-            "--project-name",
-            project_name,
-            "--feature-spec-version",
-            feature_spec_version,
-            "--reference-month",
-            reference_month,
-        ],
+        code=fg_b_contract.script_s3_uri,
+        job_arguments=build_processing_step_launch_args(
+            entry_script=fg_b_contract.entry_script,
+            module_name="ndr.scripts.run_fg_b_builder",
+            artifact_uri=fg_b_contract.code_artifact_s3_uri,
+            passthrough_args=[
+                "--project-name",
+                project_name,
+                "--feature-spec-version",
+                feature_spec_version,
+                "--reference-month",
+                reference_month,
+            ],
+        ),
         inputs=[],
         outputs=[],
     )
@@ -642,7 +654,7 @@ def build_machine_inventory_unload_pipeline(
         sagemaker_session=session,
     )
 
-    unload_code_uri = resolve_step_code_uri(
+    unload_contract = resolve_step_execution_contract(
         project_name=project_name_for_contracts,
         feature_spec_version=feature_spec_version_for_contracts,
         pipeline_job_name=PIPELINE_MACHINE_INVENTORY_UNLOAD_JOB_NAME,
@@ -652,18 +664,20 @@ def build_machine_inventory_unload_pipeline(
     unload_step = ProcessingStep(
         name="MachineInventoryUnloadStep",
         processor=processor,
-        code=unload_code_uri,
-        job_arguments=[
-            "python",
-            "-m",
-            "ndr.scripts.run_machine_inventory_unload",
-            "--project-name",
-            project_name,
-            "--feature-spec-version",
-            feature_spec_version,
-            "--reference-month",
-            reference_month,
-        ],
+        code=unload_contract.script_s3_uri,
+        job_arguments=build_processing_step_launch_args(
+            entry_script=unload_contract.entry_script,
+            module_name="ndr.scripts.run_machine_inventory_unload",
+            artifact_uri=unload_contract.code_artifact_s3_uri,
+            passthrough_args=[
+                "--project-name",
+                project_name,
+                "--feature-spec-version",
+                feature_spec_version,
+                "--reference-month",
+                reference_month,
+            ],
+        ),
         inputs=[],
         outputs=[],
     )

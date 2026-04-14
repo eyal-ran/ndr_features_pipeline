@@ -79,8 +79,12 @@ def test_pipeline_definitions_smoke_build_with_concrete_contracts(monkeypatch):
     )
     monkeypatch.setattr(
         p_unified,
-        "resolve_step_code_uri",
-        lambda **kwargs: f"s3://code/{kwargs['pipeline_job_name']}/{kwargs['step_name']}.py",
+        "resolve_step_execution_contract",
+        lambda **kwargs: SimpleNamespace(
+            script_s3_uri=f"s3://code/{kwargs['pipeline_job_name']}/{kwargs['step_name']}.py",
+            entry_script=f"{kwargs['step_name']}.py",
+            code_artifact_s3_uri=None,
+        ),
     )
     for module in (p_inf, p_join, p_train, p_backfill_hist):
         monkeypatch.setattr(
@@ -231,8 +235,12 @@ def test_15m_pipelines_are_split_into_core_and_dependent_phases(monkeypatch):
 
     monkeypatch.setattr(
         p_unified,
-        "resolve_step_code_uri",
-        lambda **kwargs: f"s3://code/{kwargs['pipeline_job_name']}/{kwargs['step_name']}.py",
+        "resolve_step_execution_contract",
+        lambda **kwargs: SimpleNamespace(
+            script_s3_uri=f"s3://code/{kwargs['pipeline_job_name']}/{kwargs['step_name']}.py",
+            entry_script=f"{kwargs['step_name']}.py",
+            code_artifact_s3_uri=None,
+        ),
     )
 
     core = p_unified.build_15m_streaming_pipeline(
@@ -259,6 +267,141 @@ def test_15m_pipelines_are_split_into_core_and_dependent_phases(monkeypatch):
         "PairCountsBuilderStep",
     ]
     assert [step.name for step in dependent.steps] == ["FGCCorrBuilderStep"]
+
+
+def test_unified_pipelines_launch_args_dual_read_fallback_when_artifact_missing(monkeypatch):
+    _install_sagemaker_stubs()
+    from ndr.pipeline import sagemaker_pipeline_definitions_unified_with_fgc as p_unified
+
+    monkeypatch.setattr(
+        p_unified,
+        "load_job_spec",
+        lambda **_kwargs: {"processing_image_uri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/ndr:latest"},
+    )
+
+    resolved_steps = []
+
+    def _resolve_contract(**kwargs):
+        step_name = kwargs["step_name"]
+        resolved_steps.append(step_name)
+        return SimpleNamespace(
+            script_s3_uri=f"s3://code/{kwargs['pipeline_job_name']}/{step_name}.py",
+            entry_script=f"{step_name}.py",
+            code_artifact_s3_uri=None,
+        )
+
+    monkeypatch.setattr(p_unified, "resolve_step_execution_contract", _resolve_contract)
+
+    core = p_unified.build_15m_streaming_pipeline(
+        pipeline_name="p15m-core",
+        role_arn="arn:aws:iam::123:role/x",
+        default_bucket="bucket",
+        region_name="us-east-1",
+        project_name_for_contracts="proj",
+        feature_spec_version_for_contracts="v1",
+    )
+    dependent = p_unified.build_15m_dependent_pipeline(
+        pipeline_name="p15m-dependent",
+        role_arn="arn:aws:iam::123:role/x",
+        default_bucket="bucket",
+        region_name="us-east-1",
+        project_name_for_contracts="proj",
+        feature_spec_version_for_contracts="v1",
+    )
+    baseline = p_unified.build_fg_b_baseline_pipeline(
+        pipeline_name="pfgb",
+        role_arn="arn:aws:iam::123:role/x",
+        default_bucket="bucket",
+        region_name="us-east-1",
+        project_name_for_contracts="proj",
+        feature_spec_version_for_contracts="v1",
+    )
+    unload = p_unified.build_machine_inventory_unload_pipeline(
+        pipeline_name="pmachine",
+        role_arn="arn:aws:iam::123:role/x",
+        default_bucket="bucket",
+        region_name="us-east-1",
+        project_name_for_contracts="proj",
+        feature_spec_version_for_contracts="v1",
+    )
+
+    expected_modules = {
+        "RTRawInputResolverStep": "ndr.scripts.run_rt_raw_input_resolver",
+        "DeltaBuilderStep": "ndr.scripts.run_delta_builder",
+        "FGABuilderStep": "ndr.scripts.run_fg_a_builder",
+        "PairCountsBuilderStep": "ndr.scripts.run_pair_counts_builder",
+        "FGCCorrBuilderStep": "ndr.scripts.run_fg_c_builder",
+        "FGBaselineBuilderStep": "ndr.scripts.run_fg_b_builder",
+        "MachineInventoryUnloadStep": "ndr.scripts.run_machine_inventory_unload",
+    }
+    all_steps = core.steps + dependent.steps + baseline.steps + unload.steps
+    for step in all_steps:
+        module_name = expected_modules[step.name]
+        assert step.kwargs["job_arguments"][:3] == ["python", "-m", module_name]
+        assert step.kwargs["code"].endswith(f"{step.name}.py")
+
+    assert resolved_steps == list(expected_modules.keys())
+
+
+def test_unified_pipelines_launch_args_use_entry_script_when_artifact_present(monkeypatch):
+    _install_sagemaker_stubs()
+    from ndr.pipeline import sagemaker_pipeline_definitions_unified_with_fgc as p_unified
+
+    monkeypatch.setattr(
+        p_unified,
+        "load_job_spec",
+        lambda **_kwargs: {"processing_image_uri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/ndr:latest"},
+    )
+
+    def _resolve_contract(**kwargs):
+        step_name = kwargs["step_name"]
+        return SimpleNamespace(
+            script_s3_uri=f"s3://artifacts/{step_name}/source.tar.gz",
+            entry_script=f"src/ndr/scripts/{step_name}.py",
+            code_artifact_s3_uri=f"s3://artifacts/{step_name}/source.tar.gz",
+        )
+
+    monkeypatch.setattr(p_unified, "resolve_step_execution_contract", _resolve_contract)
+
+    pipelines = [
+        p_unified.build_15m_streaming_pipeline(
+            pipeline_name="p15m-core",
+            role_arn="arn:aws:iam::123:role/x",
+            default_bucket="bucket",
+            region_name="us-east-1",
+            project_name_for_contracts="proj",
+            feature_spec_version_for_contracts="v1",
+        ),
+        p_unified.build_15m_dependent_pipeline(
+            pipeline_name="p15m-dependent",
+            role_arn="arn:aws:iam::123:role/x",
+            default_bucket="bucket",
+            region_name="us-east-1",
+            project_name_for_contracts="proj",
+            feature_spec_version_for_contracts="v1",
+        ),
+        p_unified.build_fg_b_baseline_pipeline(
+            pipeline_name="pfgb",
+            role_arn="arn:aws:iam::123:role/x",
+            default_bucket="bucket",
+            region_name="us-east-1",
+            project_name_for_contracts="proj",
+            feature_spec_version_for_contracts="v1",
+        ),
+        p_unified.build_machine_inventory_unload_pipeline(
+            pipeline_name="pmachine",
+            role_arn="arn:aws:iam::123:role/x",
+            default_bucket="bucket",
+            region_name="us-east-1",
+            project_name_for_contracts="proj",
+            feature_spec_version_for_contracts="v1",
+        ),
+    ]
+
+    for pipeline in pipelines:
+        for step in pipeline.steps:
+            assert step.kwargs["job_arguments"][:2] == ["python", f"src/ndr/scripts/{step.name}.py"]
+            assert step.kwargs["code"] == f"s3://artifacts/{step.name}/source.tar.gz"
 
 
 def test_backfill_historical_extractor_pipeline_rejects_placeholder_contract_identity(monkeypatch):

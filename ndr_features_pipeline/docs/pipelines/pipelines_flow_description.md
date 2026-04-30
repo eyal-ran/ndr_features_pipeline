@@ -238,28 +238,31 @@ It includes:
 1. `TrainingDataVerifierStep`
    - Runs: `python -m ndr.scripts.run_if_training --stage verify`
    - Purpose: validate FG-A/FG-C coverage and persist deterministic verification status artifact.
-2. `MissingFeatureCreationStep`
+2. `RemediationPlanningStep`
+   - Runs: `python -m ndr.scripts.run_if_training --stage plan`
+   - Purpose: deterministic remediation planning stage that reads verification artifacts and emits bounded remediation execution plan metadata.
+3. `MissingFeatureCreationStep`
    - Runs: `python -m ndr.scripts.run_if_training --stage remediate`
    - Purpose: bounded remediation (`max_retries` from IF training spec) with real orchestrator execution:
      - starts Step Functions backfill for missing 15m windows,
      - starts FG-B baseline pipeline for missing reference periods.
-3. `PostRemediationVerificationStep`
+4. `PostRemediationVerificationStep`
    - Runs: `python -m ndr.scripts.run_if_training --stage reverify`
    - Purpose: re-check coverage after remediation and persist re-verification status.
-4. `IFTrainingStep`
+5. `IFTrainingStep`
    - Runs: `python -m ndr.scripts.run_if_training --stage train`
    - Purpose: train/validate/refit, persist artifacts, write final report and SUCCESS marker.
-5. `ModelPublishStep`
+6. `ModelPublishStep`
    - Runs: `python -m ndr.scripts.run_if_training --stage publish`
    - Purpose: execute deterministic production artifact promotion contract:
      - verifies source model tar hash from final report (`artifact_hash`) before promotion;
      - copies to immutable production key under `output.production_model_root/model_version=<version>/artifact_hash=<sha256>/model.tar.gz`;
      - writes durable production pointer metadata (current + last-known-good) to MLP control-plane DDB registry;
      - emits only production publish contract fields (`production_model_uri/hash/version`, publish timestamp, source run id, LKG pointer fields).
-6. `ModelAttributesStep`
+7. `ModelAttributesStep`
    - Runs: `python -m ndr.scripts.run_if_training --stage attributes`
    - Purpose: persist model attributes payload (join/preprocessing/window metadata) with idempotent run key.
-7. `ModelDeployStep`
+8. `ModelDeployStep`
    - Runs: `python -m ndr.scripts.run_if_training --stage deploy`
    - Purpose: consume production publish contract directly and deploy only validated production artifact URIs.
    - Guardrails:

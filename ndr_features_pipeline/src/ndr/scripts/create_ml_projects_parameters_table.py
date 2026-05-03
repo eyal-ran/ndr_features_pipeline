@@ -52,6 +52,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from decimal import Decimal
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -760,6 +761,20 @@ def _build_bootstrap_items(
                                 "input_fg_c": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_c/"
                             }
                         },
+                        "RemediationPlanningStep": {
+                            "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/RemediationPlanningStep/",
+                            "entry_script": "run_if_training.py",
+                            "code_metadata": {
+                                "code_artifact_s3_uri": "<required:CodeArtifactS3Uri>",
+                                "artifact_build_id": "<required:ArtifactBuildId>",
+                                "artifact_sha256": "<required:ArtifactSha256>",
+                                "artifact_format": "tar.gz",
+                            },
+                            "data_prefixes": {
+                                "input_fg_a": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_a/",
+                                "input_fg_c": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/data/features/fg_c/"
+                            }
+                        },
                         "MissingFeatureCreationStep": {
                             "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/if_training/MissingFeatureCreationStep/",
                             "entry_script": "run_if_training.py",
@@ -1070,8 +1085,8 @@ def _build_bootstrap_items(
                 "horizons": ["7d", "30d"],
                 "join_keys": ["host_ip", "window_label"],
                 "metrics": ["sessions_cnt_w_15m", "bytes_src_sum_w_15m"],
-                "eps": 1e-6,
-                "z_max": 6.0,
+                "eps": Decimal("1e-6"),
+                "z_max": Decimal("6.0"),
             },
             "feature_spec_version": feature_spec_version,
             "updated_at": now,

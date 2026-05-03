@@ -210,7 +210,16 @@ def test_item19_pipeline_seed_items_present_with_expected_runtime_params():
 
     assert "pipeline_prediction_publish" not in by_job
     assert "pipeline_supplemental_baseline" not in by_job
-    assert {"TrainingDataVerifierStep", "MissingFeatureCreationStep", "PostRemediationVerificationStep", "IFTrainingStep", "ModelPublishStep", "ModelAttributesStep", "ModelDeployStep"}.issubset(unified_spec["scripts"]["steps"])
+    assert {
+        "TrainingDataVerifierStep",
+        "RemediationPlanningStep",
+        "MissingFeatureCreationStep",
+        "PostRemediationVerificationStep",
+        "IFTrainingStep",
+        "ModelPublishStep",
+        "ModelAttributesStep",
+        "ModelDeployStep",
+    }.issubset(unified_spec["scripts"]["steps"])
 
     if_training_spec = by_job["if_training"]["spec"]
     assert if_training_spec["orchestration_targets"]["backfill_15m"] == "sfn_ndr_backfill_reprocessing"

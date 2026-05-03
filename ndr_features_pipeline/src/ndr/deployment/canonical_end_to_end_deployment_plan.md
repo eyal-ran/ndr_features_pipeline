@@ -563,12 +563,123 @@ print('Dry-run deployment flow complete.')
 ## Cell 27 (markdown)
 
 ```markdown
-## Step Functions deployment (manual)
+### Code Cell 12 Guide
 
-Deploy state machines manually in AWS Step Functions GUI using Build by code and pasted JSON definitions.
+**Behavior:** Render and upsert all Step Functions definitions from repository templates.
+
+**Purpose:** Replace manual GUI paste steps with idempotent create/update automation.
+
+**Required input:** `aws_region`, state machine role ARNs, and template placeholder substitutions.
+
+**Expected output:** Per-state-machine CREATED/UPDATED log lines and an execution summary list.
+
+**Expected result:** All orchestrator state machines are deployed consistently with the same parameter map used for pipeline deployment.
+
+**Usage instructions:** Set all `<REPLACE_...>` fields, run with `dry_run=True` first, then set `dry_run=False`.
+
+**Runnable example:** `results = upsert_step_functions(dry_run=True); len(results)`
 ```
 
-## Cell 28 (markdown)
+## Cell 28 (code)
+
+```python
+from pathlib import Path
+import re
+
+SFN_TEMPLATE_DIR = Path("docs/step_functions_jsonata")
+SFN_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z0-9_]+)\}")
+
+STATE_MACHINE_DEPLOYMENT = {
+    "sfn_ndr_15m_features_inference.json": {"name": "<REPLACE_SFN_15M_NAME>", "role_arn": "<REPLACE_SFN_ROLE_ARN>"},
+    "sfn_ndr_training_orchestrator.json": {"name": "<REPLACE_SFN_TRAINING_NAME>", "role_arn": "<REPLACE_SFN_ROLE_ARN>"},
+    "sfn_ndr_prediction_publication.json": {"name": "<REPLACE_SFN_PUBLICATION_NAME>", "role_arn": "<REPLACE_SFN_ROLE_ARN>"},
+    "sfn_ndr_backfill_reprocessing.json": {"name": "<REPLACE_SFN_BACKFILL_NAME>", "role_arn": "<REPLACE_SFN_ROLE_ARN>"},
+    "sfn_ndr_monthly_fg_b_baselines.json": {"name": "<REPLACE_SFN_MONTHLY_NAME>", "role_arn": "<REPLACE_SFN_ROLE_ARN>"},
+    "sfn_ndr_initial_deployment_bootstrap.json": {"name": "<REPLACE_SFN_BOOTSTRAP_NAME>", "role_arn": "<REPLACE_SFN_ROLE_ARN>"},
+    "sfn_ndr_code_deployment_orchestrator.json": {"name": "<REPLACE_SFN_CODE_DEPLOY_NAME>", "role_arn": "<REPLACE_SFN_ROLE_ARN>"},
+}
+
+SFN_SUBSTITUTIONS = {
+    "ProjectRoutingTableName": routing_table_name,
+    "DppConfigTableName": dpp_config_table_name,
+    "MlpConfigTableName": mlp_config_table_name,
+    "BatchIndexTableName": batch_index_table_name,
+    "DefaultFeatureSpecVersion": feature_spec_version,
+    "PipelineName15m": f"{project_name}-{feature_spec_version}-pipeline-15m-streaming",
+    "PipelineName15mDependent": f"{project_name}-{feature_spec_version}-pipeline-15m-dependent",
+    "PipelineNameFgBBaseline": f"{project_name}-{feature_spec_version}-pipeline-fg-b-baseline",
+    "PipelineNameIfTraining": f"{project_name}-{feature_spec_version}-pipeline-if-training",
+    "PipelineNameInferencePredictions": f"{project_name}-{feature_spec_version}-pipeline-inference-predictions",
+    "PipelineNamePredictionFeatureJoin": f"{project_name}-{feature_spec_version}-pipeline-prediction-feature-join",
+    "PipelineNameBackfillHistoricalExtractor": f"{project_name}-{feature_spec_version}-pipeline-backfill-historical-extractor",
+    "PipelineNameBackfill15mReprocessing": f"{project_name}-{feature_spec_version}-pipeline-backfill-15m-reprocessing",
+    "PipelineNameCodeBundleBuild": f"{project_name}-{feature_spec_version}-pipeline-code-bundle-build",
+    "PipelineNameCodeArtifactValidate": f"{project_name}-{feature_spec_version}-pipeline-code-artifact-validate",
+    "PipelineNameCodeSmokeValidate": f"{project_name}-{feature_spec_version}-pipeline-code-smoke-validate",
+    "MonthlyStateMachineArn": "<REPLACE_MONTHLY_SFN_ARN>",
+}
+
+def _render_sfn_template(template_text, substitutions):
+    def repl(match):
+        key = match.group(1)
+        if key not in substitutions:
+            raise KeyError(f"Missing substitution for placeholder: {key}")
+        return str(substitutions[key])
+    rendered = SFN_PLACEHOLDER_RE.sub(repl, template_text)
+    unresolved = sorted(set(SFN_PLACEHOLDER_RE.findall(rendered)))
+    if unresolved:
+        raise ValueError(f"Unresolved placeholders remain: {unresolved}")
+    json.loads(rendered)  # validate JSON before API call
+    return rendered
+
+def _find_state_machine_arn(sfn_client, name):
+    paginator = sfn_client.get_paginator("list_state_machines")
+    for page in paginator.paginate():
+        for item in page.get("stateMachines", []):
+            if item["name"] == name:
+                return item["stateMachineArn"]
+    return None
+
+def upsert_step_functions(dry_run=True):
+    sfn_client = boto3.client("stepfunctions", region_name=aws_region)
+    results = []
+    for template_file, deployment in STATE_MACHINE_DEPLOYMENT.items():
+        template_path = SFN_TEMPLATE_DIR / template_file
+        if not template_path.exists():
+            raise FileNotFoundError(f"Missing Step Functions template: {template_path}")
+        rendered = _render_sfn_template(template_path.read_text(encoding="utf-8"), SFN_SUBSTITUTIONS)
+        name = deployment["name"]
+        role_arn = deployment["role_arn"]
+        existing_arn = _find_state_machine_arn(sfn_client, name)
+        if dry_run:
+            action = "UPDATE" if existing_arn else "CREATE"
+            print(f"[DRY RUN] {action} {name} <- {template_file}")
+            results.append({"name": name, "template": template_file, "action": action.lower(), "state_machine_arn": existing_arn or ""})
+            continue
+        if existing_arn:
+            sfn_client.update_state_machine(
+                stateMachineArn=existing_arn,
+                definition=rendered,
+                roleArn=role_arn,
+            )
+            print(f"UPDATED {name}")
+            results.append({"name": name, "template": template_file, "action": "updated", "state_machine_arn": existing_arn})
+        else:
+            created = sfn_client.create_state_machine(
+                name=name,
+                definition=rendered,
+                roleArn=role_arn,
+                type="STANDARD",
+            )
+            print(f"CREATED {name}")
+            results.append({"name": name, "template": template_file, "action": "created", "state_machine_arn": created["stateMachineArn"]})
+    return results
+
+step_function_results = upsert_step_functions(dry_run=DRY_RUN)
+print(json.dumps(step_function_results, indent=2))
+```
+
+## Cell 29 (markdown)
 
 ```markdown
 ### Code Cell 13 Guide
@@ -588,7 +699,7 @@ Deploy state machines manually in AWS Step Functions GUI using Build by code and
 **Runnable example:** `print('ready' if not missing_pipeline_jobs else missing_pipeline_jobs)`
 ```
 
-## Cell 29 (code)
+## Cell 30 (code)
 
 ```python
 assert all(name in ddb_table_contracts for name in ['dpp_config','mlp_config','batch_index','routing','processing_lock','publication_lock'])
@@ -604,7 +715,7 @@ assert 's3_prefixes' in batch_index_direct_item and 'dpp' in batch_index_direct_
 print('Structural readiness checks passed.')
 ```
 
-## Cell 30 (markdown)
+## Cell 31 (markdown)
 
 ```markdown
 ## Operator completion checklist
@@ -614,7 +725,7 @@ print('Structural readiness checks passed.')
 3. Artifact values set and promoted.
 4. Pipelines upserted.
 5. Initial feature/stats materialization runs executed.
-6. Step Functions manually deployed.
+6. Step Functions upserted from repository templates.
 ```
 
 ## Notebook Metadata

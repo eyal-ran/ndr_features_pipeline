@@ -155,7 +155,8 @@
                   "Name": "MlProjectName",
                   "Value": "{% $states.input.ml_project_name %}"
                 }
-              ]
+              ],
+              "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
             },
             "Assign": {
               "prediction_join_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",

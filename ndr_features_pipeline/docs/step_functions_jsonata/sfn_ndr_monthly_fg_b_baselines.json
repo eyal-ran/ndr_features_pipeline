@@ -45,7 +45,8 @@
             "Name": "ReferenceMonth",
             "Value": "{% $reference_month %}"
           }
-        ]
+        ],
+        "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
       },
       "Assign": {
         "inventory_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
@@ -117,7 +118,7 @@
     "BuildBaselineDependencyCheckManifest": {
       "Type": "Pass",
       "Assign": {
-        "baseline_dependency_manifest": "{% $exists($states.result.Body) ? $eval($states.result.Body) : $error('MONTHLY_READINESS_ARTIFACT_MISSING','Computed monthly readiness artifact is required') %}",
+        "baseline_dependency_manifest": "{% $exists($baseline_dependency_artifact_body) ? $eval($baseline_dependency_artifact_body) : $error('BASELINE_DEPENDENCY_ARTIFACT_MISSING','Baseline dependency artifact is required') %}",
         "baseline_gate_cycle": "{% $exists($baseline_gate_cycle) ? $baseline_gate_cycle : 0 %}"
       },
       "Next": "ValidateBaselineDependencyManifest"
@@ -198,7 +199,8 @@
             "Name": "ReadinessCycle",
             "Value": "{% $string($baseline_gate_cycle) %}"
           }
-        ]
+        ],
+        "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
       },
       "Assign": {
         "monthly_recheck_readiness_execution_arn": "{% $states.result.PipelineExecutionArn %}",
@@ -241,7 +243,8 @@
             "Name": "ReferenceMonth",
             "Value": "{% $reference_month %}"
           }
-        ]
+        ],
+        "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
       },
       "Assign": {
         "fgb_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
@@ -405,7 +408,8 @@
             "Name": "ReadinessCycle",
             "Value": "{% $string($baseline_gate_cycle) %}"
           }
-        ]
+        ],
+        "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
       },
       "Assign": {
         "monthly_readiness_execution_arn": "{% $states.result.PipelineExecutionArn %}",
@@ -502,19 +506,19 @@
       "Type": "Choice",
       "Choices": [
         {
-          "Condition": "{% not($exists($baseline_dependency_manifest.contract_version)) or $baseline_dependency_manifest.contract_version != 'monthly_fg_b_readiness.v3' %}",
+          "Condition": "{% $not($exists($baseline_dependency_manifest.contract_version)) or $baseline_dependency_manifest.contract_version != 'monthly_fg_b_readiness.v3' %}",
           "Next": "FailMonthlyReadinessContractInvalid"
         },
         {
-          "Condition": "{% not($exists($baseline_dependency_manifest.project_name)) or not($exists($baseline_dependency_manifest.feature_spec_version)) or not($exists($baseline_dependency_manifest.reference_month)) %}",
+          "Condition": "{% $not($exists($baseline_dependency_manifest.project_name)) or $not($exists($baseline_dependency_manifest.feature_spec_version)) or $not($exists($baseline_dependency_manifest.reference_month)) %}",
           "Next": "FailMonthlyReadinessContractInvalid"
         },
         {
-          "Condition": "{% not($exists($baseline_dependency_manifest.ready)) or not($exists($baseline_dependency_manifest.required_families)) or not($exists($baseline_dependency_manifest.missing_ranges)) %}",
+          "Condition": "{% $not($exists($baseline_dependency_manifest.ready)) or $not($exists($baseline_dependency_manifest.required_families)) or $not($exists($baseline_dependency_manifest.missing_ranges)) %}",
           "Next": "FailMonthlyReadinessContractInvalid"
         },
         {
-          "Condition": "{% not($exists($baseline_dependency_manifest.decision_code)) or not($exists($baseline_dependency_manifest.as_of_ts)) or not($exists($baseline_dependency_manifest.idempotency_key)) %}",
+          "Condition": "{% $not($exists($baseline_dependency_manifest.decision_code)) or $not($exists($baseline_dependency_manifest.as_of_ts)) or $not($exists($baseline_dependency_manifest.idempotency_key)) %}",
           "Next": "FailMonthlyReadinessContractInvalid"
         },
         {

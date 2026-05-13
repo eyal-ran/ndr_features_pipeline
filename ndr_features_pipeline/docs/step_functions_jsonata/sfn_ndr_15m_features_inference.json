@@ -27,7 +27,7 @@
         "parsed_ml_project_names": "{% $exists($states.input.ml_project_names) ? $states.input.ml_project_names : [] %}",
         "parsed_batch_id": "{% $exists($states.input.batch_id) ? $states.input.batch_id : ($exists($states.input.mini_batch_id) ? $states.input.mini_batch_id : ($parsed_batch_folder != '' ? $parsed_batch_folder : '')) %}",
         "parsed_raw_parsed_logs_s3_prefix": "{% $exists($states.input.raw_parsed_logs_s3_prefix) ? $states.input.raw_parsed_logs_s3_prefix : '' %}",
-        "unsupported_input_fields": "{% $keys($states.input)[$not($ in ['project_name','data_source_name','ml_project_names','batch_id','mini_batch_id','raw_parsed_logs_s3_prefix','timestamp','event_ts','feature_spec_version','s3_key','batch_s3_path','execution_ts_iso','lock_ttl_epoch','batch_start_ts_iso','force_process','message_body','Records'])] %}"
+        "unsupported_input_fields": "{% $keys($states.input)[$$not($ in ['project_name','data_source_name','ml_project_names','batch_id','mini_batch_id','raw_parsed_logs_s3_prefix','timestamp','event_ts','feature_spec_version','s3_key','batch_s3_path','execution_ts_iso','lock_ttl_epoch','batch_start_ts_iso','force_process','message_body','Records'])] %}"
       },
       "Next": "BatchCompletionEventChoice"
     },
@@ -220,19 +220,23 @@
           "Next": "FailMissingBatchEndTsIso"
         },
         {
+          "Condition": "{% $raw_parsed_logs_s3_prefix = \"\" %}",
+          "Next": "FailMissingRawParsedLogsS3Prefix"
+        },
+        {
           "Condition": "{% $count($unsupported_input_fields) > 0 %}",
           "Next": "FailUnsupportedInputFields"
         },
         {
-          "Condition": "{% $raw_parsed_logs_s3_prefix != \"\" and not($startsWith($raw_parsed_logs_s3_prefix,'s3://')) %}",
+          "Condition": "{% $raw_parsed_logs_s3_prefix != \"\" and $not($startsWith($raw_parsed_logs_s3_prefix,'s3://')) %}",
           "Next": "FailInvalidRawParsedLogsS3Prefix"
         },
         {
-          "Condition": "{% $raw_parsed_logs_s3_prefix != \"\" and not($endsWith($raw_parsed_logs_s3_prefix, '/' & $mini_batch_id & '/')) %}",
+          "Condition": "{% $raw_parsed_logs_s3_prefix != \"\" and $not($endsWith($raw_parsed_logs_s3_prefix, '/' & $mini_batch_id & '/')) %}",
           "Next": "FailInvalidRawParsedLogsS3Prefix"
         },
         {
-          "Condition": "{% not($endsWith($source_timestamp_iso,'Z')) %}",
+          "Condition": "{% $not($endsWith($source_timestamp_iso,'Z')) %}",
           "Next": "FailInvalidTimestamp"
         }
       ],
@@ -744,7 +748,7 @@
           "BuildBootstrapReadinessManifestFromExecution": {
             "Type": "Pass",
             "Assign": {
-              "bootstrap_readiness_manifest": "{% {'contract_version':'bootstrap_rt_activation.v1','bootstrap_control_key':'bootstrap_control#v1','bootstrap_ready':true,'bootstrap_status':'READY','bootstrap_execution':$states.result} %}"
+              "bootstrap_readiness_manifest": "{% {'contract_version':'bootstrap_rt_activation.v1','bootstrap_control_key':'bootstrap_control#v1','bootstrap_ready':true,'bootstrap_status':'READY','bootstrap_execution':{'execution_id':$states.context.Execution.Id,'state_entered_time':$states.context.State.EnteredTime}} %}"
             },
             "Next": "LoadDeploymentReadinessRecord"
           },
@@ -808,7 +812,8 @@
                   "Name": "RawParsedLogsS3Prefix",
                   "Value": "{% $states.input.raw_parsed_logs_s3_prefix %}"
                 }
-              ]
+              ],
+              "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
             },
             "Assign": {
               "features_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
@@ -884,7 +889,7 @@
           "BuildRtArtifactReadinessManifest": {
             "Type": "Pass",
             "Assign": {
-              "rt_artifact_readiness_manifest": "{% $exists($states.result.Body) ? $eval($states.result.Body) : $error('RT_READINESS_ARTIFACT_MISSING','Computed RT readiness artifact is required') %}",
+              "rt_artifact_readiness_manifest": "{% $exists($rt_readiness_artifact_body) ? $eval($rt_readiness_artifact_body) : $error('RT_READINESS_ARTIFACT_MISSING','Computed RT readiness artifact is required') %}",
               "rt_readiness_cycle": "{% $exists($rt_readiness_cycle) ? $rt_readiness_cycle : 0 %}"
             },
             "Next": "ValidateRtArtifactReadinessManifest"
@@ -893,27 +898,27 @@
             "Type": "Choice",
             "Choices": [
               {
-                "Condition": "{% not($exists($rt_artifact_readiness_manifest.contract_version)) or $rt_artifact_readiness_manifest.contract_version != 'rt_artifact_readiness.v3' %}",
+                "Condition": "{% $not($exists($rt_artifact_readiness_manifest.contract_version)) or $rt_artifact_readiness_manifest.contract_version != 'rt_artifact_readiness.v3' %}",
                 "Next": "FailRtReadinessContractInvalid"
               },
               {
-                "Condition": "{% not($exists($rt_artifact_readiness_manifest.project_name)) or $rt_artifact_readiness_manifest.project_name != $states.input.project_name %}",
+                "Condition": "{% $not($exists($rt_artifact_readiness_manifest.project_name)) or $rt_artifact_readiness_manifest.project_name != $states.input.project_name %}",
                 "Next": "FailRtReadinessContractInvalid"
               },
               {
-                "Condition": "{% not($exists($rt_artifact_readiness_manifest.feature_spec_version)) or $rt_artifact_readiness_manifest.feature_spec_version != $states.input.feature_spec_version %}",
+                "Condition": "{% $not($exists($rt_artifact_readiness_manifest.feature_spec_version)) or $rt_artifact_readiness_manifest.feature_spec_version != $states.input.feature_spec_version %}",
                 "Next": "FailRtReadinessContractInvalid"
               },
               {
-                "Condition": "{% not($exists($rt_artifact_readiness_manifest.ml_project_name)) or $rt_artifact_readiness_manifest.ml_project_name != $states.input.ml_project_name %}",
+                "Condition": "{% $not($exists($rt_artifact_readiness_manifest.ml_project_name)) or $rt_artifact_readiness_manifest.ml_project_name != $states.input.ml_project_name %}",
                 "Next": "FailRtReadinessContractInvalid"
               },
               {
-                "Condition": "{% not($exists($rt_artifact_readiness_manifest.mini_batch_id)) or $rt_artifact_readiness_manifest.mini_batch_id != $states.input.mini_batch_id %}",
+                "Condition": "{% $not($exists($rt_artifact_readiness_manifest.mini_batch_id)) or $rt_artifact_readiness_manifest.mini_batch_id != $states.input.mini_batch_id %}",
                 "Next": "FailRtReadinessContractInvalid"
               },
               {
-                "Condition": "{% not($exists($rt_artifact_readiness_manifest.ready)) or not($exists($rt_artifact_readiness_manifest.required_families)) or not($exists($rt_artifact_readiness_manifest.missing_ranges)) or not($exists($rt_artifact_readiness_manifest.decision_code)) or not($exists($rt_artifact_readiness_manifest.as_of_ts)) or not($exists($rt_artifact_readiness_manifest.idempotency_key)) %}",
+                "Condition": "{% $not($exists($rt_artifact_readiness_manifest.ready)) or $not($exists($rt_artifact_readiness_manifest.required_families)) or $not($exists($rt_artifact_readiness_manifest.missing_ranges)) or $not($exists($rt_artifact_readiness_manifest.decision_code)) or $not($exists($rt_artifact_readiness_manifest.as_of_ts)) or $not($exists($rt_artifact_readiness_manifest.idempotency_key)) %}",
                 "Next": "FailRtReadinessContractInvalid"
               }
             ],
@@ -1117,7 +1122,8 @@
                   "Name": "ReadinessCycle",
                   "Value": "{% $string($rt_readiness_cycle) %}"
                 }
-              ]
+              ],
+              "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
             },
             "Assign": {
               "rt_recheck_readiness_execution_arn": "{% $states.result.PipelineExecutionArn %}",
@@ -1223,7 +1229,10 @@
                 "Next": "FailRtReadinessArtifactMissing"
               }
             ],
-            "Next": "BuildRtArtifactReadinessManifest"
+            "Next": "BuildRtArtifactReadinessManifest",
+            "Assign": {
+              "rt_readiness_artifact_body": "{% $states.result.Body %}"
+            }
           },
           "FailRtReadinessArtifactMissing": {
             "Type": "Fail",
@@ -1278,7 +1287,8 @@
                   "Name": "BatchEndTsIso",
                   "Value": "{% $states.input.batch_end_ts_iso %}"
                 }
-              ]
+              ],
+              "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
             },
             "Assign": {
               "dependent_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
@@ -1393,7 +1403,8 @@
                   "Name": "MlProjectName",
                   "Value": "{% $states.input.ml_project_name %}"
                 }
-              ]
+              ],
+              "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
             },
             "Assign": {
               "inference_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
@@ -1556,7 +1567,8 @@
                   "Name": "ReadinessCycle",
                   "Value": "{% $string($rt_readiness_cycle) %}"
                 }
-              ]
+              ],
+              "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
             },
             "Assign": {
               "rt_readiness_execution_arn": "{% $states.result.PipelineExecutionArn %}",

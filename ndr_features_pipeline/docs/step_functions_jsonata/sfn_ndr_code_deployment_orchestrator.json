@@ -48,10 +48,20 @@
       "Arguments": {
         "PipelineName": "${PipelineNameCodeBundleBuild}",
         "PipelineParameters": [
-          {"Name": "ProjectName", "Value": "{% $deployment_request.project_name %}"},
-          {"Name": "FeatureSpecVersion", "Value": "{% $deployment_request.feature_spec_version %}"},
-          {"Name": "ArtifactBuildId", "Value": "{% $deployment_request.artifact_build_id %}"}
-        ]
+          {
+            "Name": "ProjectName",
+            "Value": "{% $deployment_request.project_name %}"
+          },
+          {
+            "Name": "FeatureSpecVersion",
+            "Value": "{% $deployment_request.feature_spec_version %}"
+          },
+          {
+            "Name": "ArtifactBuildId",
+            "Value": "{% $deployment_request.artifact_build_id %}"
+          }
+        ],
+        "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
       },
       "Assign": {
         "code_bundle_execution_arn": "{% $states.result.PipelineExecutionArn %}"
@@ -83,42 +93,78 @@
       ],
       "Default": "FailBuildPipeline"
     },
-    "WaitCodeBundleBuildPipeline": {"Type": "Wait", "Seconds": 20, "Next": "DescribeCodeBundleBuildPipeline"},
+    "WaitCodeBundleBuildPipeline": {
+      "Type": "Wait",
+      "Seconds": 20,
+      "Next": "DescribeCodeBundleBuildPipeline"
+    },
     "StartArtifactValidationPipeline": {
       "Type": "Task",
       "Resource": "arn:aws:states:::aws-sdk:sagemaker:startPipelineExecution",
       "Arguments": {
         "PipelineName": "${PipelineNameCodeArtifactValidate}",
         "PipelineParameters": [
-          {"Name": "ProjectName", "Value": "{% $deployment_request.project_name %}"},
-          {"Name": "FeatureSpecVersion", "Value": "{% $deployment_request.feature_spec_version %}"},
-          {"Name": "ArtifactBuildId", "Value": "{% $deployment_request.artifact_build_id %}"}
-        ]
+          {
+            "Name": "ProjectName",
+            "Value": "{% $deployment_request.project_name %}"
+          },
+          {
+            "Name": "FeatureSpecVersion",
+            "Value": "{% $deployment_request.feature_spec_version %}"
+          },
+          {
+            "Name": "ArtifactBuildId",
+            "Value": "{% $deployment_request.artifact_build_id %}"
+          }
+        ],
+        "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
       },
-      "Assign": {"artifact_validate_execution_arn": "{% $states.result.PipelineExecutionArn %}"},
+      "Assign": {
+        "artifact_validate_execution_arn": "{% $states.result.PipelineExecutionArn %}"
+      },
       "Next": "DescribeArtifactValidationPipeline"
     },
     "DescribeArtifactValidationPipeline": {
       "Type": "Task",
       "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
-      "Arguments": {"PipelineExecutionArn": "{% $artifact_validate_execution_arn %}"},
-      "Assign": {"artifact_validate_status": "{% $states.result.PipelineExecutionStatus %}"},
+      "Arguments": {
+        "PipelineExecutionArn": "{% $artifact_validate_execution_arn %}"
+      },
+      "Assign": {
+        "artifact_validate_status": "{% $states.result.PipelineExecutionStatus %}"
+      },
       "Next": "ArtifactValidationCompleteChoice"
     },
     "ArtifactValidationCompleteChoice": {
       "Type": "Choice",
       "Choices": [
-        {"Condition": "{% $artifact_validate_status = 'Succeeded' %}", "Next": "DeploymentModeChoice"},
-        {"Condition": "{% $artifact_validate_status in ['Executing','Stopping'] %}", "Next": "WaitArtifactValidationPipeline"}
+        {
+          "Condition": "{% $artifact_validate_status = 'Succeeded' %}",
+          "Next": "DeploymentModeChoice"
+        },
+        {
+          "Condition": "{% $artifact_validate_status in ['Executing','Stopping'] %}",
+          "Next": "WaitArtifactValidationPipeline"
+        }
       ],
       "Default": "FailArtifactValidationPipeline"
     },
-    "WaitArtifactValidationPipeline": {"Type": "Wait", "Seconds": 20, "Next": "DescribeArtifactValidationPipeline"},
+    "WaitArtifactValidationPipeline": {
+      "Type": "Wait",
+      "Seconds": 20,
+      "Next": "DescribeArtifactValidationPipeline"
+    },
     "DeploymentModeChoice": {
       "Type": "Choice",
       "Choices": [
-        {"Condition": "{% $deployment_request.deployment_mode = 'shadow' %}", "Next": "StartDeploymentSmokeValidationPipeline"},
-        {"Condition": "{% $deployment_request.deployment_mode = 'authoritative' %}", "Next": "PromoteArtifactPointers"}
+        {
+          "Condition": "{% $deployment_request.deployment_mode = 'shadow' %}",
+          "Next": "StartDeploymentSmokeValidationPipeline"
+        },
+        {
+          "Condition": "{% $deployment_request.deployment_mode = 'authoritative' %}",
+          "Next": "PromoteArtifactPointers"
+        }
       ],
       "Default": "FailInvalidDeploymentMode"
     },
@@ -128,16 +174,30 @@
       "Arguments": {
         "TableName": "${DppConfigTableName}",
         "Key": {
-          "project_name": {"S": "{% $deployment_request.project_name %}"},
-          "job_name_version": {"S": "{% 'pipeline_15m_streaming#' & $deployment_request.feature_spec_version %}"}
+          "project_name": {
+            "S": "{% $deployment_request.project_name %}"
+          },
+          "job_name_version": {
+            "S": "{% 'pipeline_15m_streaming#' & $deployment_request.feature_spec_version %}"
+          }
         },
         "UpdateExpression": "SET spec.deployment_status = :status, spec.deployment_checkpoint = :checkpoint, spec.deployment_last_build_id = :build_id, spec.deployment_last_error = :last_error, spec.deployment_updated_at = :updated_at",
         "ExpressionAttributeValues": {
-          ":status": {"S": "IN_PROGRESS"},
-          ":checkpoint": {"S": "artifact_promoted_pending_smoke"},
-          ":build_id": {"S": "{% $deployment_request.artifact_build_id %}"},
-          ":last_error": {"S": ""},
-          ":updated_at": {"S": "{% $states.context.State.EnteredTime %}"}
+          ":status": {
+            "S": "IN_PROGRESS"
+          },
+          ":checkpoint": {
+            "S": "artifact_promoted_pending_smoke"
+          },
+          ":build_id": {
+            "S": "{% $deployment_request.artifact_build_id %}"
+          },
+          ":last_error": {
+            "S": ""
+          },
+          ":updated_at": {
+            "S": "{% $states.context.State.EnteredTime %}"
+          }
         }
       },
       "Next": "StartDeploymentSmokeValidationPipeline"
@@ -148,34 +208,63 @@
       "Arguments": {
         "PipelineName": "${PipelineNameCodeSmokeValidate}",
         "PipelineParameters": [
-          {"Name": "ProjectName", "Value": "{% $deployment_request.project_name %}"},
-          {"Name": "FeatureSpecVersion", "Value": "{% $deployment_request.feature_spec_version %}"},
-          {"Name": "ArtifactBuildId", "Value": "{% $deployment_request.artifact_build_id %}"}
-        ]
+          {
+            "Name": "ProjectName",
+            "Value": "{% $deployment_request.project_name %}"
+          },
+          {
+            "Name": "FeatureSpecVersion",
+            "Value": "{% $deployment_request.feature_spec_version %}"
+          },
+          {
+            "Name": "ArtifactBuildId",
+            "Value": "{% $deployment_request.artifact_build_id %}"
+          }
+        ],
+        "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
       },
-      "Assign": {"smoke_validate_execution_arn": "{% $states.result.PipelineExecutionArn %}"},
+      "Assign": {
+        "smoke_validate_execution_arn": "{% $states.result.PipelineExecutionArn %}"
+      },
       "Next": "DescribeDeploymentSmokeValidationPipeline"
     },
     "DescribeDeploymentSmokeValidationPipeline": {
       "Type": "Task",
       "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
-      "Arguments": {"PipelineExecutionArn": "{% $smoke_validate_execution_arn %}"},
-      "Assign": {"smoke_validate_status": "{% $states.result.PipelineExecutionStatus %}"},
+      "Arguments": {
+        "PipelineExecutionArn": "{% $smoke_validate_execution_arn %}"
+      },
+      "Assign": {
+        "smoke_validate_status": "{% $states.result.PipelineExecutionStatus %}"
+      },
       "Next": "SmokeValidationCompleteChoice"
     },
     "SmokeValidationCompleteChoice": {
       "Type": "Choice",
       "Choices": [
-        {"Condition": "{% $smoke_validate_status = 'Succeeded' %}", "Next": "CommitDeploymentReady"},
-        {"Condition": "{% $smoke_validate_status in ['Executing','Stopping'] %}", "Next": "WaitDeploymentSmokeValidationPipeline"}
+        {
+          "Condition": "{% $smoke_validate_status = 'Succeeded' %}",
+          "Next": "CommitDeploymentReady"
+        },
+        {
+          "Condition": "{% $smoke_validate_status in ['Executing','Stopping'] %}",
+          "Next": "WaitDeploymentSmokeValidationPipeline"
+        }
       ],
       "Default": "PostPromotionFailureChoice"
     },
-    "WaitDeploymentSmokeValidationPipeline": {"Type": "Wait", "Seconds": 20, "Next": "DescribeDeploymentSmokeValidationPipeline"},
+    "WaitDeploymentSmokeValidationPipeline": {
+      "Type": "Wait",
+      "Seconds": 20,
+      "Next": "DescribeDeploymentSmokeValidationPipeline"
+    },
     "PostPromotionFailureChoice": {
       "Type": "Choice",
       "Choices": [
-        {"Condition": "{% $deployment_request.deployment_mode = 'authoritative' %}", "Next": "RollbackArtifactPointers"}
+        {
+          "Condition": "{% $deployment_request.deployment_mode = 'authoritative' %}",
+          "Next": "RollbackArtifactPointers"
+        }
       ],
       "Default": "FailSmokeValidationPipeline"
     },
@@ -185,15 +274,27 @@
       "Arguments": {
         "TableName": "${DppConfigTableName}",
         "Key": {
-          "project_name": {"S": "{% $deployment_request.project_name %}"},
-          "job_name_version": {"S": "{% 'pipeline_15m_streaming#' & $deployment_request.feature_spec_version %}"}
+          "project_name": {
+            "S": "{% $deployment_request.project_name %}"
+          },
+          "job_name_version": {
+            "S": "{% 'pipeline_15m_streaming#' & $deployment_request.feature_spec_version %}"
+          }
         },
         "UpdateExpression": "SET spec.deployment_status = :status, spec.deployment_checkpoint = :checkpoint, spec.deployment_last_error = :last_error, spec.deployment_updated_at = :updated_at",
         "ExpressionAttributeValues": {
-          ":status": {"S": "FAILED"},
-          ":checkpoint": {"S": "rollback_completed"},
-          ":last_error": {"S": "TASK9_SMOKE_VALIDATION_FAILED"},
-          ":updated_at": {"S": "{% $states.context.State.EnteredTime %}"}
+          ":status": {
+            "S": "FAILED"
+          },
+          ":checkpoint": {
+            "S": "rollback_completed"
+          },
+          ":last_error": {
+            "S": "TASK9_SMOKE_VALIDATION_FAILED"
+          },
+          ":updated_at": {
+            "S": "{% $states.context.State.EnteredTime %}"
+          }
         }
       },
       "Next": "DeploymentFailedRollback"
@@ -204,26 +305,66 @@
       "Arguments": {
         "TableName": "${DppConfigTableName}",
         "Key": {
-          "project_name": {"S": "{% $deployment_request.project_name %}"},
-          "job_name_version": {"S": "{% 'pipeline_15m_streaming#' & $deployment_request.feature_spec_version %}"}
+          "project_name": {
+            "S": "{% $deployment_request.project_name %}"
+          },
+          "job_name_version": {
+            "S": "{% 'pipeline_15m_streaming#' & $deployment_request.feature_spec_version %}"
+          }
         },
         "UpdateExpression": "SET spec.deployment_status = :status, spec.deployment_checkpoint = :checkpoint, spec.deployment_last_build_id = :build_id, spec.deployment_last_error = :last_error, spec.deployment_updated_at = :updated_at",
         "ExpressionAttributeValues": {
-          ":status": {"S": "READY"},
-          ":checkpoint": {"S": "steady_state_ready"},
-          ":build_id": {"S": "{% $deployment_request.artifact_build_id %}"},
-          ":last_error": {"S": ""},
-          ":updated_at": {"S": "{% $states.context.State.EnteredTime %}"}
+          ":status": {
+            "S": "READY"
+          },
+          ":checkpoint": {
+            "S": "steady_state_ready"
+          },
+          ":build_id": {
+            "S": "{% $deployment_request.artifact_build_id %}"
+          },
+          ":last_error": {
+            "S": ""
+          },
+          ":updated_at": {
+            "S": "{% $states.context.State.EnteredTime %}"
+          }
         }
       },
       "Next": "DeploymentSucceeded"
     },
-    "FailBreakGlassReconciliationRequired": {"Type": "Fail", "Error": "TASK9_BREAK_GLASS_RECONCILIATION_REQUIRED", "Cause": "Manual break-glass marker present; reconciliation run required before next promotion."},
-    "FailBuildPipeline": {"Type": "Fail", "Error": "TASK9_BUILD_PIPELINE_FAILED", "Cause": "Code bundle build pipeline failed."},
-    "FailArtifactValidationPipeline": {"Type": "Fail", "Error": "TASK9_ARTIFACT_VALIDATION_FAILED", "Cause": "Artifact validation pipeline failed."},
-    "FailSmokeValidationPipeline": {"Type": "Fail", "Error": "TASK9_SMOKE_VALIDATION_FAILED", "Cause": "Deployment smoke validation failed before authoritative promotion."},
-    "FailInvalidDeploymentMode": {"Type": "Fail", "Error": "TASK9_INVALID_DEPLOYMENT_MODE", "Cause": "Deployment mode must be shadow or authoritative."},
-    "DeploymentFailedRollback": {"Type": "Fail", "Error": "TASK9_ROLLBACK_COMPLETED", "Cause": "Rollback completed after post-promotion validation failure."},
-    "DeploymentSucceeded": {"Type": "Succeed"}
+    "FailBreakGlassReconciliationRequired": {
+      "Type": "Fail",
+      "Error": "TASK9_BREAK_GLASS_RECONCILIATION_REQUIRED",
+      "Cause": "Manual break-glass marker present; reconciliation run required before next promotion."
+    },
+    "FailBuildPipeline": {
+      "Type": "Fail",
+      "Error": "TASK9_BUILD_PIPELINE_FAILED",
+      "Cause": "Code bundle build pipeline failed."
+    },
+    "FailArtifactValidationPipeline": {
+      "Type": "Fail",
+      "Error": "TASK9_ARTIFACT_VALIDATION_FAILED",
+      "Cause": "Artifact validation pipeline failed."
+    },
+    "FailSmokeValidationPipeline": {
+      "Type": "Fail",
+      "Error": "TASK9_SMOKE_VALIDATION_FAILED",
+      "Cause": "Deployment smoke validation failed before authoritative promotion."
+    },
+    "FailInvalidDeploymentMode": {
+      "Type": "Fail",
+      "Error": "TASK9_INVALID_DEPLOYMENT_MODE",
+      "Cause": "Deployment mode must be shadow or authoritative."
+    },
+    "DeploymentFailedRollback": {
+      "Type": "Fail",
+      "Error": "TASK9_ROLLBACK_COMPLETED",
+      "Cause": "Rollback completed after post-promotion validation failure."
+    },
+    "DeploymentSucceeded": {
+      "Type": "Succeed"
+    }
   }
 }

@@ -67,7 +67,8 @@
             "Name": "RequestedFamilies",
             "Value": "{% $requested_families_csv %}"
           }
-        ]
+        ],
+        "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
       },
       "Assign": {
         "extractor_pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
@@ -186,7 +187,8 @@
                   "Name": "RangeEndTsIso",
                   "Value": "{% $states.input.range_end_ts %}"
                 }
-              ]
+              ],
+              "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
             },
             "Assign": {
               "pipeline_execution_arn": "{% $states.result.PipelineExecutionArn %}",
@@ -426,15 +428,15 @@
       "Type": "Choice",
       "Choices": [
         {
-          "Condition": "{% not($exists($extractor_manifest.contract_version)) or $extractor_manifest.contract_version != 'backfill_manifest.v1' %}",
+          "Condition": "{% $not($exists($extractor_manifest.contract_version)) or $extractor_manifest.contract_version != 'backfill_manifest.v1' %}",
           "Next": "FailInvalidExtractorManifest"
         },
         {
-          "Condition": "{% not($exists($extractor_manifest.map_items)) %}",
+          "Condition": "{% $not($exists($extractor_manifest.map_items)) %}",
           "Next": "FailInvalidExtractorManifest"
         },
         {
-          "Condition": "{% not($exists($extractor_manifest.requested_families[0])) %}",
+          "Condition": "{% $not($exists($extractor_manifest.requested_families[0])) %}",
           "Next": "FailInvalidExtractorManifest"
         }
       ],
@@ -450,7 +452,7 @@
       "Assign": {
         "requested_families": "{% $extractor_manifest.requested_families %}",
         "executed_families": "{% $distinct($windows.family) %}",
-        "unresolved_families": "{% $filter($requested_families, function($f){$not($contains($executed_families, $f))}) %}",
+        "unresolved_families": "{% $filter($requested_families, function($f){$$not($contains($executed_families, $f))}) %}",
         "all_families_succeeded": "{% $count($requested_families) > 0 and $count($unresolved_families) = 0 %}"
       },
       "Next": "BackfillCompletionChoice"

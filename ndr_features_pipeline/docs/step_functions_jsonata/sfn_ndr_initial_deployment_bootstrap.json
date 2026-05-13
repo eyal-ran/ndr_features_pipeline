@@ -91,7 +91,8 @@
             "Name": "FeatureSpecVersion",
             "Value": "{% $states.input.feature_spec_version %}"
           }
-        ]
+        ],
+        "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
       },
       "Next": "PersistCheckpointBackfill",
       "Retry": [

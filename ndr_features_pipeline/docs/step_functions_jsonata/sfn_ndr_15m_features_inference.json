@@ -1223,10 +1223,15 @@
               {
                 "ErrorEquals": [
                   "NoSuchKey",
-                  "S3.NoSuchKey",
-                  "States.ALL"
+                  "S3.NoSuchKey"
                 ],
                 "Next": "FailRtReadinessArtifactMissing"
+              },
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Next": "BranchFailed"
               }
             ],
             "Next": "BuildRtArtifactReadinessManifest",

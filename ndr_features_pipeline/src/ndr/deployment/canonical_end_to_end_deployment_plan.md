@@ -4,7 +4,7 @@ This file mirrors `canonical_end_to_end_deployment_plan.ipynb` exactly, with exp
 
 Deterministic sync process: update the `.ipynb` first, then regenerate this mirror from notebook JSON cell order with fenced blocks per cell.
 
-Compatibility note: Step Functions permissions/wiring still require `MonthlyStateMachineArn`, `states:StartExecution`, `states:DescribeExecution`, `states:StopExecution`, and must disallow `sagemaker:StartPipelineExecution` for `${PipelineNameMonthlyFgBBaselines}` in deployment IAM policy text.
+Compatibility note: Step Functions permissions/wiring still require `MonthlyStateMachineArn`, `states:StartExecution`, `states:DescribeExecution`, `states:StopExecution`, and must disallow `sagemaker:StartPipelineExecution` for `${PipelineNameMonthlyReadiness}` and `${PipelineNameFGB}` in deployment IAM policy text.
 
 ## Cell 1 (markdown)
 
@@ -603,20 +603,33 @@ STATE_MACHINE_DEPLOYMENT = {
     "sfn_ndr_code_deployment_orchestrator.json": {"name": "<REPLACE_SFN_CODE_DEPLOY_NAME>", "role_arn": "<REPLACE_SFN_ROLE_ARN>"},
 }
 
+def _pipeline_name(job_name: str) -> str:
+    return f"{project_name}-{feature_spec_version}-{job_name}"
+
 SFN_SUBSTITUTIONS = {
     "ProjectRoutingTableName": routing_table_name,
     "DppConfigTableName": dpp_config_table_name,
     "MlpConfigTableName": mlp_config_table_name,
     "BatchIndexTableName": batch_index_table_name,
+    "LockTableName": processing_lock_table_name,
+    "PublicationLockTableName": publication_lock_table_name,
     "DefaultFeatureSpecVersion": feature_spec_version,
-    "PipelineName15m": f"{project_name}-delta-builder-{feature_spec_version}",
-    "PipelineNameRtFeatures": f"{project_name}-feature-group-a-{feature_spec_version}",
-    "PipelineNameInference": f"{project_name}-feature-group-c-{feature_spec_version}",
-    "PipelineName15mDependentFeatures": f"{project_name}-feature-group-a-based-on-15m-{feature_spec_version}",
-    "PipelineNameBackfillReprocessing": f"{project_name}-historical-windows-extractor-{feature_spec_version}",
-    "PipelineNameMonthlyFgBBaselines": f"{project_name}-feature-group-b-{feature_spec_version}",
-    "PipelineNameTraining": f"{project_name}-unified-if-training-{feature_spec_version}",
-    "PipelineNamePredictionPublication": f"{project_name}-predictions-and-publication-{feature_spec_version}",
+    "ArtifactsBucketName": default_bucket,
+    "EventBusName": f"{project_name}-{environment_name}-events",
+    "PipelineName15m": _pipeline_name("pipeline_15m_streaming"),
+    "PipelineName15mDependent": _pipeline_name("pipeline_15m_dependent"),
+    "PipelineNameInference": _pipeline_name("pipeline_inference_predictions"),
+    "PipelineNameRtReadiness": _pipeline_name("pipeline_15m_dependent"),
+    "PipelineNameBackfillHistoricalExtractor": _pipeline_name("pipeline_backfill_historical_extractor"),
+    "PipelineNameBackfill15m": _pipeline_name("pipeline_backfill_15m_reprocessing"),
+    "PipelineNameFGB": _pipeline_name("pipeline_fg_b_baseline"),
+    "PipelineNameMonthlyReadiness": _pipeline_name("pipeline_fg_b_baseline"),
+    "PipelineNamePredictionJoin": _pipeline_name("pipeline_prediction_feature_join"),
+    "PipelineNameIFTraining": _pipeline_name("pipeline_if_training"),
+    "PipelineNameMachineInventory": _pipeline_name("pipeline_machine_inventory_unload"),
+    "PipelineNameCodeBundleBuild": _pipeline_name("pipeline_code_bundle_build"),
+    "PipelineNameCodeArtifactValidate": _pipeline_name("pipeline_code_artifact_validate"),
+    "PipelineNameCodeSmokeValidate": _pipeline_name("pipeline_code_smoke_validate"),
     "BootstrapStateMachineArn": "<REPLACE_BOOTSTRAP_SFN_ARN>",
     "BackfillStateMachineArn": "<REPLACE_BACKFILL_SFN_ARN>",
     "MonthlyStateMachineArn": "<REPLACE_MONTHLY_SFN_ARN>",
@@ -628,15 +641,25 @@ REQUIRED_SFN_SUBSTITUTIONS = [
     "DppConfigTableName",
     "MlpConfigTableName",
     "BatchIndexTableName",
+    "LockTableName",
+    "PublicationLockTableName",
     "DefaultFeatureSpecVersion",
+    "ArtifactsBucketName",
+    "EventBusName",
     "PipelineName15m",
-    "PipelineNameRtFeatures",
+    "PipelineName15mDependent",
     "PipelineNameInference",
-    "PipelineName15mDependentFeatures",
-    "PipelineNameBackfillReprocessing",
-    "PipelineNameMonthlyFgBBaselines",
-    "PipelineNameTraining",
-    "PipelineNamePredictionPublication",
+    "PipelineNameRtReadiness",
+    "PipelineNameBackfillHistoricalExtractor",
+    "PipelineNameBackfill15m",
+    "PipelineNameFGB",
+    "PipelineNameMonthlyReadiness",
+    "PipelineNamePredictionJoin",
+    "PipelineNameIFTraining",
+    "PipelineNameMachineInventory",
+    "PipelineNameCodeBundleBuild",
+    "PipelineNameCodeArtifactValidate",
+    "PipelineNameCodeSmokeValidate",
     "BootstrapStateMachineArn",
     "BackfillStateMachineArn",
     "MonthlyStateMachineArn",
@@ -760,23 +783,3 @@ print('Structural readiness checks passed.')
 5. Initial feature/stats materialization runs executed.
 6. Step Functions manually deployed.
 ```
-
-## Notebook Metadata
-
-```json
-{
-  "kernelspec": {
-    "display_name": "Python 3",
-    "language": "python",
-    "name": "python3"
-  },
-  "language_info": {
-    "name": "python",
-    "version": "3.11"
-  }
-}
-```
-
-nbformat: `4`
-
-nbformat_minor: `5`

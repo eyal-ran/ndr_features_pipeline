@@ -584,10 +584,14 @@ print('Dry-run deployment flow complete.')
 
 ```python
 from pathlib import Path
-import re
+
+from ndr.orchestration.step_functions_validation import (
+    ensure_required_substitutions,
+    render_and_validate_template,
+    validate_state_machine_definition,
+)
 
 SFN_TEMPLATE_DIR = Path("docs/step_functions_jsonata")
-SFN_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z0-9_]+)\}")
 
 STATE_MACHINE_DEPLOYMENT = {
     "sfn_ndr_15m_features_inference.json": {"name": "<REPLACE_SFN_15M_NAME>", "role_arn": "<REPLACE_SFN_ROLE_ARN>"},
@@ -605,32 +609,39 @@ SFN_SUBSTITUTIONS = {
     "MlpConfigTableName": mlp_config_table_name,
     "BatchIndexTableName": batch_index_table_name,
     "DefaultFeatureSpecVersion": feature_spec_version,
-    "PipelineName15m": f"{project_name}-{feature_spec_version}-pipeline-15m-streaming",
-    "PipelineName15mDependent": f"{project_name}-{feature_spec_version}-pipeline-15m-dependent",
-    "PipelineNameFgBBaseline": f"{project_name}-{feature_spec_version}-pipeline-fg-b-baseline",
-    "PipelineNameIfTraining": f"{project_name}-{feature_spec_version}-pipeline-if-training",
-    "PipelineNameInferencePredictions": f"{project_name}-{feature_spec_version}-pipeline-inference-predictions",
-    "PipelineNamePredictionFeatureJoin": f"{project_name}-{feature_spec_version}-pipeline-prediction-feature-join",
-    "PipelineNameBackfillHistoricalExtractor": f"{project_name}-{feature_spec_version}-pipeline-backfill-historical-extractor",
-    "PipelineNameBackfill15mReprocessing": f"{project_name}-{feature_spec_version}-pipeline-backfill-15m-reprocessing",
-    "PipelineNameCodeBundleBuild": f"{project_name}-{feature_spec_version}-pipeline-code-bundle-build",
-    "PipelineNameCodeArtifactValidate": f"{project_name}-{feature_spec_version}-pipeline-code-artifact-validate",
-    "PipelineNameCodeSmokeValidate": f"{project_name}-{feature_spec_version}-pipeline-code-smoke-validate",
+    "PipelineName15m": f"{project_name}-delta-builder-{feature_spec_version}",
+    "PipelineNameRtFeatures": f"{project_name}-feature-group-a-{feature_spec_version}",
+    "PipelineNameInference": f"{project_name}-feature-group-c-{feature_spec_version}",
+    "PipelineName15mDependentFeatures": f"{project_name}-feature-group-a-based-on-15m-{feature_spec_version}",
+    "PipelineNameBackfillReprocessing": f"{project_name}-historical-windows-extractor-{feature_spec_version}",
+    "PipelineNameMonthlyFgBBaselines": f"{project_name}-feature-group-b-{feature_spec_version}",
+    "PipelineNameTraining": f"{project_name}-unified-if-training-{feature_spec_version}",
+    "PipelineNamePredictionPublication": f"{project_name}-predictions-and-publication-{feature_spec_version}",
+    "BootstrapStateMachineArn": "<REPLACE_BOOTSTRAP_SFN_ARN>",
+    "BackfillStateMachineArn": "<REPLACE_BACKFILL_SFN_ARN>",
     "MonthlyStateMachineArn": "<REPLACE_MONTHLY_SFN_ARN>",
+    "PredictionPublicationStateMachineArn": "<REPLACE_PUBLICATION_SFN_ARN>",
 }
 
-def _render_sfn_template(template_text, substitutions):
-    def repl(match):
-        key = match.group(1)
-        if key not in substitutions:
-            raise KeyError(f"Missing substitution for placeholder: {key}")
-        return str(substitutions[key])
-    rendered = SFN_PLACEHOLDER_RE.sub(repl, template_text)
-    unresolved = sorted(set(SFN_PLACEHOLDER_RE.findall(rendered)))
-    if unresolved:
-        raise ValueError(f"Unresolved placeholders remain: {unresolved}")
-    json.loads(rendered)  # validate JSON before API call
-    return rendered
+REQUIRED_SFN_SUBSTITUTIONS = [
+    "ProjectRoutingTableName",
+    "DppConfigTableName",
+    "MlpConfigTableName",
+    "BatchIndexTableName",
+    "DefaultFeatureSpecVersion",
+    "PipelineName15m",
+    "PipelineNameRtFeatures",
+    "PipelineNameInference",
+    "PipelineName15mDependentFeatures",
+    "PipelineNameBackfillReprocessing",
+    "PipelineNameMonthlyFgBBaselines",
+    "PipelineNameTraining",
+    "PipelineNamePredictionPublication",
+    "BootstrapStateMachineArn",
+    "BackfillStateMachineArn",
+    "MonthlyStateMachineArn",
+    "PredictionPublicationStateMachineArn",
+]
 
 def _find_state_machine_arn(sfn_client, name):
     paginator = sfn_client.get_paginator("list_state_machines")
@@ -640,16 +651,33 @@ def _find_state_machine_arn(sfn_client, name):
                 return item["stateMachineArn"]
     return None
 
-def upsert_step_functions(dry_run=True):
-    sfn_client = boto3.client("stepfunctions", region_name=aws_region)
-    results = []
-    for template_file, deployment in STATE_MACHINE_DEPLOYMENT.items():
+def validate_step_function_templates(substitutions):
+    ensure_required_substitutions(substitutions, REQUIRED_SFN_SUBSTITUTIONS)
+    rendered = {}
+    for template_file in STATE_MACHINE_DEPLOYMENT:
         template_path = SFN_TEMPLATE_DIR / template_file
         if not template_path.exists():
             raise FileNotFoundError(f"Missing Step Functions template: {template_path}")
-        rendered = _render_sfn_template(template_path.read_text(encoding="utf-8"), SFN_SUBSTITUTIONS)
+        rendered_text = render_and_validate_template(template_path.read_text(encoding="utf-8"), substitutions)
+        validate_state_machine_definition(rendered_text)
+        rendered[template_file] = rendered_text
+    return rendered
+
+def upsert_step_functions(dry_run=True, deployment_targets=None):
+    sfn_client = boto3.client("stepfunctions", region_name=aws_region)
+    ordered_targets = deployment_targets or list(STATE_MACHINE_DEPLOYMENT.keys())
+    unknown = [name for name in ordered_targets if name not in STATE_MACHINE_DEPLOYMENT]
+    if unknown:
+        raise ValueError(f"Unknown Step Functions templates requested: {unknown}")
+
+    rendered_templates = validate_step_function_templates(SFN_SUBSTITUTIONS)
+
+    results = []
+    for template_file in ordered_targets:
+        deployment = STATE_MACHINE_DEPLOYMENT[template_file]
         name = deployment["name"]
         role_arn = deployment["role_arn"]
+        rendered = rendered_templates[template_file]
         existing_arn = _find_state_machine_arn(sfn_client, name)
         if dry_run:
             action = "UPDATE" if existing_arn else "CREATE"
@@ -677,6 +705,11 @@ def upsert_step_functions(dry_run=True):
 
 step_function_results = upsert_step_functions(dry_run=DRY_RUN)
 print(json.dumps(step_function_results, indent=2))
+
+# Optional targeted rollout pattern (recommended):
+# 1) upsert_step_functions(dry_run=True)
+# 2) upsert_step_functions(dry_run=False, deployment_targets=["sfn_ndr_training_orchestrator.json"])
+# 3) upsert_step_functions(dry_run=False)
 ```
 
 ## Cell 29 (markdown)
@@ -725,7 +758,7 @@ print('Structural readiness checks passed.')
 3. Artifact values set and promoted.
 4. Pipelines upserted.
 5. Initial feature/stats materialization runs executed.
-6. Step Functions upserted from repository templates.
+6. Step Functions manually deployed.
 ```
 
 ## Notebook Metadata

@@ -283,7 +283,7 @@
             "Choices": [
               {
                 "Condition": "{% $training_pipeline_status = 'Succeeded' %}",
-                "Next": "Success"
+                "Next": "TrainingBranchSuccess"
               },
               {
                 "Condition": "{% ($training_pipeline_status = 'Executing' or $training_pipeline_status = 'Stopping') and $training_poll_attempt < 120 %}",
@@ -309,7 +309,7 @@
             "Error": "NdrUnifiedTrainingPipelineFailed",
             "Cause": "Unified IF training pipeline failed, was stopped, or exceeded poll budget"
           },
-          "Success": {
+          "TrainingBranchSuccess": {
             "Type": "Succeed"
           }
         }

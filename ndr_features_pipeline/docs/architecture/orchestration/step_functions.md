@@ -62,6 +62,10 @@ Dedicated deployment control is now implemented in `docs/step_functions_jsonata/
 - `raw_parsed_logs_s3_prefix` starts with `s3://` and ends with `/<batch_id>/`.
 - `timestamp` is ISO-8601 UTC (`...Z`).
 
+### EventBridge ingestion trigger
+
+The canonical deployment reconciles an event-driven EventBridge rule on the project event bus. Upstream ingestion publishers emit `source=ndr.ingestion` and `detail-type=NdrRawParsedLogsBatchCompleted`, with the canonical ingestion payload above as the event `detail`. The rule forwards `$.detail` unchanged to the 15m Step Functions workflow. A clock-only 15-minute schedule is invalid for this workflow because it cannot supply batch-specific runtime context.
+
 ## 2) Orchestration-resolved runtime fields
 
 - `project_name`
@@ -252,3 +256,7 @@ Determinism/idempotency constraints:
 - stale/external readiness payloads are ignored for gate authority.
 - idempotency key is deterministic by project/version/reference scope and readiness cycle.
 - retries are bounded and only applied to compute/read/remediation task failures.
+
+### Dedicated readiness pipeline deployment
+
+`${PipelineNameRtReadiness}` and `${PipelineNameMonthlyReadiness}` must resolve to dedicated SageMaker readiness pipelines. They must not alias FG-C-dependent or FG-B-builder pipelines. The readiness jobs derive authoritative evidence from Batch Index and S3 object existence, validate their v3 payloads, and write cycle-scoped artifacts under `orchestration/readiness/` before the state machines evaluate gate decisions.

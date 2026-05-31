@@ -137,6 +137,15 @@ PIPELINE_RUNTIME_PARAMS = {
         "FeatureSpecVersion",
         "ReferenceMonth",
     ],
+    "pipeline_rt_readiness": [
+        "ProjectName", "FeatureSpecVersion", "MlProjectName", "MiniBatchId",
+        "BatchStartTsIso", "BatchEndTsIso", "ReadinessCycle",
+        "ArtifactsBucketName", "BatchIndexTableName", "DppConfigTableName",
+    ],
+    "pipeline_monthly_readiness": [
+        "ProjectName", "FeatureSpecVersion", "ReferenceMonth", "ReadinessCycle",
+        "ArtifactsBucketName", "BatchIndexTableName", "DppConfigTableName",
+    ],
     "pipeline_machine_inventory_unload": [
         "ProjectName",
         "FeatureSpecVersion",
@@ -148,6 +157,7 @@ PIPELINE_RUNTIME_PARAMS = {
         "MiniBatchId",
         "BatchStartTsIso",
         "BatchEndTsIso",
+        "MlProjectName",
     ],
     "pipeline_prediction_feature_join": [
         "ProjectName",
@@ -155,6 +165,7 @@ PIPELINE_RUNTIME_PARAMS = {
         "MiniBatchId",
         "BatchStartTsIso",
         "BatchEndTsIso",
+        "MlProjectName",
     ],
     "pipeline_if_training": [
         "ProjectName",
@@ -179,6 +190,8 @@ PIPELINE_RUNTIME_PARAMS = {
         "InputS3Prefix",
         "OutputS3Prefix",
         "RequestedFamilies",
+        "MissingRangesJson",
+        "IdempotencyKey",
     ],
     "pipeline_backfill_15m_reprocessing": [
         "ProjectName",
@@ -904,6 +917,32 @@ def _build_bootstrap_items(
             "feature_spec_version": feature_spec_version,
             "updated_at": now,
             "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name_version": _versioned_job_name("pipeline_rt_readiness", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_rt_readiness"],
+                "scripts": {"steps": {"RtArtifactReadinessCheckerStep": {
+                    "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/rt_readiness/RtArtifactReadinessCheckerStep/",
+                    "entry_script": "run_rt_readiness_checker.py",
+                    "data_prefixes": {"output_readiness": "s3://<bucket>/orchestration/readiness/rt_artifact_readiness/v3/"},
+                }}},
+            },
+            "feature_spec_version": feature_spec_version, "updated_at": now, "owner": owner,
+        },
+        {
+            "project_name": project_name,
+            "job_name_version": _versioned_job_name("pipeline_monthly_readiness", feature_spec_version),
+            "spec": {
+                "required_runtime_params": PIPELINE_RUNTIME_PARAMS["pipeline_monthly_readiness"],
+                "scripts": {"steps": {"MonthlyFgBReadinessCheckerStep": {
+                    "code_prefix_s3": "s3://<bucket>/projects/<project_name>/versions/<feature_spec_version>/code/pipelines/monthly_readiness/MonthlyFgBReadinessCheckerStep/",
+                    "entry_script": "run_monthly_readiness_checker.py",
+                    "data_prefixes": {"output_readiness": "s3://<bucket>/orchestration/readiness/monthly_fg_b_readiness/v3/"},
+                }}},
+            },
+            "feature_spec_version": feature_spec_version, "updated_at": now, "owner": owner,
         },
         {
             "project_name": project_name,

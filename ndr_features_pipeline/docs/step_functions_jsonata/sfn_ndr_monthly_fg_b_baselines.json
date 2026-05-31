@@ -23,7 +23,7 @@
       "Assign": {
         "project_name": "{% $exists($states.input.project_name) ? $states.input.project_name : ($parsed_project_name != '' ? $parsed_project_name : ($exists($project_defaults.ProjectName.S) ? $project_defaults.ProjectName.S : '')) %}",
         "feature_spec_version": "{% $exists($states.input.feature_spec_version) ? $states.input.feature_spec_version : ($parsed_feature_spec_version != '' ? $parsed_feature_spec_version : ($exists($project_defaults.FeatureSpecVersion.S) ? $project_defaults.FeatureSpecVersion.S : '${DefaultFeatureSpecVersion}')) %}",
-        "reference_month": "{% $exists($states.input.reference_month) ? $states.input.reference_month : ($contains($raw_message,'reference_month=') ? $split($split($raw_message,'reference_month=')[1],';')[0] : ($exists($project_defaults.ReferenceMonth.S) ? $project_defaults.ReferenceMonth.S : '')) %}"
+        "reference_month": "{% $exists($states.input.reference_month) ? $states.input.reference_month : ($contains($raw_message,'reference_month=') ? $split($split($raw_message,'reference_month=')[1],';')[0] : ($exists($project_defaults.ReferenceMonth.S) and $contains($project_defaults.ReferenceMonth.S,'<required:') = false ? $project_defaults.ReferenceMonth.S : $substring($states.context.Execution.StartTime,0,7))) %}"
       },
       "Next": "ValidateResolvedRuntimeParams"
     },
@@ -118,7 +118,7 @@
     "BuildBaselineDependencyCheckManifest": {
       "Type": "Pass",
       "Assign": {
-        "baseline_dependency_manifest": "{% $exists($baseline_dependency_artifact_body) ? $eval($baseline_dependency_artifact_body) : $error('BASELINE_DEPENDENCY_ARTIFACT_MISSING','Baseline dependency artifact is required') %}",
+        "baseline_dependency_manifest": "{% $exists($baseline_dependency_artifact_body) ? $eval($baseline_dependency_artifact_body) : $error('MONTHLY_READINESS_ARTIFACT_MISSING','Baseline dependency artifact is required') %}",
         "baseline_gate_cycle": "{% $exists($baseline_gate_cycle) ? $baseline_gate_cycle : 0 %}"
       },
       "Next": "ValidateBaselineDependencyManifest"
@@ -140,7 +140,7 @@
     "BuildBaselineRemediationRequest": {
       "Type": "Pass",
       "Assign": {
-        "baseline_remediation_request": "{% {'contract_version':'NdrBaselineRemediationRequest.v1','consumer':'monthly_baseline','project_name':$project_name,'feature_spec_version':$feature_spec_version,'reference_month':$reference_month,'required_families':$baseline_dependency_manifest.required_families,'missing_ranges':$baseline_dependency_manifest.missing_ranges,'provenance':{'producer_flow':'monthly_fg_b_baselines','source_mode':'batch_index','request_id':$states.context.Execution.Id},'idempotency_key':$baseline_dependency_manifest.idempotency_key} %}",
+        "baseline_remediation_request": "{% {'contract_version':'NdrBackfillRequest.v2','consumer':'monthly_baseline','project_name':$project_name,'feature_spec_version':$feature_spec_version,'requested_families':$baseline_dependency_manifest.required_families,'missing_ranges':$baseline_dependency_manifest.missing_ranges,'provenance':{'producer_flow':'monthly_fg_b_baselines','source_mode':'batch_index','request_id':$states.context.Execution.Id},'idempotency_key':$baseline_dependency_manifest.idempotency_key} %}",
         "baseline_remediation_window": "{% {'start_ts': $min($baseline_dependency_manifest.missing_ranges.start_ts_iso), 'end_ts': $max($baseline_dependency_manifest.missing_ranges.end_ts_iso)} %}"
       },
       "Next": "InvokeBaselineDependencyRemediation"
@@ -156,11 +156,11 @@
           "start_ts": "{% $baseline_remediation_window.start_ts %}",
           "end_ts": "{% $baseline_remediation_window.end_ts %}",
           "reference_month": "{% $reference_month %}",
-          "required_families": "{% $baseline_remediation_request.required_families %}",
           "missing_ranges": "{% $baseline_remediation_request.missing_ranges %}",
           "provenance": "{% $baseline_remediation_request.provenance %}",
           "contract_version": "{% $baseline_remediation_request.contract_version %}",
-          "idempotency_key": "{% $baseline_remediation_request.idempotency_key %}"
+          "idempotency_key": "{% $baseline_remediation_request.idempotency_key %}",
+          "requested_families": "{% $baseline_remediation_request.requested_families %}"
         }
       },
       "Retry": [
@@ -198,6 +198,18 @@
           {
             "Name": "ReadinessCycle",
             "Value": "{% $string($baseline_gate_cycle) %}"
+          },
+          {
+            "Name": "ArtifactsBucketName",
+            "Value": "${ArtifactsBucketName}"
+          },
+          {
+            "Name": "BatchIndexTableName",
+            "Value": "${BatchIndexTableName}"
+          },
+          {
+            "Name": "DppConfigTableName",
+            "Value": "${DppConfigTableName}"
           }
         ],
         "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
@@ -407,6 +419,18 @@
           {
             "Name": "ReadinessCycle",
             "Value": "{% $string($baseline_gate_cycle) %}"
+          },
+          {
+            "Name": "ArtifactsBucketName",
+            "Value": "${ArtifactsBucketName}"
+          },
+          {
+            "Name": "BatchIndexTableName",
+            "Value": "${BatchIndexTableName}"
+          },
+          {
+            "Name": "DppConfigTableName",
+            "Value": "${DppConfigTableName}"
           }
         ],
         "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
@@ -440,7 +464,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::aws-sdk:sagemaker:describePipelineExecution",
       "Arguments": {
-        "PipelineExecutionArn": "{% $monthly_readiness_execution_arn %}"
+        "PipelineExecutionArn": "{% $exists($monthly_recheck_readiness_execution_arn) ? $monthly_recheck_readiness_execution_arn : $monthly_readiness_execution_arn %}"
       },
       "Assign": {
         "monthly_readiness_pipeline_status": "{% $states.result.PipelineExecutionStatus %}"

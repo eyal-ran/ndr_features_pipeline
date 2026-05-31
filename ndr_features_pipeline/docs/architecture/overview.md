@@ -60,3 +60,9 @@ Primary data layers:
   - `docs/architecture/diagrams/stakeholder_value_flow.md` (business-oriented value stream)
 - Processing + builders current state: `docs/feature_builders/current_state.md`
 - Feature definitions: `docs/FEATURE_CATALOG.md` and `docs/feature_catalog/`
+
+## Dedicated readiness pipeline definitions
+
+- **Realtime readiness pipeline** (`sagemaker_pipeline_definitions_rt_readiness.py`) computes and publishes `rt_artifact_readiness.v3` before FG-C dependent processing.
+- **Monthly readiness pipeline** (`sagemaker_pipeline_definitions_monthly_readiness.py`) computes and publishes `monthly_fg_b_readiness.v3` before FG-B baseline processing.
+- Deployment is upgrade-in-place: the canonical notebook adds and upserts these pipelines without deleting previously deployed pipelines, DDB tables, or Step Functions resources.

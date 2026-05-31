@@ -31,6 +31,8 @@ def build_backfill_historical_extractor_pipeline(
     input_s3_prefix = ParameterString(name="InputS3Prefix", default_value="<required:InputS3Prefix>")
     output_s3_prefix = ParameterString(name="OutputS3Prefix", default_value="<required:OutputS3Prefix>")
     requested_families = ParameterString(name="RequestedFamilies", default_value="")
+    missing_ranges_json = ParameterString(name="MissingRangesJson", default_value="[]")
+    idempotency_key = ParameterString(name="IdempotencyKey", default_value="")
 
     processing_image_uri = ParameterString(
         name="ProcessingImageUri",
@@ -82,6 +84,10 @@ def build_backfill_historical_extractor_pipeline(
             feature_spec_version,
             "--requested-families",
             requested_families,
+            "--missing-ranges-json",
+            missing_ranges_json,
+            "--idempotency-key",
+            idempotency_key,
             ],
         ),
     )
@@ -96,6 +102,8 @@ def build_backfill_historical_extractor_pipeline(
             input_s3_prefix,
             output_s3_prefix,
             requested_families,
+            missing_ranges_json,
+            idempotency_key,
             processing_image_uri,
             processing_instance_type,
             processing_instance_count,

@@ -941,7 +941,7 @@
           "BuildRtBackfillRemediationRequest": {
             "Type": "Pass",
             "Assign": {
-              "rt_backfill_remediation_request": "{% {'contract_version':'NdrBackfillRequest.v1','consumer':'realtime','project_name':$states.input.project_name,'feature_spec_version':$states.input.feature_spec_version,'ml_project_name':$states.input.ml_project_name,'batch_id':$states.input.mini_batch_id,'requested_families':$rt_artifact_readiness_manifest.required_families,'missing_ranges':$rt_artifact_readiness_manifest.missing_ranges,'source_hint':{'raw_parsed_logs_s3_prefix':$states.input.raw_parsed_logs_s3_prefix},'provenance':{'producer_flow':'rt_15m_features_inference','source_mode':'batch_index','request_id':$states.context.Execution.Id},'idempotency_key':$rt_artifact_readiness_manifest.idempotency_key} %}"
+              "rt_backfill_remediation_request": "{% {'contract_version':'NdrBackfillRequest.v2','consumer':'realtime','project_name':$states.input.project_name,'feature_spec_version':$states.input.feature_spec_version,'ml_project_name':$states.input.ml_project_name,'batch_id':$states.input.mini_batch_id,'requested_families':$rt_artifact_readiness_manifest.required_families,'missing_ranges':$rt_artifact_readiness_manifest.missing_ranges,'source_hint':{'raw_parsed_logs_s3_prefix':$states.input.raw_parsed_logs_s3_prefix},'provenance':{'producer_flow':'rt_15m_features_inference','source_mode':'batch_index','request_id':$states.context.Execution.Id},'idempotency_key':$rt_artifact_readiness_manifest.idempotency_key} %}"
             },
             "Next": "UpdateBatchIndexRemediationRequested"
           },
@@ -1121,6 +1121,18 @@
                 {
                   "Name": "ReadinessCycle",
                   "Value": "{% $string($rt_readiness_cycle) %}"
+                },
+                {
+                  "Name": "ArtifactsBucketName",
+                  "Value": "${ArtifactsBucketName}"
+                },
+                {
+                  "Name": "BatchIndexTableName",
+                  "Value": "${BatchIndexTableName}"
+                },
+                {
+                  "Name": "DppConfigTableName",
+                  "Value": "${DppConfigTableName}"
                 }
               ],
               "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
@@ -1571,6 +1583,18 @@
                 {
                   "Name": "ReadinessCycle",
                   "Value": "{% $string($rt_readiness_cycle) %}"
+                },
+                {
+                  "Name": "ArtifactsBucketName",
+                  "Value": "${ArtifactsBucketName}"
+                },
+                {
+                  "Name": "BatchIndexTableName",
+                  "Value": "${BatchIndexTableName}"
+                },
+                {
+                  "Name": "DppConfigTableName",
+                  "Value": "${DppConfigTableName}"
                 }
               ],
               "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"

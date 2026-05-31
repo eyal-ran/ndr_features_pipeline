@@ -39,6 +39,11 @@ PIPELINE_ARTIFACT_FAMILY: dict[str, str] = {
     "pipeline_if_training": "training",
     "pipeline_backfill_historical_extractor": "backfill",
     "pipeline_backfill_15m_reprocessing": "backfill",
+    "pipeline_rt_readiness": "readiness",
+    "pipeline_monthly_readiness": "readiness",
+    "pipeline_code_bundle_build": "deployment",
+    "pipeline_code_artifact_validate": "deployment",
+    "pipeline_code_smoke_validate": "deployment",
 }
 
 

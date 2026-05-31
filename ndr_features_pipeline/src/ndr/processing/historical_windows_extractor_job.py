@@ -10,8 +10,14 @@ from urllib.parse import urlparse
 import boto3
 
 from ndr.config.batch_index_loader import BatchIndexLoader
-from ndr.config.project_parameters_loader import load_project_parameters, resolve_feature_spec_version
-from ndr.orchestration.backfill_contracts import build_execution_manifest, build_family_range_plan
+from ndr.config.project_parameters_loader import (
+    load_project_parameters,
+    resolve_feature_spec_version,
+)
+from ndr.orchestration.backfill_contracts import (
+    build_execution_manifest,
+    build_family_range_plan,
+)
 from ndr.orchestration.palo_alto_batch_utils import (
     parse_batch_path_from_s3_key,
     derive_window_bounds,
@@ -31,6 +37,8 @@ class HistoricalWindowsExtractorRuntimeConfig:
     preferred_feature_spec_version: str | None = None
     dpp_config_table_name: str | None = None
     requested_families: list[str] | None = None
+    missing_ranges: list[dict[str, str]] | None = None
+    idempotency_key: str | None = None
 
 
 class HistoricalWindowsExtractorJob:
@@ -58,10 +66,14 @@ class HistoricalWindowsExtractorJob:
         if not index_rows:
             try:
                 s3_rows = self._extract_rows_from_s3_listing()
-            except Exception as exc:  # preserve deterministic failure if both resolvers fail/empty
+            except (
+                Exception
+            ) as exc:  # preserve deterministic failure if both resolvers fail/empty
                 s3_lookup_error = exc
 
-        project_name = self._resolve_project_name(index_rows=index_rows, s3_rows=s3_rows)
+        project_name = self._resolve_project_name(
+            index_rows=index_rows, s3_rows=s3_rows
+        )
         if index_rows and project_name:
             feature_spec_version = index_rows[0]["feature_spec_version"]
             dpp_spec = load_project_parameters(
@@ -70,7 +82,9 @@ class HistoricalWindowsExtractorJob:
                 dpp_table_name=self.runtime_config.dpp_config_table_name,
             )
             fallback = dpp_spec.get("backfill_redshift_fallback") or {}
-            allow_redshift_fallback = bool(fallback) and bool(fallback.get("enabled", True))
+            allow_redshift_fallback = bool(fallback) and bool(
+                fallback.get("enabled", True)
+            )
             resolution = RawInputResolver().resolve(
                 ingestion_rows=index_rows,
                 allow_redshift_fallback=allow_redshift_fallback,
@@ -105,7 +119,9 @@ class HistoricalWindowsExtractorJob:
                 dpp_table_name=self.runtime_config.dpp_config_table_name,
             )
             fallback = dpp_spec.get("backfill_redshift_fallback") or {}
-            allow_redshift_fallback = bool(fallback) and bool(fallback.get("enabled", True))
+            allow_redshift_fallback = bool(fallback) and bool(
+                fallback.get("enabled", True)
+            )
             resolution = RawInputResolver().resolve(
                 ingestion_rows=[],
                 allow_redshift_fallback=allow_redshift_fallback,
@@ -136,7 +152,6 @@ class HistoricalWindowsExtractorJob:
             "HWE_NO_ROWS_RESOLVED: No batch-index rows, no S3 rows, and no resolvable project_name for Redshift fallback"
         ) from (s3_lookup_error or index_lookup_error)
 
-
     def _extract_rows_from_batch_index(self) -> list[dict[str, str]]:
         start_ts = _parse_iso8601(self.runtime_config.start_ts_iso)
         end_ts = _parse_iso8601(self.runtime_config.end_ts_iso)
@@ -158,8 +173,12 @@ class HistoricalWindowsExtractorJob:
         )
         rows: list[dict[str, str]] = []
         for record in records:
-            source_ts = _parse_iso8601(record.event_ts_utc)
-            batch_start_ts_iso, batch_end_ts_iso = derive_window_bounds(source_ts, self.runtime_config.window_floor_minutes)
+            source_ts = _parse_iso8601(
+                getattr(record, "etl_ts", getattr(record, "event_ts_utc", ""))
+            )
+            batch_start_ts_iso, batch_end_ts_iso = derive_window_bounds(
+                source_ts, self.runtime_config.window_floor_minutes
+            )
             rows.append(
                 {
                     "project_name": project_name,
@@ -171,7 +190,13 @@ class HistoricalWindowsExtractorJob:
                     "source_last_modified_ts_iso": to_iso_z(source_ts),
                 }
             )
-        rows.sort(key=lambda r: (r["project_name"], r["batch_start_ts_iso"], r["mini_batch_id"]))
+        rows.sort(
+            key=lambda r: (
+                r["project_name"],
+                r["batch_start_ts_iso"],
+                r["mini_batch_id"],
+            )
+        )
         return rows
 
     def _extract_rows_from_s3_listing(self) -> list[dict[str, str]]:
@@ -188,7 +213,11 @@ class HistoricalWindowsExtractorJob:
                 if not (start_ts <= last_modified < end_ts):
                     continue
 
-                suffix_key = key[len(in_prefix):].lstrip("/") if key.startswith(in_prefix) else key
+                suffix_key = (
+                    key[len(in_prefix) :].lstrip("/")
+                    if key.startswith(in_prefix)
+                    else key
+                )
                 parsed = parse_batch_path_from_s3_key(suffix_key)
                 mini_batch_prefix = (
                     f"s3://{in_bucket}/{in_prefix.rstrip('/')}/"
@@ -209,7 +238,9 @@ class HistoricalWindowsExtractorJob:
         for item in grouped.values():
             project_name = str(item["project_name"])
             source_ts = item["last_modified"]
-            batch_start_ts_iso, batch_end_ts_iso = derive_window_bounds(source_ts, self.runtime_config.window_floor_minutes)
+            batch_start_ts_iso, batch_end_ts_iso = derive_window_bounds(
+                source_ts, self.runtime_config.window_floor_minutes
+            )
             feature_spec_version = resolve_feature_spec_version(
                 project_name=project_name,
                 preferred_feature_spec_version=self.runtime_config.preferred_feature_spec_version,
@@ -227,12 +258,18 @@ class HistoricalWindowsExtractorJob:
                 }
             )
 
-        rows.sort(key=lambda r: (r["project_name"], r["batch_start_ts_iso"], r["mini_batch_id"]))
+        rows.sort(
+            key=lambda r: (
+                r["project_name"],
+                r["batch_start_ts_iso"],
+                r["mini_batch_id"],
+            )
+        )
         return rows
 
     def _infer_project_name_from_input_prefix(self) -> str | None:
         _bucket, input_prefix = _split_s3_uri(self.runtime_config.input_s3_prefix)
-        parts = [p for p in input_prefix.strip('/').split('/') if p]
+        parts = [p for p in input_prefix.strip("/").split("/") if p]
         if len(parts) < 2:
             return None
         return parts[-1]
@@ -244,23 +281,37 @@ class HistoricalWindowsExtractorJob:
         inferred = (self._infer_project_name_from_input_prefix() or "").strip()
         return inferred or None
 
-    def _resolve_project_name(self, *, index_rows: list[dict[str, str]], s3_rows: list[dict[str, str]]) -> str | None:
+    def _resolve_project_name(
+        self, *, index_rows: list[dict[str, str]], s3_rows: list[dict[str, str]]
+    ) -> str | None:
         explicit = (self.runtime_config.project_name or "").strip()
         if explicit:
             self._assert_rows_match_project(index_rows, explicit)
             self._assert_rows_match_project(s3_rows, explicit)
             return explicit
-        index_project_names = {row["project_name"] for row in index_rows if row.get("project_name")}
+        index_project_names = {
+            row["project_name"] for row in index_rows if row.get("project_name")
+        }
         if len(index_project_names) == 1:
             return next(iter(index_project_names))
-        s3_project_names = {row["project_name"] for row in s3_rows if row.get("project_name")}
+        s3_project_names = {
+            row["project_name"] for row in s3_rows if row.get("project_name")
+        }
         if len(s3_project_names) == 1:
             return next(iter(s3_project_names))
         return None
 
     @staticmethod
-    def _assert_rows_match_project(rows: list[dict[str, str]], expected_project_name: str) -> None:
-        mismatched = sorted({row.get("project_name", "") for row in rows if row.get("project_name") != expected_project_name})
+    def _assert_rows_match_project(
+        rows: list[dict[str, str]], expected_project_name: str
+    ) -> None:
+        mismatched = sorted(
+            {
+                row.get("project_name", "")
+                for row in rows
+                if row.get("project_name") != expected_project_name
+            }
+        )
         if mismatched:
             raise RuntimeError(
                 "HWE_PROJECT_MISMATCH: runtime project_name does not match resolved rows "
@@ -270,25 +321,87 @@ class HistoricalWindowsExtractorJob:
     def _write_rows(self, rows: list[dict[str, str]]) -> str:
         out_bucket, out_prefix = _split_s3_uri(self.runtime_config.output_s3_prefix)
         now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        base_prefix = out_prefix.rstrip('/')
+        base_prefix = out_prefix.rstrip("/")
         key = f"{base_prefix}/historical_windows/{now}.json"
         latest_key = f"{base_prefix}/historical_windows/latest_manifest.json"
-        project_name = rows[0]["project_name"] if rows else (self._resolve_runtime_project_name() or "")
-        feature_spec_version = rows[0]["feature_spec_version"] if rows else (
-            resolve_feature_spec_version(
-                project_name=project_name,
-                preferred_feature_spec_version=self.runtime_config.preferred_feature_spec_version,
-            ) if project_name else (self.runtime_config.preferred_feature_spec_version or "")
+        project_name = (
+            rows[0]["project_name"]
+            if rows
+            else (self._resolve_runtime_project_name() or "")
         )
+        feature_spec_version = (
+            rows[0]["feature_spec_version"]
+            if rows
+            else (
+                resolve_feature_spec_version(
+                    project_name=project_name,
+                    preferred_feature_spec_version=self.runtime_config.preferred_feature_spec_version,
+                )
+                if project_name
+                else (self.runtime_config.preferred_feature_spec_version or "")
+            )
+        )
+        supplied_ranges = self.runtime_config.missing_ranges or []
         family_ranges = {
-            "delta": [{"start_ts": row["batch_start_ts_iso"], "end_ts": row["batch_end_ts_iso"]} for row in rows],
-            "fg_a": [{"start_ts": row["batch_start_ts_iso"], "end_ts": row["batch_end_ts_iso"]} for row in rows],
-            "pair_counts": [{"start_ts": row["batch_start_ts_iso"], "end_ts": row["batch_end_ts_iso"]} for row in rows],
-            "fg_b_baseline": _derive_fg_b_reference_ranges(rows),
-            "fg_c": [{"start_ts": row["batch_start_ts_iso"], "end_ts": row["batch_end_ts_iso"]} for row in rows],
+            "delta": [
+                {"start_ts": item["start_ts_iso"], "end_ts": item["end_ts_iso"]}
+                for item in supplied_ranges
+                if item.get("family") == "delta"
+            ]
+            or [
+                {
+                    "start_ts": row["batch_start_ts_iso"],
+                    "end_ts": row["batch_end_ts_iso"],
+                }
+                for row in rows
+            ],
+            "fg_a": [
+                {"start_ts": item["start_ts_iso"], "end_ts": item["end_ts_iso"]}
+                for item in supplied_ranges
+                if item.get("family") == "fg_a"
+            ]
+            or [
+                {
+                    "start_ts": row["batch_start_ts_iso"],
+                    "end_ts": row["batch_end_ts_iso"],
+                }
+                for row in rows
+            ],
+            "pair_counts": [
+                {"start_ts": item["start_ts_iso"], "end_ts": item["end_ts_iso"]}
+                for item in supplied_ranges
+                if item.get("family") == "pair_counts"
+            ]
+            or [
+                {
+                    "start_ts": row["batch_start_ts_iso"],
+                    "end_ts": row["batch_end_ts_iso"],
+                }
+                for row in rows
+            ],
+            "fg_b_baseline": [
+                {"start_ts": item["start_ts_iso"], "end_ts": item["end_ts_iso"]}
+                for item in supplied_ranges
+                if item.get("family") == "fg_b_baseline"
+            ]
+            or _derive_fg_b_reference_ranges(rows),
+            "fg_c": [
+                {"start_ts": item["start_ts_iso"], "end_ts": item["end_ts_iso"]}
+                for item in supplied_ranges
+                if item.get("family") == "fg_c"
+            ]
+            or [
+                {
+                    "start_ts": row["batch_start_ts_iso"],
+                    "end_ts": row["batch_end_ts_iso"],
+                }
+                for row in rows
+            ],
         }
         source_mode = rows[0].get("source_mode", "ingestion") if rows else "ingestion"
-        resolution_reason = rows[0].get("resolution_reason", "batch_index") if rows else "empty"
+        resolution_reason = (
+            rows[0].get("resolution_reason", "batch_index") if rows else "empty"
+        )
         requested_families = self.runtime_config.requested_families or []
         manifest = build_execution_manifest(
             project_name=project_name,
@@ -300,7 +413,10 @@ class HistoricalWindowsExtractorJob:
                 requested_families=requested_families or None,
             ),
             requested_families=requested_families,
+            idempotency_key=self.runtime_config.idempotency_key,
         )
+        if self.runtime_config.idempotency_key:
+            manifest["idempotency_key"] = self.runtime_config.idempotency_key
         manifest["rows"] = rows
         manifest["source_mode"] = source_mode
         manifest["resolution_reason"] = resolution_reason
@@ -325,7 +441,12 @@ def _fallback_batch_id(start_ts_iso: str, end_ts_iso: str) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _parse_iso8601(value: str) -> datetime:

@@ -67,7 +67,7 @@
           }
         }
       },
-      "Next": "SeedMachineInventoryPipeline",
+      "Next": "ValidateReferenceMonthBeforeInventory",
       "Catch": [
         {
           "ErrorEquals": [
@@ -90,6 +90,10 @@
           {
             "Name": "FeatureSpecVersion",
             "Value": "{% $states.input.feature_spec_version %}"
+          },
+          {
+            "Name": "ReferenceMonth",
+            "Value": "{% $states.input.reference_month %}"
           }
         ],
         "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
@@ -154,7 +158,7 @@
       "Resource": "arn:aws:states:::states:startExecution.sync:2",
       "Arguments": {
         "StateMachineArn": "${BackfillStateMachineArn}",
-        "Input": "{% {'contract_version':'NdrBackfillRequest.v1','consumer':'bootstrap','project_name':$states.input.project_name,'feature_spec_version':$states.input.feature_spec_version,'ml_project_name':$states.input.ml_project_name,'requested_families':['delta','fg_a','pair_counts','fg_c'],'source_hint':{'raw_parsed_logs_s3_prefix':$states.input.raw_parsed_logs_s3_prefix},'provenance':{'producer_flow':'initial_deployment_bootstrap','request_id':$states.context.Execution.Id},'idempotency_key':$states.context.Execution.Id} %}"
+        "Input": "{% {'contract_version':'NdrBackfillRequest.v2','consumer':'bootstrap','project_name':$states.input.project_name,'feature_spec_version':$states.input.feature_spec_version,'ml_project_name':$states.input.ml_project_name,'requested_families':['delta','fg_a','pair_counts','fg_c'],'source_hint':{'raw_parsed_logs_s3_prefix':$states.input.raw_parsed_logs_s3_prefix},'provenance':{'producer_flow':'initial_deployment_bootstrap','request_id':$states.context.Execution.Id},'idempotency_key':$states.context.Execution.Id} %}"
       },
       "Next": "PersistCheckpointBaseline",
       "Retry": [
@@ -370,6 +374,16 @@
       "Type": "Fail",
       "Error": "TASK12_BOOTSTRAP_FAILED",
       "Cause": "Bootstrap orchestration failed before readiness criteria were satisfied"
+    },
+    "ValidateReferenceMonthBeforeInventory": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $exists($states.input.reference_month) = false or $states.input.reference_month = '' %}",
+          "Next": "FailMissingReferenceMonthForMonthlyBootstrap"
+        }
+      ],
+      "Default": "SeedMachineInventoryPipeline"
     }
   }
 }

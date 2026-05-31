@@ -29,7 +29,9 @@
         "output_s3_prefix": "{% $exists($states.input.output_s3_prefix) ? $states.input.output_s3_prefix : ($exists($project_defaults.HistoricalWindowsOutputS3Prefix.S) ? $project_defaults.HistoricalWindowsOutputS3Prefix.S : '') %}",
         "output_s3_bucket": "{% $split($replace($output_s3_prefix, 's3://', ''), '/')[0] %}",
         "output_s3_key_prefix": "{% $substringAfter($replace($output_s3_prefix, 's3://', ''), '/') %}",
-        "requested_families_csv": "{% $exists($states.input.requested_families[0]) ? $join($states.input.requested_families, ',') : '' %}"
+        "requested_families_csv": "{% $exists($states.input.requested_families[0]) ? $join($states.input.requested_families, ',') : '' %}",
+        "missing_ranges_json": "{% $exists($states.input.missing_ranges) ? $string($states.input.missing_ranges) : '[]' %}",
+        "idempotency_key": "{% $exists($states.input.idempotency_key) ? $states.input.idempotency_key : '' %}"
       },
       "Next": "ValidateResolvedRuntimeParams"
     },
@@ -66,6 +68,14 @@
           {
             "Name": "RequestedFamilies",
             "Value": "{% $requested_families_csv %}"
+          },
+          {
+            "Name": "MissingRangesJson",
+            "Value": "{% $missing_ranges_json %}"
+          },
+          {
+            "Name": "IdempotencyKey",
+            "Value": "{% $idempotency_key %}"
           }
         ],
         "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"
@@ -153,7 +163,8 @@
         "feature_spec_version": "{% $feature_spec_version %}",
         "family": "{% $states.context.Map.Item.Value.family %}",
         "range_start_ts": "{% $states.context.Map.Item.Value.range_start_ts %}",
-        "range_end_ts": "{% $states.context.Map.Item.Value.range_end_ts %}"
+        "range_end_ts": "{% $states.context.Map.Item.Value.range_end_ts %}",
+        "idempotency_key": "{% $states.context.Map.Item.Value.idempotency_key %}"
       },
       "ItemProcessor": {
         "ProcessorConfig": {
@@ -186,6 +197,10 @@
                 {
                   "Name": "RangeEndTsIso",
                   "Value": "{% $states.input.range_end_ts %}"
+                },
+                {
+                  "Name": "IdempotencyKey",
+                  "Value": "{% $states.input.idempotency_key %}"
                 }
               ],
               "ClientRequestToken": "{% $substring(($states.context.Execution.Id & ':' & $states.context.State.Name & ':' & $states.context.State.EnteredTime),0,128) %}"

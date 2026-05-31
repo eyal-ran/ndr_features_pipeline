@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
@@ -34,7 +35,9 @@ class TimeRange:
         start = _parse_ts(self.start_ts)
         end = _parse_ts(self.end_ts)
         if start >= end:
-            raise ValueError(f"Invalid range: start_ts must be < end_ts ({self.start_ts} >= {self.end_ts})")
+            raise ValueError(
+                f"Invalid range: start_ts must be < end_ts ({self.start_ts} >= {self.end_ts})"
+            )
 
 
 @dataclass(frozen=True)
@@ -43,7 +46,6 @@ class FamilyPlan:
     ranges: tuple[TimeRange, ...]
     execute: bool
     reason: str
-
 
 
 def build_family_range_plan(
@@ -71,7 +73,11 @@ def build_family_range_plan(
         if requested:
             required = family in requested
             execute = required and has_work
-            reason = "requested_and_missing" if execute else ("requested_but_complete" if required else "not_requested")
+            reason = (
+                "requested_and_missing"
+                if execute
+                else ("requested_but_complete" if required else "not_requested")
+            )
         else:
             execute = has_work
             reason = "missing_ranges_detected" if execute else "no_missing_ranges"
@@ -84,10 +90,11 @@ def build_family_range_plan(
                     reason = f"dependency_missing:{dep}"
                     break
 
-        plans.append(FamilyPlan(family=family, ranges=ranges, execute=execute, reason=reason))
+        plans.append(
+            FamilyPlan(family=family, ranges=ranges, execute=execute, reason=reason)
+        )
 
     return plans
-
 
 
 def build_execution_manifest(
@@ -99,6 +106,7 @@ def build_execution_manifest(
     family_plan: list[FamilyPlan],
     run_id: str | None = None,
     requested_families: list[str] | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Serialize canonical manifest consumed by backfill map and training remediation caller."""
     map_items = []
@@ -122,10 +130,18 @@ def build_execution_manifest(
                         "family": plan.family,
                         "range_start_ts": r.start_ts,
                         "range_end_ts": r.end_ts,
+                        "idempotency_key": _map_item_idempotency_key(
+                            idempotency_key or f"{project_name}|{feature_spec_version}",
+                            plan.family,
+                            r.start_ts,
+                            r.end_ts,
+                        ),
                     }
                 )
 
-    requested = requested_families or [plan.family for plan in family_plan if plan.execute]
+    requested = requested_families or [
+        plan.family for plan in family_plan if plan.execute
+    ]
     unknown = sorted(set(requested) - set(ARTIFACT_FAMILY_ORDER))
     if unknown:
         raise ValueError(f"Unknown requested families in manifest: {unknown}")
@@ -138,11 +154,12 @@ def build_execution_manifest(
         "planner_mode": planner_mode,
         "source": source,
         "run_id": run_id,
-        "requested_families": [family for family in ARTIFACT_FAMILY_ORDER if family in set(requested)],
+        "requested_families": [
+            family for family in ARTIFACT_FAMILY_ORDER if family in set(requested)
+        ],
         "family_plan": family_entries,
         "map_items": map_items,
     }
-
 
 
 def build_training_trigger_family_ranges(
@@ -151,7 +168,10 @@ def build_training_trigger_family_ranges(
     missing_fgb_windows: list[dict[str, Any]],
 ) -> dict[str, list[dict[str, str]]]:
     """Translate training remediation manifests into canonical family/range planner inputs."""
-    fg_15m_ranges = [{"start_ts": item["window_start_ts"], "end_ts": item["window_end_ts"]} for item in missing_15m_windows]
+    fg_15m_ranges = [
+        {"start_ts": item["window_start_ts"], "end_ts": item["window_end_ts"]}
+        for item in missing_15m_windows
+    ]
     return {
         "delta": fg_15m_ranges,
         "fg_a": fg_15m_ranges,
@@ -160,7 +180,9 @@ def build_training_trigger_family_ranges(
             {
                 "start_ts": item["reference_time_iso"],
                 "end_ts": (
-                    _parse_ts(item["reference_time_iso"]).replace(hour=23, minute=59, second=59, microsecond=0)
+                    _parse_ts(item["reference_time_iso"]).replace(
+                        hour=23, minute=59, second=59, microsecond=0
+                    )
                 ).strftime(ISO_Z),
             }
             for item in missing_fgb_windows
@@ -169,9 +191,11 @@ def build_training_trigger_family_ranges(
     }
 
 
-
 def _normalize_ranges(ranges: list[dict[str, str]]) -> tuple[TimeRange, ...]:
-    parsed = sorted((TimeRange(start_ts=r["start_ts"], end_ts=r["end_ts"]) for r in ranges), key=lambda r: r.start_ts)
+    parsed = sorted(
+        (TimeRange(start_ts=r["start_ts"], end_ts=r["end_ts"]) for r in ranges),
+        key=lambda r: r.start_ts,
+    )
     if not parsed:
         return ()
 
@@ -179,11 +203,12 @@ def _normalize_ranges(ranges: list[dict[str, str]]) -> tuple[TimeRange, ...]:
     for current in parsed[1:]:
         previous = merged[-1]
         if _parse_ts(current.start_ts) <= _parse_ts(previous.end_ts):
-            merged[-1] = TimeRange(start_ts=previous.start_ts, end_ts=max(previous.end_ts, current.end_ts))
+            merged[-1] = TimeRange(
+                start_ts=previous.start_ts, end_ts=max(previous.end_ts, current.end_ts)
+            )
         else:
             merged.append(current)
     return tuple(merged)
-
 
 
 def _validate_families(family_ranges: dict[str, list[dict[str, str]]]) -> None:
@@ -192,6 +217,13 @@ def _validate_families(family_ranges: dict[str, list[dict[str, str]]]) -> None:
         raise ValueError(f"Unknown artifact families: {sorted(unknown)}")
 
 
-
 def _parse_ts(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _map_item_idempotency_key(
+    parent_key: str, family: str, start_ts: str, end_ts: str
+) -> str:
+    return hashlib.sha256(
+        "|".join((parent_key, family, start_ts, end_ts)).encode("utf-8")
+    ).hexdigest()

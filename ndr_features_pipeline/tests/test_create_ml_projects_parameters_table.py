@@ -57,6 +57,8 @@ def test_bootstrap_items_include_all_runtime_jobs():
         "pipeline_code_bundle_build",
         "pipeline_code_artifact_validate",
         "pipeline_code_smoke_validate",
+        "pipeline_rt_readiness",
+        "pipeline_monthly_readiness",
     }
 
     assert set(by_job.keys()) == expected_jobs
@@ -120,6 +122,8 @@ def test_pipeline_seed_items_have_runtime_and_script_contracts():
         "InputS3Prefix",
         "OutputS3Prefix",
         "RequestedFamilies",
+        "MissingRangesJson",
+        "IdempotencyKey",
     ]
     extractor_step = extractor_spec["scripts"]["steps"]["HistoricalWindowsExtractorStep"]
     assert extractor_step["entry_script"] == "run_historical_windows_extractor.py"

@@ -88,4 +88,4 @@ def test_deployment_plan_includes_monthly_state_machine_wiring_and_start_executi
     assert "states:StartExecution" in deployment_text
     assert "states:DescribeExecution" in deployment_text
     assert "states:StopExecution" in deployment_text
-    assert "disallow `sagemaker:StartPipelineExecution` for `${PipelineNameMonthlyFgBBaselines}`" in deployment_text
+    assert "least-privilege `sagemaker:StartPipelineExecution` / `sagemaker:DescribePipelineExecution`" in deployment_text

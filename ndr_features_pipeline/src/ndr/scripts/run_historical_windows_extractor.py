@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from ndr.logging.logger import get_logger
@@ -24,6 +25,8 @@ def parse_args(argv=None):
     parser.add_argument("--project-name", required=False)
     parser.add_argument("--feature-spec-version", required=False)
     parser.add_argument("--requested-families", required=False, default="")
+    parser.add_argument("--missing-ranges-json", required=False, default="[]")
+    parser.add_argument("--idempotency-key", required=False, default="")
     return parser.parse_args(argv)
 
 
@@ -40,6 +43,8 @@ def main(argv=None) -> int:
         project_name=args.project_name,
         preferred_feature_spec_version=args.feature_spec_version,
         requested_families=requested_families or None,
+        missing_ranges=json.loads(args.missing_ranges_json),
+        idempotency_key=args.idempotency_key or None,
     )
     out_uri = HistoricalWindowsExtractorJob(runtime).run()
     LOGGER.info("Historical windows manifest written.", extra={"output_uri": out_uri})

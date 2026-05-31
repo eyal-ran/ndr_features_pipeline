@@ -42,7 +42,7 @@ def test_rt_remediation_invocation_uses_backfill_contract_payload_and_revalidate
     states = _load_rt_states()
 
     request_expr = states["BuildRtBackfillRemediationRequest"]["Assign"]["rt_backfill_remediation_request"]
-    assert "NdrBackfillRequest.v1" in request_expr
+    assert "NdrBackfillRequest.v2" in request_expr
     assert "'consumer':'realtime'" in request_expr
     assert "'requested_families':$rt_artifact_readiness_manifest.required_families" in request_expr
     assert "'idempotency_key':$rt_artifact_readiness_manifest.idempotency_key" in request_expr

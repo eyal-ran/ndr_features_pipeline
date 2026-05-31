@@ -102,12 +102,12 @@ def test_remediation_contract_aligns_with_producer_artifact_fields():
     states = _load_states()
 
     request_expr = states["BuildBaselineRemediationRequest"]["Assign"]["baseline_remediation_request"]
-    assert "NdrBaselineRemediationRequest.v1" in request_expr
-    assert "'required_families':$baseline_dependency_manifest.required_families" in request_expr
+    assert "NdrBackfillRequest.v2" in request_expr
+    assert "'requested_families':$baseline_dependency_manifest.required_families" in request_expr
     assert "'idempotency_key':$baseline_dependency_manifest.idempotency_key" in request_expr
 
     remediation_input = states["InvokeBaselineDependencyRemediation"]["Arguments"]["Input"]
     assert remediation_input["start_ts"] == "{% $baseline_remediation_window.start_ts %}"
     assert remediation_input["end_ts"] == "{% $baseline_remediation_window.end_ts %}"
-    assert remediation_input["required_families"] == "{% $baseline_remediation_request.required_families %}"
+    assert remediation_input["requested_families"] == "{% $baseline_remediation_request.requested_families %}"
     assert remediation_input["missing_ranges"] == "{% $baseline_remediation_request.missing_ranges %}"

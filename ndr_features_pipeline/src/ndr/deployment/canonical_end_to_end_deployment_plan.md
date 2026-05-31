@@ -4,7 +4,7 @@ This file mirrors `canonical_end_to_end_deployment_plan.ipynb` exactly, with exp
 
 Deterministic sync process: update the `.ipynb` first, then regenerate this mirror from notebook JSON cell order with fenced blocks per cell.
 
-Compatibility note: Step Functions permissions/wiring still require `MonthlyStateMachineArn`, `states:StartExecution`, `states:DescribeExecution`, `states:StopExecution`, and must disallow `sagemaker:StartPipelineExecution` for `${PipelineNameMonthlyReadiness}` and `${PipelineNameFGB}` in deployment IAM policy text.
+Compatibility note: Step Functions permissions/wiring still require `MonthlyStateMachineArn`, `states:StartExecution`, `states:DescribeExecution`, `states:StopExecution`, and least-privilege `sagemaker:StartPipelineExecution` / `sagemaker:DescribePipelineExecution` access for the exact readiness and FG-B pipeline ARNs invoked by orchestration.
 
 ## Cell 1 (markdown)
 
@@ -19,15 +19,14 @@ This notebook is rebuilt from code/config sources in `src/ndr` and `tests` only,
 ```markdown
 ## 0) Deployment order and forms
 
-1. Code-only dependency analysis (not docs).
-2. Variables/placeholders.
-3. DDB contracts + seed dictionaries.
-4. S3 schema.
-5. Artifact preparation + contract promotion.
-6. SageMaker pipeline upsert.
-7. Initial materialization runs.
-8. Step Functions manual deployment in AWS GUI (Build by code).
-9. Readiness checks.
+1. Populate environment-specific variables and externally managed IAM role ARNs.
+2. Build DynamoDB seed dictionaries and run blocking preflight validation.
+3. Reconcile DynamoDB tables/seeds, S3 schema, and the EventBridge bus.
+4. Execute code-bundle build, artifact validation, and smoke validation; promote the validated JobSpecs.
+5. Upsert all SageMaker Pipelines from the current repository definitions.
+6. Reconcile Step Functions and EventBridge schedules from deterministic environment-derived names.
+7. Start or safely retry bootstrap materialization and wait for success.
+8. Run final structural checks and persist the deterministic deployment marker.
 ```
 
 ## Cell 3 (markdown)
@@ -53,11 +52,16 @@ This notebook is rebuilt from code/config sources in `src/ndr` and `tests` only,
 ## Cell 4 (code)
 
 ```python
+import hashlib
 import json
+import subprocess
+import sys
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping
 
 import boto3
+from botocore.exceptions import ClientError
 
 from ndr.contracts import DPP_CODE_STEP_KEYS, MLP_CODE_STEP_KEYS
 from ndr.config.project_parameters_loader import DEFAULT_DPP_CONFIG_TABLE_NAME, DEFAULT_MLP_CONFIG_TABLE_NAME, DEFAULT_BATCH_INDEX_TABLE_NAME
@@ -72,6 +76,8 @@ from ndr.pipeline.sagemaker_pipeline_definitions_backfill_15m_reprocessing impor
 from ndr.pipeline.sagemaker_pipeline_definitions_code_bundle_build import build_code_bundle_build_pipeline
 from ndr.pipeline.sagemaker_pipeline_definitions_code_artifact_validate import build_code_artifact_validate_pipeline
 from ndr.pipeline.sagemaker_pipeline_definitions_code_smoke_validate import build_code_smoke_validate_pipeline
+from ndr.pipeline.sagemaker_pipeline_definitions_rt_readiness import build_rt_readiness_pipeline
+from ndr.pipeline.sagemaker_pipeline_definitions_monthly_readiness import build_monthly_readiness_pipeline
 
 UTC_NOW = datetime.now(timezone.utc).isoformat()
 print('UTC now:', UTC_NOW)
@@ -113,6 +119,8 @@ PIPELINE_BUILDERS = {
     'pipeline_code_bundle_build': build_code_bundle_build_pipeline,
     'pipeline_code_artifact_validate': build_code_artifact_validate_pipeline,
     'pipeline_code_smoke_validate': build_code_smoke_validate_pipeline,
+    'pipeline_rt_readiness': build_rt_readiness_pipeline,
+    'pipeline_monthly_readiness': build_monthly_readiness_pipeline,
 }
 RUNTIME_PARAM_CONTRACTS = create_cfg.PIPELINE_RUNTIME_PARAMS
 print('Pipeline builders:', len(PIPELINE_BUILDERS))
@@ -129,7 +137,7 @@ print('Exception tables:', {k: v.default_table_name for k, v in EXCEPTION_TABLE_
 
 **Purpose:** Collect all operator-managed runtime parameters in one auditable location.
 
-**Required input:** Concrete values for account, role, bucket, project/spec, and artifact identifiers.
+**Required input:** Concrete values for account, role, bucket, project/spec, artifact identifiers, and the manually incrementable `deployment_revision`.
 
 **Expected output:** Variables are populated in memory for downstream contract generation.
 
@@ -148,12 +156,15 @@ aws_account_id = ''  # e.g., 123456789012
 project_name = 'ndr'
 feature_spec_version = 'v3'
 environment_name = 'dev'
+deployment_revision = 1  # Increment manually to force a new deployment fingerprint.
 owner = ''  # e.g., ml-platform-team
 
 ml_project_name = ''  # e.g., ndr-ml-anomaly
 ml_project_names = [ml_project_name] if ml_project_name else []
 
 sagemaker_role_arn = ''  # e.g., arn:aws:iam::...:role/...
+step_functions_role_arn = ''  # existing IAM role assumed by Step Functions
+eventbridge_invoke_role_arn = ''  # existing IAM role allowing EventBridge to start Step Functions
 default_bucket = ''  # e.g., ndr-ml-project-dev-us-east-1
 processing_image_uri = ''  # e.g., <acct>.dkr.ecr.<region>.amazonaws.com/ndr-pyspark:latest
 
@@ -167,6 +178,13 @@ hour = ''  # e.g., 10
 within_hour_run_number = ''  # e.g., 1
 etl_ts = ''  # e.g., 2026-04-11T10:15:00Z
 raw_parsed_logs_s3_prefix = ''  # e.g., s3://bucket/raw/traffic/org1/org2/2026/04/11/10/1/
+reference_month = ''  # e.g., 2026-04
+inference_endpoint_name = ''  # existing SageMaker endpoint name
+machine_inventory_cluster_identifier = ''
+machine_inventory_database = ''
+machine_inventory_secret_arn = ''
+machine_inventory_iam_role = ''
+machine_inventory_source_table = ''
 
 dpp_config_table_name = DEFAULT_DPP_CONFIG_TABLE_NAME
 mlp_config_table_name = DEFAULT_MLP_CONFIG_TABLE_NAME
@@ -204,19 +222,20 @@ code_artifact_s3_uri = ''  # e.g., s3://bucket/artifacts/code/build-.../source.t
 ## Cell 10 (code)
 
 ```python
-dpp_delta_root = ''
-dpp_pair_counts_root = ''
-dpp_fg_a_root = ''
-dpp_fg_b_root = ''
-dpp_fg_c_root = ''
-dpp_machine_inventory_root = ''
+project_data_root = f's3://{default_bucket}/projects/{project_name}/versions/{feature_spec_version}/data'
+dpp_delta_root = f'{project_data_root}/delta/'
+dpp_pair_counts_root = f'{project_data_root}/pair_counts/'
+dpp_fg_a_root = f'{project_data_root}/fg_a/'
+dpp_fg_b_root = f'{project_data_root}/fg_b/'
+dpp_fg_c_root = f'{project_data_root}/fg_c/'
+dpp_machine_inventory_root = f'{project_data_root}/machine_inventory/'
 
-mlp_predictions_root = ''
-mlp_prediction_join_root = ''
-mlp_publication_root = ''
-mlp_training_reports_root = ''
-mlp_training_artifacts_root = ''
-mlp_production_model_root = ''
+mlp_predictions_root = f'{project_data_root}/predictions/'
+mlp_prediction_join_root = f'{project_data_root}/prediction_feature_join/'
+mlp_publication_root = f'{project_data_root}/publication/'
+mlp_training_reports_root = f'{project_data_root}/if_training/reports/'
+mlp_training_artifacts_root = f'{project_data_root}/if_training/'
+mlp_production_model_root = f'{project_data_root}/production_model/'
 ```
 
 ## Cell 11 (markdown)
@@ -315,7 +334,19 @@ def _promote_pipeline_specs_ready(items):
 bootstrap_seed_items = create_cfg._build_bootstrap_items(project_name=project_name, feature_spec_version=feature_spec_version, owner=owner or 'ndr-team')
 replacements = {'<project_name>': project_name, '<feature_spec_version>': feature_spec_version, '<bucket>': default_bucket, 's3://REPLACE_ME': f's3://{default_bucket}' if default_bucket else 's3://'}
 bootstrap_seed_items = [_replace_placeholders(item, replacements) for item in bootstrap_seed_items]
-bootstrap_seed_items = _promote_pipeline_specs_ready(bootstrap_seed_items)
+
+def _apply_workload_inputs(items):
+    for item in items:
+        job_name = str(item.get('job_name_version', '')).split('#', 1)[0]
+        spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
+        if job_name == 'machine_inventory_unload':
+            redshift = spec['source']['redshift']
+            redshift.update({'cluster_identifier': machine_inventory_cluster_identifier, 'database': machine_inventory_database, 'secret_arn': machine_inventory_secret_arn, 'region': aws_region, 'iam_role': machine_inventory_iam_role, 'sql': f'SELECT ip_address, machine_name FROM {machine_inventory_source_table}'})
+        elif job_name == 'inference_predictions':
+            spec['model']['endpoint_name'] = inference_endpoint_name
+    return items
+
+bootstrap_seed_items = _apply_workload_inputs(bootstrap_seed_items)
 print('bootstrap items:', len(bootstrap_seed_items))
 ```
 
@@ -416,7 +447,7 @@ print(json.dumps({'seed_counts': {k: len(v) for k, v in ddb_seed_items_plan.item
 ## Cell 20 (code)
 
 ```python
-s3_schema_plan = {'bucket_name': default_bucket, 'prefixes': ['input/raw', 'input/reference', 'output/processed/delta_15m', 'output/processed/fg_a', 'output/processed/pair_counts', 'output/processed/fg_b', 'output/processed/fg_c', 'output/predictions', 'output/prediction_join', 'output/publication', 'artifacts/code', 'artifacts/pipeline', 'feature-store/offline', 'monitoring', 'logs']}
+s3_schema_plan = {'bucket_name': default_bucket, 'prefixes': ['input/raw', 'input/reference', 'output/processed/delta_15m', 'output/processed/fg_a', 'output/processed/pair_counts', 'output/processed/fg_b', 'output/processed/fg_c', 'output/predictions', 'output/prediction_join', 'output/publication', 'artifacts/code', 'artifacts/pipeline', 'feature-store/offline', 'monitoring', 'logs', 'orchestration/readiness/rt_artifact_readiness/v3', 'orchestration/readiness/monthly_fg_b_readiness/v3']}
 print(json.dumps(s3_schema_plan, indent=2))
 ```
 
@@ -433,9 +464,9 @@ print(json.dumps(s3_schema_plan, indent=2))
 
 **Expected output:** Reusable helper functions for deployment execution.
 
-**Expected result:** Execution can be retried safely with explicit dry-run and create-if-missing semantics.
+**Expected result:** Every run reconciles missing infrastructure and seed records, refreshes deployment-owned pipeline JobSpecs, preserves existing environment-owned records, and fails fast on incompatible table schemas.
 
-**Usage instructions:** Keep `dry_run=True` during review; switch only after readiness checks pass.
+**Usage instructions:** Keep `dry_run=True` during review; switch only after readiness checks pass. Run the same reconciliation flow for both new and existing environments.
 
 **Runnable example:** `deploy_ddb(ddb_table_contracts, ddb_seed_items_plan, aws_region, dry_run=True)`
 ```
@@ -443,26 +474,123 @@ print(json.dumps(s3_schema_plan, indent=2))
 ## Cell 22 (code)
 
 ```python
+def _find_unresolved_placeholder(value, path='$'):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            found = _find_unresolved_placeholder(item, f'{path}.{key}')
+            if found: return found
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            found = _find_unresolved_placeholder(item, f'{path}[{index}]')
+            if found: return found
+    elif isinstance(value, str) and any(marker in value for marker in ('REPLACE_ME', '<REPLACE_', '${')):
+        return f'{path}={value!r}'
+    return ''
+
+def validate_deployment_preflight(required_inputs, seed_plan):
+    missing = [name for name, value in required_inputs.items() if value is None or str(value).strip() == '']
+    if missing: raise ValueError(f'Missing required deployment inputs: {missing}')
+    unresolved = _find_unresolved_placeholder(seed_plan)
+    if unresolved: raise ValueError(f'Unresolved deployment placeholder: {unresolved}')
+
+def _normalized_schema(items):
+    return sorted((item['AttributeName'], item.get('AttributeType') or item.get('KeyType')) for item in items)
+
+def _validate_existing_ddb_table(table, spec):
+    if _normalized_schema(table['AttributeDefinitions']) != _normalized_schema(spec['attribute_definitions']):
+        raise ValueError(f"Existing table {spec['table_name']} has incompatible attribute definitions")
+    if _normalized_schema(table['KeySchema']) != _normalized_schema(spec['key_schema']):
+        raise ValueError(f"Existing table {spec['table_name']} has incompatible key schema")
+
 def ensure_ddb_table(ddb_client, spec, dry_run=True):
     if dry_run:
-        print('[DRY RUN] ensure table', spec['table_name']); return
-    existing = set(ddb_client.list_tables()['TableNames'])
-    if spec['table_name'] in existing: return
-    ddb_client.create_table(TableName=spec['table_name'], BillingMode=spec['billing_mode'], KeySchema=spec['key_schema'], AttributeDefinitions=spec['attribute_definitions'])
-    ddb_client.get_waiter('table_exists').wait(TableName=spec['table_name'])
+        print('[DRY RUN] reconcile table', spec['table_name']); return
+    try:
+        existing = ddb_client.describe_table(TableName=spec['table_name'])['Table']
+    except ClientError as exc:
+        if exc.response.get('Error', {}).get('Code') != 'ResourceNotFoundException': raise
+        ddb_client.create_table(TableName=spec['table_name'], BillingMode=spec['billing_mode'], KeySchema=spec['key_schema'], AttributeDefinitions=spec['attribute_definitions'])
+        ddb_client.get_waiter('table_exists').wait(TableName=spec['table_name'])
+        return
+    _validate_existing_ddb_table(existing, spec)
 
-def seed_table_items(ddb_resource, table_name, items, dry_run=True):
+def _is_deployment_owned_seed(logical_name, item):
+    base_name = str(item.get('job_name_version', '')).split('#', 1)[0]
+    return logical_name == 'dpp_config' and base_name != 'project_parameters' and ('spec' in item or base_name.startswith('pipeline_'))
+
+def seed_table_items(ddb_resource, logical_name, contract, items, dry_run=True):
     if dry_run:
-        print(f'[DRY RUN] seed {len(items)} items -> {table_name}'); return
-    table = ddb_resource.Table(table_name)
-    for item in items: table.put_item(Item=item)
+        print(f"[DRY RUN] reconcile {len(items)} items -> {contract['table_name']}"); return
+    table = ddb_resource.Table(contract['table_name'])
+    key_names = [item['AttributeName'] for item in contract['key_schema']]
+    expression_names = {f'#key{i}': key for i, key in enumerate(key_names)}
+    insert_only_condition = ' AND '.join(f'attribute_not_exists(#key{i})' for i in range(len(key_names)))
+    for item in items:
+        if _is_deployment_owned_seed(logical_name, item):
+            table.put_item(Item=item)
+            continue
+        try:
+            table.put_item(Item=item, ConditionExpression=insert_only_condition, ExpressionAttributeNames=expression_names)
+        except ClientError as exc:
+            if exc.response.get('Error', {}).get('Code') != 'ConditionalCheckFailedException': raise
+            print('PRESERVED existing seed', contract['table_name'], {key: item[key] for key in key_names})
 
 def deploy_ddb(table_contracts, seed_plan, region_name, dry_run=True):
     ddb_client = boto3.client('dynamodb', region_name=region_name)
     ddb_resource = boto3.resource('dynamodb', region_name=region_name)
     for logical_name, contract in table_contracts.items():
         ensure_ddb_table(ddb_client, contract, dry_run=dry_run)
-        seed_table_items(ddb_resource, contract['table_name'], seed_plan.get(logical_name, []), dry_run=dry_run)
+        seed_table_items(ddb_resource, logical_name, contract, seed_plan.get(logical_name, []), dry_run=dry_run)
+
+def _stable_marker_value(value):
+    volatile_keys = {'applied_at', 'deployment_updated_at', 'updated_at'}
+    if isinstance(value, dict):
+        return {key: _stable_marker_value(item) for key, item in sorted(value.items()) if key not in volatile_keys}
+    if isinstance(value, list):
+        return [_stable_marker_value(item) for item in value]
+    return value
+
+def build_deployment_marker(project_name, environment_name, feature_spec_version, deployment_revision, artifact_build_id, artifact_sha256, code_artifact_s3_uri, table_contracts, s3_schema, pipeline_names, pipeline_definitions, pipeline_job_specs, rendered_step_functions, eventbridge_config, applied_at):
+    manifest = _stable_marker_value({
+        'deployment_revision': deployment_revision,
+        'feature_spec_version': feature_spec_version,
+        'artifact_build_id': artifact_build_id,
+        'artifact_sha256': artifact_sha256,
+        'code_artifact_s3_uri': code_artifact_s3_uri,
+        'ddb_table_contracts': table_contracts,
+        's3_schema': s3_schema,
+        'pipeline_names': sorted(pipeline_names),
+        'pipeline_definitions': pipeline_definitions,
+        'pipeline_job_specs': pipeline_job_specs,
+        'rendered_step_functions': rendered_step_functions,
+        'eventbridge_config': eventbridge_config,
+    })
+    fingerprint = hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+    return {
+        'project_name': project_name,
+        'job_name_version': f'DEPLOYMENT_MARKER#{environment_name}#{feature_spec_version}',
+        'marker_schema_version': 'NdrDeploymentMarker.v1',
+        'deployment_revision': deployment_revision,
+        'deployment_fingerprint': fingerprint,
+        'feature_spec_version': feature_spec_version,
+        'artifact_build_id': artifact_build_id,
+        'artifact_sha256': artifact_sha256,
+        'code_artifact_s3_uri': code_artifact_s3_uri,
+        'applied_at': applied_at,
+    }
+
+def persist_deployment_marker(ddb_resource, table_name, marker, dry_run=True):
+    key = {'project_name': marker['project_name'], 'job_name_version': marker['job_name_version']}
+    if dry_run:
+        print('[DRY RUN] persist deployment marker', key, marker['deployment_fingerprint'])
+        return {'action': 'dry-run', 'previous_fingerprint': '', 'deployment_fingerprint': marker['deployment_fingerprint']}
+    table = ddb_resource.Table(table_name)
+    existing = table.get_item(Key=key).get('Item')
+    previous_fingerprint = (existing or {}).get('deployment_fingerprint', '')
+    action = 'created' if existing is None else ('unchanged' if previous_fingerprint == marker['deployment_fingerprint'] else 'updated')
+    table.put_item(Item=marker)
+    print(action.upper(), 'deployment marker', key, marker['deployment_fingerprint'])
+    return {'action': action, 'previous_fingerprint': previous_fingerprint, 'deployment_fingerprint': marker['deployment_fingerprint']}
 
 def ensure_s3_schema(schema, region_name, dry_run=True):
     bucket = schema['bucket_name']
@@ -478,19 +606,55 @@ def ensure_s3_schema(schema, region_name, dry_run=True):
         s3.create_bucket(**params)
     for p in schema['prefixes']: s3.put_object(Bucket=bucket, Key=f"{p.rstrip('/')}/")
 
+def reconcile_event_bus(events_client, event_bus_name, dry_run=True):
+    if dry_run:
+        print('[DRY RUN] reconcile event bus', event_bus_name); return
+    try:
+        events_client.describe_event_bus(Name=event_bus_name)
+    except ClientError as exc:
+        if exc.response.get('Error', {}).get('Code') != 'ResourceNotFoundException': raise
+        events_client.create_event_bus(Name=event_bus_name)
+
 def upsert_pipelines(project_name_for_contracts, feature_spec_version_for_contracts, role_arn, bucket, region_name, dry_run=True):
+    definitions = {}
     for pipeline_job_name, builder in PIPELINE_BUILDERS.items():
         pipeline_name = f"{project_name_for_contracts}-{feature_spec_version_for_contracts}-{pipeline_job_name}"
         if dry_run:
             print('[DRY RUN] upsert pipeline', pipeline_name); continue
         pipeline = builder(pipeline_name=pipeline_name, role_arn=role_arn, default_bucket=bucket, region_name=region_name, project_name_for_contracts=project_name_for_contracts, feature_spec_version_for_contracts=feature_spec_version_for_contracts)
+        definitions[pipeline_name] = pipeline.definition()
         pipeline.upsert(role_arn=role_arn)
+    return definitions
 
-def start_initial_materialization_runs(region_name, dry_run=True):
+def run_artifact_lifecycle(project_name, feature_spec_version, artifact_build_id, region_name, dpp_config_table_name, dry_run=True):
+    paths = {'build': '/tmp/code_bundle_build_output.json', 'validate': '/tmp/code_artifact_validate_report.json', 'smoke': '/tmp/code_smoke_validate_report.json'}
+    commands = [
+        [sys.executable, '-m', 'ndr.scripts.run_code_bundle_build', '--project-name', project_name, '--feature-spec-version', feature_spec_version, '--artifact-build-id', artifact_build_id, '--region-name', region_name, '--dpp-config-table-name', dpp_config_table_name, '--manifest-out', paths['build']],
+        [sys.executable, '-m', 'ndr.scripts.run_code_artifact_validate', '--project-name', project_name, '--feature-spec-version', feature_spec_version, '--artifact-build-id', artifact_build_id, '--region-name', region_name, '--build-manifest-in', paths['build'], '--validation-report-out', paths['validate']],
+        [sys.executable, '-m', 'ndr.scripts.run_code_smoke_validate', '--project-name', project_name, '--feature-spec-version', feature_spec_version, '--artifact-build-id', artifact_build_id, '--region-name', region_name, '--build-manifest-in', paths['build'], '--validation-report-in', paths['validate'], '--smoke-report-out', paths['smoke']],
+    ]
     if dry_run:
-        print('[DRY RUN] would start initial feature/stats materialization runs')
-        return
-    print('Trigger pipeline starts here with finalized runtime parameters.')
+        for command in commands: print('[DRY RUN]', ' '.join(command))
+        return {}
+    for command in commands: subprocess.run(command, check=True)
+    reports = {name: json.loads(Path(path).read_text(encoding='utf-8')) for name, path in paths.items()}
+    if reports['validate'].get('status') != 'PASS' or reports['smoke'].get('status') != 'PASS': raise ValueError('Artifact lifecycle validation did not pass')
+    return reports
+
+def apply_artifact_manifest(items, build_manifest):
+    artifacts = {(item['pipeline_job_name'], item['step_name']): item for item in build_manifest.get('step_artifacts', [])}
+    for item in items:
+        job_name = str(item.get('job_name_version', '')).split('#', 1)[0]
+        spec = item.get('spec') if isinstance(item.get('spec'), dict) else {}
+        steps = ((spec.get('scripts') or {}).get('steps') or {})
+        for step_name, step_spec in steps.items():
+            artifact = artifacts.get((job_name, step_name))
+            if artifact:
+                step_spec.update({key: artifact[key] for key in ('code_artifact_s3_uri', 'artifact_build_id', 'artifact_sha256', 'artifact_format')})
+                step_spec['code_metadata'] = {key: artifact[key] for key in ('code_artifact_s3_uri', 'artifact_build_id', 'artifact_sha256', 'artifact_format')}
+        if steps and all((job_name, step_name) in artifacts for step_name in steps):
+            spec.update({'deployment_status': 'READY', 'deployment_checkpoint': 'steady_state_ready', 'deployment_last_build_id': build_manifest['artifact_build_id'], 'deployment_last_error': '', 'deployment_updated_at': UTC_NOW})
+    return items
 ```
 
 ## Cell 23 (markdown)
@@ -498,35 +662,35 @@ def start_initial_materialization_runs(region_name, dry_run=True):
 ```markdown
 ### Code Cell 11 Guide
 
-**Behavior:** Assemble artifact build/validate/smoke commands and print expected contracts.
+**Behavior:** Validate all operator inputs and seeded workload configuration before the first AWS write.
 
-**Purpose:** Document producer-to-consumer artifact lifecycle sequence with fail-fast gates.
+**Purpose:** Prevent partial deployments caused by empty inputs or unresolved workload placeholders.
 
-**Required input:** Concrete `project_name`, `feature_spec_version`, `artifact_build_id`, and manifest/report paths.
+**Required input:** Concrete environment, IAM-role, workload, batch, and artifact-build inputs from prior cells.
 
-**Expected output:** Ordered command list plus expected contract versions and safety reminders.
+**Expected output:** A deployment-preflight pass message or an explicit blocking validation error.
 
-**Expected result:** Operators execute deterministic build->validate->smoke flow before promotion.
+**Expected result:** Reconciliation cannot begin while required inputs or unresolved `REPLACE_ME` placeholders remain.
 
-**Usage instructions:** Run commands in listed order; do not proceed when validate/smoke are non-PASS.
+**Usage instructions:** Populate every required input and rerun this cell until preflight passes.
 
-**Runnable example:** `artifact_commands[0]`
+**Runnable example:** `validate_deployment_preflight(required_deployment_inputs, ddb_seed_items_plan)`
 ```
 
 ## Cell 24 (code)
 
 ```python
-artifact_commands = [
-    f'python -m ndr.scripts.run_code_bundle_build --project-name {project_name} --feature-spec-version {feature_spec_version} --artifact-build-id {artifact_build_id}',
-    f'python -m ndr.scripts.run_code_artifact_validate --project-name {project_name} --feature-spec-version {feature_spec_version} --artifact-build-id {artifact_build_id}',
-    f'python -m ndr.scripts.run_code_smoke_validate --project-name {project_name} --feature-spec-version {feature_spec_version} --artifact-build-id {artifact_build_id}',
-]
-for i, cmd in enumerate(artifact_commands, 1): print(f'{i}. {cmd}')
-print('code_artifact_s3_uri:', code_artifact_s3_uri or '<set me>')
-print('expected build contract: code_bundle_build_output.v1')
-print('expected validate contract: code_artifact_validate_report.v1')
-print('expected smoke contract: code_smoke_validate_report.v1')
-print('do not promote placeholders: artifact_build_id/artifact_sha256/code_artifact_s3_uri must be concrete values')
+required_deployment_inputs = {
+    'aws_account_id': aws_account_id, 'aws_region': aws_region, 'project_name': project_name, 'feature_spec_version': feature_spec_version, 'environment_name': environment_name,
+    'sagemaker_role_arn': sagemaker_role_arn, 'step_functions_role_arn': step_functions_role_arn, 'eventbridge_invoke_role_arn': eventbridge_invoke_role_arn, 'default_bucket': default_bucket,
+    'ml_project_name': ml_project_name, 'org1': org1, 'org2': org2, 'ingestion_prefix': ingestion_prefix, 'batch_id': batch_id, 'date_partition': date_partition, 'hour': hour,
+    'within_hour_run_number': within_hour_run_number, 'etl_ts': etl_ts, 'raw_parsed_logs_s3_prefix': raw_parsed_logs_s3_prefix, 'reference_month': reference_month,
+    'inference_endpoint_name': inference_endpoint_name, 'machine_inventory_cluster_identifier': machine_inventory_cluster_identifier, 'machine_inventory_database': machine_inventory_database,
+    'machine_inventory_secret_arn': machine_inventory_secret_arn, 'machine_inventory_iam_role': machine_inventory_iam_role, 'machine_inventory_source_table': machine_inventory_source_table,
+    'artifact_build_id': artifact_build_id,
+}
+validate_deployment_preflight(required_deployment_inputs, ddb_seed_items_plan)
+print('Deployment preflight passed.')
 ```
 
 ## Cell 25 (markdown)
@@ -536,15 +700,15 @@ print('do not promote placeholders: artifact_build_id/artifact_sha256/code_artif
 
 **Behavior:** Execute full deployment orchestration in dry-run mode by default.
 
-**Purpose:** Provide safe end-to-end rehearsal for table/schema/pipeline/materialization steps.
+**Purpose:** Provide a safe end-to-end reconciliation rehearsal for table/schema/pipeline/materialization steps.
 
 **Required input:** All prior configuration cells executed with reviewed values.
 
-**Expected output:** Dry-run logs for each deployment phase and completion message.
+**Expected output:** Dry-run logs for each reconciliation phase and completion message.
 
-**Expected result:** Operator can verify full control-flow before enabling real writes.
+**Expected result:** The same run creates missing resources, updates deployment-owned resources, and preserves correct existing environment-owned records.
 
-**Usage instructions:** Set `DRY_RUN=False` only after validations and approvals are complete.
+**Usage instructions:** Run unchanged for both new and previously deployed environments. Set `DRY_RUN=False` only after validations and approvals are complete.
 
 **Runnable example:** `DRY_RUN = True`
 ```
@@ -553,11 +717,18 @@ print('do not promote placeholders: artifact_build_id/artifact_sha256/code_artif
 
 ```python
 DRY_RUN = True
+event_bus_name = f'{project_name}-{environment_name}-events'
 deploy_ddb(ddb_table_contracts, ddb_seed_items_plan, region_name=aws_region, dry_run=DRY_RUN)
 ensure_s3_schema(s3_schema_plan, region_name=aws_region, dry_run=DRY_RUN)
-upsert_pipelines(project_name_for_contracts=project_name, feature_spec_version_for_contracts=feature_spec_version, role_arn=sagemaker_role_arn, bucket=default_bucket, region_name=aws_region, dry_run=DRY_RUN)
-start_initial_materialization_runs(region_name=aws_region, dry_run=DRY_RUN)
-print('Dry-run deployment flow complete.')
+reconcile_event_bus(boto3.client('events', region_name=aws_region), event_bus_name, dry_run=DRY_RUN)
+artifact_lifecycle_reports = run_artifact_lifecycle(project_name, feature_spec_version, artifact_build_id, aws_region, dpp_config_table_name, dry_run=DRY_RUN)
+if artifact_lifecycle_reports:
+    artifact_sha256 = artifact_lifecycle_reports['build']['artifact_sha256']
+    code_artifact_s3_uri = artifact_lifecycle_reports['build']['step_artifacts'][0]['code_artifact_s3_uri']
+    ddb_seed_items_plan['dpp_config'] = apply_artifact_manifest(ddb_seed_items_plan['dpp_config'], artifact_lifecycle_reports['build'])
+    deploy_ddb(ddb_table_contracts, ddb_seed_items_plan, region_name=aws_region, dry_run=False)
+pipeline_definitions = upsert_pipelines(project_name_for_contracts=project_name, feature_spec_version_for_contracts=feature_spec_version, role_arn=sagemaker_role_arn, bucket=default_bucket, region_name=aws_region, dry_run=DRY_RUN)
+print('Core reconciliation deployment flow complete.')
 ```
 
 ## Cell 27 (markdown)
@@ -565,17 +736,17 @@ print('Dry-run deployment flow complete.')
 ```markdown
 ### Code Cell 12 Guide
 
-**Behavior:** Render and upsert all Step Functions definitions from repository templates.
+**Behavior:** Render and upsert Step Functions, reconcile EventBridge schedules, and run the initial bootstrap materialization to completion.
 
 **Purpose:** Replace manual GUI paste steps with idempotent create/update automation.
 
-**Required input:** `aws_region`, state machine role ARNs, and template placeholder substitutions.
+**Required input:** Valid AWS region/account, externally provisioned IAM role ARNs, deterministic substitutions, and bootstrap runtime inputs.
 
 **Expected output:** Per-state-machine CREATED/UPDATED log lines and an execution summary list.
 
-**Expected result:** All orchestrator state machines are deployed consistently with the same parameter map used for pipeline deployment.
+**Expected result:** Orchestrator state machines and schedules are reconciled consistently, and bootstrap materialization succeeds before marker persistence.
 
-**Usage instructions:** Set all `<REPLACE_...>` fields, run with `dry_run=True` first, then set `dry_run=False`.
+**Usage instructions:** Run with `dry_run=True` first, then set `DRY_RUN=False`; IAM roles remain externally managed prerequisites validated by preflight.
 
 **Runnable example:** `results = upsert_step_functions(dry_run=True); len(results)`
 ```
@@ -593,14 +764,20 @@ from ndr.orchestration.step_functions_validation import (
 
 SFN_TEMPLATE_DIR = Path("docs/step_functions_jsonata")
 
+def _state_machine_name(suffix):
+    return f'{project_name}-{environment_name}-{feature_spec_version}-{suffix}'
+
+def _state_machine_arn(suffix):
+    return f'arn:aws:states:{aws_region}:{aws_account_id}:stateMachine:{_state_machine_name(suffix)}'
+
 STATE_MACHINE_DEPLOYMENT = {
-    "sfn_ndr_15m_features_inference.json": {"name": "<REPLACE_SFN_15M_NAME>", "role_arn": "<REPLACE_SFN_ROLE_ARN>"},
-    "sfn_ndr_training_orchestrator.json": {"name": "<REPLACE_SFN_TRAINING_NAME>", "role_arn": "<REPLACE_SFN_ROLE_ARN>"},
-    "sfn_ndr_prediction_publication.json": {"name": "<REPLACE_SFN_PUBLICATION_NAME>", "role_arn": "<REPLACE_SFN_ROLE_ARN>"},
-    "sfn_ndr_backfill_reprocessing.json": {"name": "<REPLACE_SFN_BACKFILL_NAME>", "role_arn": "<REPLACE_SFN_ROLE_ARN>"},
-    "sfn_ndr_monthly_fg_b_baselines.json": {"name": "<REPLACE_SFN_MONTHLY_NAME>", "role_arn": "<REPLACE_SFN_ROLE_ARN>"},
-    "sfn_ndr_initial_deployment_bootstrap.json": {"name": "<REPLACE_SFN_BOOTSTRAP_NAME>", "role_arn": "<REPLACE_SFN_ROLE_ARN>"},
-    "sfn_ndr_code_deployment_orchestrator.json": {"name": "<REPLACE_SFN_CODE_DEPLOY_NAME>", "role_arn": "<REPLACE_SFN_ROLE_ARN>"},
+    "sfn_ndr_15m_features_inference.json": {"name": _state_machine_name("15m-features-inference"), "role_arn": step_functions_role_arn},
+    "sfn_ndr_training_orchestrator.json": {"name": _state_machine_name("training-orchestrator"), "role_arn": step_functions_role_arn},
+    "sfn_ndr_prediction_publication.json": {"name": _state_machine_name("prediction-publication"), "role_arn": step_functions_role_arn},
+    "sfn_ndr_backfill_reprocessing.json": {"name": _state_machine_name("backfill-reprocessing"), "role_arn": step_functions_role_arn},
+    "sfn_ndr_monthly_fg_b_baselines.json": {"name": _state_machine_name("monthly-fg-b-baselines"), "role_arn": step_functions_role_arn},
+    "sfn_ndr_initial_deployment_bootstrap.json": {"name": _state_machine_name("initial-deployment-bootstrap"), "role_arn": step_functions_role_arn},
+    "sfn_ndr_code_deployment_orchestrator.json": {"name": _state_machine_name("code-deployment-orchestrator"), "role_arn": step_functions_role_arn},
 }
 
 def _pipeline_name(job_name: str) -> str:
@@ -615,25 +792,25 @@ SFN_SUBSTITUTIONS = {
     "PublicationLockTableName": publication_lock_table_name,
     "DefaultFeatureSpecVersion": feature_spec_version,
     "ArtifactsBucketName": default_bucket,
-    "EventBusName": f"{project_name}-{environment_name}-events",
+    "EventBusName": event_bus_name,
     "PipelineName15m": _pipeline_name("pipeline_15m_streaming"),
     "PipelineName15mDependent": _pipeline_name("pipeline_15m_dependent"),
     "PipelineNameInference": _pipeline_name("pipeline_inference_predictions"),
-    "PipelineNameRtReadiness": _pipeline_name("pipeline_15m_dependent"),
+    "PipelineNameRtReadiness": _pipeline_name("pipeline_rt_readiness"),
     "PipelineNameBackfillHistoricalExtractor": _pipeline_name("pipeline_backfill_historical_extractor"),
     "PipelineNameBackfill15m": _pipeline_name("pipeline_backfill_15m_reprocessing"),
     "PipelineNameFGB": _pipeline_name("pipeline_fg_b_baseline"),
-    "PipelineNameMonthlyReadiness": _pipeline_name("pipeline_fg_b_baseline"),
+    "PipelineNameMonthlyReadiness": _pipeline_name("pipeline_monthly_readiness"),
     "PipelineNamePredictionJoin": _pipeline_name("pipeline_prediction_feature_join"),
     "PipelineNameIFTraining": _pipeline_name("pipeline_if_training"),
     "PipelineNameMachineInventory": _pipeline_name("pipeline_machine_inventory_unload"),
     "PipelineNameCodeBundleBuild": _pipeline_name("pipeline_code_bundle_build"),
     "PipelineNameCodeArtifactValidate": _pipeline_name("pipeline_code_artifact_validate"),
     "PipelineNameCodeSmokeValidate": _pipeline_name("pipeline_code_smoke_validate"),
-    "BootstrapStateMachineArn": "<REPLACE_BOOTSTRAP_SFN_ARN>",
-    "BackfillStateMachineArn": "<REPLACE_BACKFILL_SFN_ARN>",
-    "MonthlyStateMachineArn": "<REPLACE_MONTHLY_SFN_ARN>",
-    "PredictionPublicationStateMachineArn": "<REPLACE_PUBLICATION_SFN_ARN>",
+    "BootstrapStateMachineArn": _state_machine_arn("initial-deployment-bootstrap"),
+    "BackfillStateMachineArn": _state_machine_arn("backfill-reprocessing"),
+    "MonthlyStateMachineArn": _state_machine_arn("monthly-fg-b-baselines"),
+    "PredictionPublicationStateMachineArn": _state_machine_arn("prediction-publication"),
 }
 
 REQUIRED_SFN_SUBSTITUTIONS = [
@@ -729,6 +906,95 @@ def upsert_step_functions(dry_run=True, deployment_targets=None):
 step_function_results = upsert_step_functions(dry_run=DRY_RUN)
 print(json.dumps(step_function_results, indent=2))
 
+def _event_bus_kwargs(rule):
+    return {'EventBusName': rule['event_bus_name']} if rule.get('event_bus_name') else {}
+
+def _eventbridge_target(rule):
+    target = {'Id': rule['name'], 'Arn': rule['target_arn'], 'RoleArn': rule['role_arn']}
+    if rule.get('input') is not None:
+        target['Input'] = json.dumps(rule['input'], sort_keys=True)
+    if rule.get('input_path') is not None:
+        target['InputPath'] = rule['input_path']
+    if 'Input' in target and 'InputPath' in target:
+        raise ValueError(f"EventBridge rule {rule['name']} cannot define both input and input_path")
+    return target
+
+def reconcile_eventbridge_rules(events_client, rules, dry_run=True):
+    for rule in rules:
+        has_schedule = bool(rule.get('schedule_expression'))
+        has_pattern = bool(rule.get('event_pattern'))
+        if has_schedule == has_pattern:
+            raise ValueError(f"EventBridge rule {rule['name']} must define exactly one schedule_expression or event_pattern")
+        if dry_run:
+            print('[DRY RUN] reconcile EventBridge rule', rule['name']); continue
+        rule_args = {'Name': rule['name'], 'State': 'ENABLED', **_event_bus_kwargs(rule)}
+        if has_schedule:
+            rule_args['ScheduleExpression'] = rule['schedule_expression']
+        else:
+            rule_args['EventPattern'] = json.dumps(rule['event_pattern'], sort_keys=True)
+        events_client.put_rule(**rule_args)
+        events_client.put_targets(Rule=rule['name'], Targets=[_eventbridge_target(rule)], **_event_bus_kwargs(rule))
+
+def remove_eventbridge_rules(events_client, rules, dry_run=True):
+    for rule in rules:
+        if dry_run:
+            print('[DRY RUN] remove legacy EventBridge rule', rule['name']); continue
+        event_bus_kwargs = _event_bus_kwargs(rule)
+        try:
+            target_ids = [item['Id'] for item in events_client.list_targets_by_rule(Rule=rule['name'], **event_bus_kwargs).get('Targets', [])]
+            if target_ids:
+                events_client.remove_targets(Rule=rule['name'], Ids=target_ids, **event_bus_kwargs)
+            events_client.delete_rule(Name=rule['name'], **event_bus_kwargs)
+        except ClientError as exc:
+            if exc.response.get('Error', {}).get('Code') != 'ResourceNotFoundException':
+                raise
+
+def _wait_for_state_machine_execution(sfn_client, execution_arn, timeout_seconds=21600, poll_seconds=15):
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        status = sfn_client.describe_execution(executionArn=execution_arn)['status']
+        if status == 'SUCCEEDED': return status
+        if status in {'FAILED', 'TIMED_OUT', 'ABORTED'}: raise RuntimeError(f'Bootstrap execution {execution_arn} ended with {status}')
+        time.sleep(poll_seconds)
+    raise TimeoutError(f'Bootstrap execution {execution_arn} did not finish within {timeout_seconds} seconds')
+
+def _find_execution_arn(sfn_client, state_machine_arn, execution_name):
+    for status_filter in ('RUNNING', 'SUCCEEDED', 'FAILED', 'TIMED_OUT', 'ABORTED'):
+        for item in sfn_client.list_executions(stateMachineArn=state_machine_arn, statusFilter=status_filter, maxResults=100).get('executions', []):
+            if item['name'] == execution_name: return item['executionArn']
+    raise RuntimeError(f'Existing bootstrap execution not found: {execution_name}')
+
+def start_initial_materialization_runs(sfn_client, bootstrap_state_machine_arn, execution_name, execution_input, dry_run=True):
+    if dry_run:
+        print('[DRY RUN] start bootstrap materialization', execution_name); return {'action': 'dry-run'}
+    try:
+        response = sfn_client.start_execution(stateMachineArn=bootstrap_state_machine_arn, name=execution_name, input=json.dumps(execution_input, sort_keys=True))
+        execution_arn, action = response['executionArn'], 'started'
+    except ClientError as exc:
+        if exc.response.get('Error', {}).get('Code') != 'ExecutionAlreadyExists': raise
+        execution_arn, action = _find_execution_arn(sfn_client, bootstrap_state_machine_arn, execution_name), 'preserved'
+        previous_status = sfn_client.describe_execution(executionArn=execution_arn)['status']
+        if previous_status in {'FAILED', 'TIMED_OUT', 'ABORTED'}:
+            retry_name = f'{execution_name[:60]}-retry-{int(time.time())}'
+            response = sfn_client.start_execution(stateMachineArn=bootstrap_state_machine_arn, name=retry_name, input=json.dumps(execution_input, sort_keys=True))
+            execution_arn, action = response['executionArn'], 'retried'
+    _wait_for_state_machine_execution(sfn_client, execution_arn)
+    return {'action': action, 'execution_arn': execution_arn, 'status': 'SUCCEEDED'}
+
+eventbridge_rules = [
+    {'name': _state_machine_name('trigger-15m-ingestion'), 'event_bus_name': event_bus_name, 'event_pattern': {'source': ['ndr.ingestion'], 'detail-type': ['NdrRawParsedLogsBatchCompleted'], 'detail': {'project_name': [{'exists': True}], 'data_source_name': [{'exists': True}], 'batch_id': [{'exists': True}], 'raw_parsed_logs_s3_prefix': [{'exists': True}], 'timestamp': [{'exists': True}], 'feature_spec_version': [{'exists': True}]}}, 'target_arn': _state_machine_arn('15m-features-inference'), 'role_arn': eventbridge_invoke_role_arn, 'input_path': '$.detail'},
+    {'name': _state_machine_name('schedule-monthly'), 'schedule_expression': 'cron(0 0 1 * ? *)', 'target_arn': _state_machine_arn('monthly-fg-b-baselines'), 'role_arn': eventbridge_invoke_role_arn, 'input': {'project_name': project_name, 'feature_spec_version': feature_spec_version}},
+]
+legacy_eventbridge_rules = [
+    {'name': _state_machine_name('schedule-15m'), 'event_bus_name': event_bus_name},
+    {'name': _state_machine_name('schedule-monthly'), 'event_bus_name': event_bus_name},
+]
+events_client = boto3.client('events', region_name=aws_region)
+reconcile_eventbridge_rules(events_client, eventbridge_rules, dry_run=DRY_RUN)
+remove_eventbridge_rules(events_client, legacy_eventbridge_rules, dry_run=DRY_RUN)
+bootstrap_execution_result = start_initial_materialization_runs(boto3.client('stepfunctions', region_name=aws_region), _state_machine_arn('initial-deployment-bootstrap'), f'bootstrap-{environment_name}-{feature_spec_version}-r{deployment_revision}', {'project_name': project_name, 'feature_spec_version': feature_spec_version, 'ml_project_name': ml_project_name, 'raw_parsed_logs_s3_prefix': raw_parsed_logs_s3_prefix, 'reference_month': reference_month}, dry_run=DRY_RUN)
+print(json.dumps(bootstrap_execution_result, indent=2))
+
 # Optional targeted rollout pattern (recommended):
 # 1) upsert_step_functions(dry_run=True)
 # 2) upsert_step_functions(dry_run=False, deployment_targets=["sfn_ndr_training_orchestrator.json"])
@@ -740,17 +1006,17 @@ print(json.dumps(step_function_results, indent=2))
 ```markdown
 ### Code Cell 13 Guide
 
-**Behavior:** Run final structural readiness assertions for DDB seeds and pipeline coverage.
+**Behavior:** Run final structural readiness assertions, compute the deterministic deployment fingerprint, and persist the post-success deployment marker.
 
 **Purpose:** Fail fast on contract violations before any production rollout.
 
 **Required input:** Populated `ddb_table_contracts`, `ddb_seed_items_plan`, and `PIPELINE_BUILDERS`.
 
-**Expected output:** Assertion pass message or explicit failure with violating key.
+**Expected output:** Assertion pass message or explicit failure with violating key, followed by the deployment-marker reconciliation result.
 
-**Expected result:** Readiness decisions remain deterministic and auditable from notebook artifacts.
+**Expected result:** Readiness decisions remain deterministic and the DPP config table records the latest successfully reconciled deployment fingerprint.
 
-**Usage instructions:** Treat any assertion failure as blocking; remediate configuration then rerun.
+**Usage instructions:** Treat any assertion failure as blocking; remediate configuration then rerun. Increment `deployment_revision` only when forcing a new deployment boundary not otherwise represented by the manifest inputs.
 
 **Runnable example:** `print('ready' if not missing_pipeline_jobs else missing_pipeline_jobs)`
 ```
@@ -769,6 +1035,27 @@ for item in ddb_seed_items_plan['dpp_config']:
         assert spec.get('deployment_status') == 'READY', item.get('job_name_version')
 assert 's3_prefixes' in batch_index_direct_item and 'dpp' in batch_index_direct_item['s3_prefixes'] and 'mlp' in batch_index_direct_item['s3_prefixes']
 print('Structural readiness checks passed.')
+
+rendered_step_functions_for_marker = validate_step_function_templates(SFN_SUBSTITUTIONS)
+deployment_marker = build_deployment_marker(
+    project_name=project_name,
+    environment_name=environment_name,
+    feature_spec_version=feature_spec_version,
+    deployment_revision=deployment_revision,
+    artifact_build_id=artifact_build_id,
+    artifact_sha256=artifact_sha256,
+    code_artifact_s3_uri=code_artifact_s3_uri,
+    table_contracts=ddb_table_contracts,
+    s3_schema=s3_schema_plan,
+    pipeline_names=PIPELINE_BUILDERS,
+    pipeline_definitions=pipeline_definitions,
+    pipeline_job_specs=[item for item in ddb_seed_items_plan['dpp_config'] if _is_deployment_owned_seed('dpp_config', item)],
+    rendered_step_functions=rendered_step_functions_for_marker,
+    eventbridge_config={'event_bus_name': event_bus_name, 'rules': eventbridge_rules},
+    applied_at=UTC_NOW,
+)
+deployment_marker_result = persist_deployment_marker(boto3.resource('dynamodb', region_name=aws_region), dpp_config_table_name, deployment_marker, dry_run=DRY_RUN)
+print(json.dumps(deployment_marker_result, indent=2))
 ```
 
 ## Cell 31 (markdown)
@@ -781,5 +1068,6 @@ print('Structural readiness checks passed.')
 3. Artifact values set and promoted.
 4. Pipelines upserted.
 5. Initial feature/stats materialization runs executed.
-6. Step Functions manually deployed.
+6. Step Functions reconciled.
+7. Deployment marker persisted after successful structural checks.
 ```

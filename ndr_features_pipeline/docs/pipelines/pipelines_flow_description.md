@@ -383,3 +383,12 @@ Unified IF training now includes:
 4. post-training evaluation replay for each configured evaluation window,
 5. prediction-feature join/publication manifests,
 6. expanded experiments lineage for planner + evaluation windows.
+
+## Dedicated readiness artifact pipelines
+
+The readiness placeholders are deployed as dedicated SageMaker Pipelines rather than aliases to feature-producing pipelines:
+
+- `${PipelineNameRtReadiness}` resolves to `pipeline_rt_readiness`, built by `build_rt_readiness_pipeline`. Its single `RtArtifactReadinessCheckerStep` publishes `rt_artifact_readiness.v3` from authoritative Batch Index and S3 evidence before FG-C dependent processing starts.
+- `${PipelineNameMonthlyReadiness}` resolves to `pipeline_monthly_readiness`, built by `build_monthly_readiness_pipeline`. Its single `MonthlyFgBReadinessCheckerStep` publishes `monthly_fg_b_readiness.v3` before FG-B baseline processing starts.
+
+Both pipeline registrations are additive and idempotently upserted by the deployment notebook, so an operator who previously deployed older resources can rerun the notebook without deleting existing pipelines or tables.

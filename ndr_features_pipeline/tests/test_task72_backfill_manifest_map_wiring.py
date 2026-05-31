@@ -28,11 +28,12 @@ def test_manifest_map_item_shape_is_deterministic_and_family_range_driven():
         "family": "{% $states.context.Map.Item.Value.family %}",
         "range_start_ts": "{% $states.context.Map.Item.Value.range_start_ts %}",
         "range_end_ts": "{% $states.context.Map.Item.Value.range_end_ts %}",
+        "idempotency_key": "{% $states.context.Map.Item.Value.idempotency_key %}",
     }
 
     params = _load()["States"]["RunBackfillWindows"]["ItemProcessor"]["States"]["StartBackfillPipeline"]["Arguments"]["PipelineParameters"]
     names = {item["Name"] for item in params}
-    assert names == {"ProjectName", "FeatureSpecVersion", "ArtifactFamily", "RangeStartTsIso", "RangeEndTsIso"}
+    assert names == {"ProjectName", "FeatureSpecVersion", "ArtifactFamily", "RangeStartTsIso", "RangeEndTsIso", "IdempotencyKey"}
 
 
 def test_manifest_read_and_map_failure_paths_are_deterministic():

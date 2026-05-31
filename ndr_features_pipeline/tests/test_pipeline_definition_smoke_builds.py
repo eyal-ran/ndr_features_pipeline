@@ -124,6 +124,8 @@ def test_pipeline_definitions_smoke_build_with_concrete_contracts(monkeypatch):
     from ndr.pipeline import sagemaker_pipeline_definitions_if_training as p_train
     from ndr.pipeline import sagemaker_pipeline_definitions_inference as p_inf
     from ndr.pipeline import sagemaker_pipeline_definitions_prediction_feature_join as p_join
+    from ndr.pipeline import sagemaker_pipeline_definitions_rt_readiness as p_rt_readiness
+    from ndr.pipeline import sagemaker_pipeline_definitions_monthly_readiness as p_monthly_readiness
     from ndr.pipeline import sagemaker_pipeline_definitions_unified_with_fgc as p_unified
 
     monkeypatch.setattr(
@@ -140,7 +142,7 @@ def test_pipeline_definitions_smoke_build_with_concrete_contracts(monkeypatch):
             code_artifact_s3_uri=None,
         ),
     )
-    for module in (p_inf, p_join, p_train, p_backfill_hist):
+    for module in (p_inf, p_join, p_train, p_backfill_hist, p_rt_readiness, p_monthly_readiness):
         monkeypatch.setattr(
             module,
             "resolve_step_execution_contract",
@@ -214,6 +216,12 @@ def test_pipeline_definitions_smoke_build_with_concrete_contracts(monkeypatch):
         region_name="us-east-1",
         project_name_for_contracts="proj",
         feature_spec_version_for_contracts="v1",
+    )
+    p_rt_readiness.build_rt_readiness_pipeline(
+        pipeline_name="prt-readiness", role_arn="arn:aws:iam::123:role/x", default_bucket="bucket", region_name="us-east-1", project_name_for_contracts="proj", feature_spec_version_for_contracts="v1",
+    )
+    p_monthly_readiness.build_monthly_readiness_pipeline(
+        pipeline_name="pmonthly-readiness", role_arn="arn:aws:iam::123:role/x", default_bucket="bucket", region_name="us-east-1", project_name_for_contracts="proj", feature_spec_version_for_contracts="v1",
     )
     for module in (p_code_build, p_code_validate, p_code_smoke):
         monkeypatch.setattr(
